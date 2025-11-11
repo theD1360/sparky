@@ -934,8 +934,8 @@ class AgentOrchestrator:
                 # Use IdentityService for loading identity
                 identity_memory = await self.identity_service.get_identity_memory()
             elif self.knowledge:
-                # Fallback to knowledge module if service not available
-                identity_memory = await self.knowledge.get_identity_memory()
+                # Fallback to identity service if service not available
+                identity_memory = await self.identity_service.get_identity_memory()
             else:
                 identity_memory = "Error: No knowledge module available"
 
@@ -960,7 +960,7 @@ class AgentOrchestrator:
                 session_id
             )
         elif self.knowledge:
-            session_context = await self.knowledge.get_session_context()
+            session_context = await self.identity_service.get_session_context(session_id)
         else:
             session_context = None
 
