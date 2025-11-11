@@ -55,8 +55,6 @@ class AgentOrchestrator:
         knowledge: Optional[Any] = None,
         identity_search_terms: Optional[List[str]] = None,
         identity_max_depth: int = 2,
-        enable_turn_summarization: bool = True,
-        summary_turn_threshold: int = 10,
     ):
         """Initialize the agent orchestrator.
 
@@ -88,13 +86,6 @@ class AgentOrchestrator:
         self.toolchain = toolchain
 
         # Deprecated parameters - kept for backward compatibility
-        self.enable_turn_summarization = enable_turn_summarization
-        if not enable_turn_summarization or summary_turn_threshold != 10:
-            logger.warning(
-                "enable_turn_summarization and summary_turn_threshold are deprecated. "
-                "Token-based summarization is now used automatically. "
-                "Use SPARKY_SUMMARY_TOKEN_THRESHOLD to configure."
-            )
 
         self.max_history_turns = int(os.getenv("SPARKY_MAX_HISTORY_TURNS", "30"))
 
@@ -121,11 +112,6 @@ class AgentOrchestrator:
             self.summary_token_threshold = 0.85
 
         # Warn about deprecated environment variable
-        if os.getenv("SPARKY_SUMMARY_EVERY"):
-            logger.warning(
-                "SPARKY_SUMMARY_EVERY is deprecated. "
-                "Use SPARKY_SUMMARY_TOKEN_THRESHOLD instead (default 0.85)."
-            )
 
         # Token budget configuration
         # Get token budget percentage from environment or use provider's default
@@ -320,15 +306,12 @@ class AgentOrchestrator:
                 message_type="thought",
             )
 
-    def _handle_summarized(self, summary: str, turn_count: int = 0):
+    def _handle_summarized(self, summary: str):
         """Handle SUMMARIZED event by delegating to message service.
 
         Args:
             summary: The conversation summary
-            turn_count: Deprecated. Kept for backward compatibility.
         """
-        # Note: turn_count parameter is deprecated but kept for backward compatibility
-        _ = turn_count  # Explicitly mark as unused
 
         if self.message_service:
             self.message_service.save_message(
@@ -1311,8 +1294,7 @@ class AgentOrchestrator:
                 summary = "No conversation content to summarize yet."
 
             # Fire summarized event to save summary to knowledge graph
-            # Note: turn_count is deprecated but kept for backward compatibility
-            await self.events.async_dispatch(BotEvents.SUMMARIZED, summary, 0)
+            await self.events.async_dispatch(BotEvents.SUMMARIZED, summary)
 
             logger.info("Conversation summarized successfully")
         # pylint: disable=broad-except
