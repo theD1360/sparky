@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Tests
+tests/
+workflow_test/
+
+# Logs (will be mounted as volume)
+logs/
+*.log
+
+# Database (will be mounted as volume)
+*.db
+*.db-shm
+*.db-wal
+
+# Environment files (will be passed as env vars)
+.env
+.env.*
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+
+# Examples (not needed in container)
+examples/
+
+# PID files
+*.pid
+
+# Scripts that aren't needed in container
+scripts/
+

@@ -1,0 +1,72 @@
+[project]
+name = "sparky"
+version = "0.1.0"
+description = "A project to build bots with Google GenAI and MCP"
+authors = [
+    {name = "Diego"}
+]
+readme = "README.md"
+requires-python = ">=3.13, <4.0"
+dependencies = [
+    "google-generativeai (>=0.8.5,<0.9.0)",
+    "mcp (>=1.17.0,<2.0.0)",
+    "python-dotenv (>=1.1.1,<2.0.0)",
+    "pillow (>=11.3.0,<12.0.0)",
+    "typer[all] (>=0.19.2,<0.20.0)",
+    "black (>=25.9.0,<26.0.0)",
+    "isort (>=7.0.0,<8.0.0)",
+    "pylint (>=4.0.0,<5.0.0)",
+    "sqlite-vec (>=0.1.3,<0.2.0)",
+    "fastapi (>=0.119.0,<0.120.0)",
+    "uvicorn (>=0.37.0,<0.38.0)",
+    "fastapi-cli (>=0.0.13,<0.0.14)",
+    "websockets (>=15.0.1,<16.0.0)",
+    "aioconsole (>=0.8.2,<0.9.0)",
+    "textual (>=0.76.0,<0.77.0)",
+    "psutil (>=7.1.0,<8.0.0)",
+    "python-daemon (>=3.1.2,<4.0.0)",
+    "ruff (>=0.14.1,<0.15.0)",
+    "dnspython (>=2.8.0,<3.0.0)",
+    "aiofiles (>=25.1.0,<26.0.0)",
+    "pyyaml (>=6.0.0,<7.0.0)",
+    "croniter (>=5.0.1,<6.0.0)",
+    "reloading (>=1.1.2,<2.0.0)",
+    "sqlalchemy (>=2.0.0,<3.0.0)",
+    "alembic (>=1.13.0,<2.0.0)",
+    "fastmcp (>=0.1.0,<1.0.0)",
+    "opencypher (>=0.3.0,<0.4.0)",
+    "pypher (>=0.7.3,<0.8.0)",
+    "psycopg2-binary (>=2.9.0,<3.0.0)",
+    "pytest (>=8.4.2,<9.0.0)",
+    "pytest-async (>=0.1.1,<0.2.0)",
+    "syntax-checker (==0.4.0)",
+    "wcmatch (>=10.1,<11.0.0)"
+]
+
+[project.scripts]
+sparky = "cli:main"
+sparky-postinstall = "database.install:run_migrations"
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py313']
+
+[tool.isort]
+profile = "black"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# Exclude directories that aren't test directories
+norecursedirs = ["scripts", "examples", "docs", "sandbox", "wcgw", "worktrees", ".git", "__pycache__"]
+
+[tool.poetry.group.dev.dependencies]
+pytest-asyncio = "^1.2.0"
+

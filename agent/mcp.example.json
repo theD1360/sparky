@@ -1,0 +1,104 @@
+{
+  "mcpServers": {
+    "calculator": {
+      "command": "python",
+      "args": [
+        "src/tools/calculator/server.py"
+      ],
+      "description": "Calculator tools for mathematical operations"
+    },
+    "strings": {
+      "command": "python",
+      "args": [
+        "src/tools/strings/server.py"
+      ],
+      "description": "String manipulation tools"
+    },
+    "network": {
+      "command": "python",
+      "args": [
+        "src/tools/network/server.py"
+      ],
+      "description": "Network tools for HTTP requests and web operations"
+    },
+    "advanced_networking": {
+      "command": "python",
+      "args": [
+        "src/tools/advanced_networking/server.py"
+      ],
+      "description": "Advanced networking tools for domain/network reconnaissance"
+    },
+    "datetime": {
+      "command": "python",
+      "args": [
+        "src/tools/datetime/server.py"
+      ],
+      "description": "Date and time utilities"
+    },
+    "code": {
+      "command": "python",
+      "args": [
+        "src/tools/code/server.py"
+      ],
+      "description": "Code execution and analysis tools",
+      "env": {
+        "SPARKY_DB_URL": "postgresql://metamcp_user:m3t4mcp@postgres:5432/sparky_db"
+      }
+    },
+    "shell": {
+      "command": "python",
+      "args": [
+        "src/tools/shell/server.py"
+      ],
+      "description": "Shell command execution tools"
+    },
+    "self-update": {
+      "command": "python",
+      "args": [
+        "src/tools/self_update/server.py"
+      ],
+      "description": "Self-update functionality"
+    },
+    "miscellaneous": {
+      "command": "python",
+      "args": [
+        "src/tools/miscellaneous/server.py"
+      ],
+      "description": "Miscellaneous tools"
+    },
+    "criminal_ip": {
+      "command": "python",
+      "args": [
+        "src/tools/criminal_ip/server.py"
+      ],
+      "description": "Criminal IP threat intelligence tools"
+    },
+    "knowledge_graph": {
+      "command": "python",
+      "args": [
+        "src/tools/knowledge_graph/server.py"
+      ],
+      "description": "Knowledge graph and memory management (unified SQLite storage)"
+    },
+    "encryption": {
+      "command": "python",
+      "args": [
+        "src/tools/encryption/server.py"
+      ],
+      "description": "Encryption and encoding tools (base64, etc.)"
+    },
+    "introspection": {
+      "command": "python",
+      "args": [
+        "src/tools/introspection/server.py"
+      ],
+      "description": "Introspection tools for system and self-monitoring"
+    },
+    "metaMCP": {
+      "url" : "http://metamcp:12008/metamcp/sparky/sse",
+      "type" : "sse",
+      "description" : "MetaMCP server for testing",
+      "bearerToken" : "${METAMCP_API_KEY}"
+    }
+  }
+}

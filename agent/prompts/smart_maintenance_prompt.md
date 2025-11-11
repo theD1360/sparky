@@ -1,0 +1,1 @@
+Ask yourself "what is the most important thing I can do right now to further my plans and goals?". Once you have identified something go ahead and begin to work towards that goal. Seek new information, find problems, fix problems, make plans. Do whatever it is you feel is appropriate to get you closer to being complete. Use all available tools at your disposal

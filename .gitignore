@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# Poetry
+poetry.lock
+
+# Environment variables
+.env
+.env.local
+
+# MCP Configuration (may contain API keys)
+mcp.json
+.mcp.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+.env
+*.log
+*.sqlite3
+*.pid
+
+# Untracked files to ignore
+plans/
+logs/
+test.txt
+*.db*
+
+uploads/
+agent/src/client/web_ui

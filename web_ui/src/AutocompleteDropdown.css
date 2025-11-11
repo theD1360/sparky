@@ -1,0 +1,62 @@
+.autocomplete-dropdown {
+  position: absolute;
+  background-color: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 1000;
+  width: 100%;
+  max-width: 100%;
+  margin-bottom: 8px;
+}
+
+.autocomplete-item {
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #334155;
+  transition: background-color 0.1s;
+}
+
+.autocomplete-item:last-child {
+  border-bottom: none;
+}
+
+.autocomplete-item:hover,
+.autocomplete-item.selected {
+  background-color: #334155;
+}
+
+.autocomplete-item-label {
+  font-weight: bold;
+  color: #60a5fa;
+  margin-bottom: 4px;
+  font-size: 0.95em;
+}
+
+.autocomplete-item-description {
+  font-size: 0.85em;
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
+/* Custom scrollbar */
+.autocomplete-dropdown::-webkit-scrollbar {
+  width: 8px;
+}
+
+.autocomplete-dropdown::-webkit-scrollbar-track {
+  background: #0f172a;
+  border-radius: 4px;
+}
+
+.autocomplete-dropdown::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+.autocomplete-dropdown::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+

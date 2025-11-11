@@ -1,0 +1,183 @@
+version: '3.8'
+
+services:
+  ui:
+    build:
+      context: ./web_ui
+      dockerfile: Dockerfile.dev
+    container_name: sparky-ui-dev
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount source code for hot reloading
+      - ./web_ui/src:/app/src:delegated
+      - ./web_ui/public:/app/public:delegated
+      # Prevent node_modules from being overwritten
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true  # Enable polling for file changes (needed in Docker)
+      - WATCHPACK_POLLING=true
+      - FAST_REFRESH=true
+      - REACT_APP_WS_HOST=${REACT_APP_WS_HOST:-localhost}
+      - REACT_APP_WS_PORT=${REACT_APP_WS_PORT:-8000}
+      - REACT_APP_API_HOST=${REACT_APP_API_HOST:-localhost}
+      - REACT_APP_API_PORT=${REACT_APP_API_PORT:-8000}
+    restart: unless-stopped
+    networks:
+      - sparky-network
+    depends_on:
+      server:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+
+  server:
+    build:
+      context: ./agent
+      dockerfile: ../Dockerfile
+    container_name: sparky-server
+    command: uvicorn servers.chat:app --host 0.0.0.0 --port 8000
+    working_dir: /app/agent
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/agent/src
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - AGENT_MODEL=${AGENT_MODEL:-gemini-2.0-flash}
+      - SPARKY_MAX_HISTORY_TURNS=${SPARKY_MAX_HISTORY_TURNS:-25}
+      - SPARKY_SUMMARY_TOKEN_THRESHOLD=${SPARKY_SUMMARY_TOKEN_THRESHOLD:-0.85}
+      - SPARKY_REFLECT_EVERY=${SPARKY_REFLECT_EVERY:-10}
+      - SPARKY_TOKEN_BUDGET_PERCENT=${SPARKY_TOKEN_BUDGET_PERCENT:-0.8}
+      - LOG_DIR=/app/agent/logs
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=metamcp_user
+      - POSTGRES_PASSWORD=m3t4mcp
+      - SPARKY_DB=sparky_db
+      - SPARKY_DB_URL=postgresql://${POSTGRES_USER:-metamcp_user}:${POSTGRES_PASSWORD:-m3t4mcp}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${SPARKY_DB:-sparky_db}
+    volumes:
+      # Mount source code for live reload
+      - ./:/app:delegated
+    restart: unless-stopped
+    networks:
+      - sparky-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # metamcp:
+      #   condition: service_healthy
+    stop_grace_period: 30s  # Give 30 seconds for graceful shutdown
+
+  agent:
+    build:
+      context: ./agent
+      dockerfile: ../Dockerfile
+    container_name: sparky-agent
+    command: poetry run sparky agent start --interval 10
+    working_dir: /app/agent
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/agent/src
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - AGENT_MODEL=${AGENT_MODEL:-gemini-2.0-flash}
+      - SPARKY_MAX_HISTORY_TURNS=${SPARKY_MAX_HISTORY_TURNS:-25}
+      - SPARKY_SUMMARY_TOKEN_THRESHOLD=${SPARKY_SUMMARY_TOKEN_THRESHOLD:-0.85}
+      - SPARKY_REFLECT_EVERY=${SPARKY_REFLECT_EVERY:-10}
+      - SPARKY_TOKEN_BUDGET_PERCENT=${SPARKY_TOKEN_BUDGET_PERCENT:-0.8}
+      - LOG_DIR=/app/agent/logs
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=metamcp_user
+      - POSTGRES_PASSWORD=m3t4mcp
+      - SPARKY_DB=sparky_db
+      - SPARKY_DB_URL=postgresql://${POSTGRES_USER:-metamcp_user}:${POSTGRES_PASSWORD:-m3t4mcp}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${SPARKY_DB:-sparky_db}
+    volumes:
+      # Mount source code for live changes
+      - ./:/app:delegated
+    restart: unless-stopped
+    networks:
+      - sparky-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 30s  # Give 30 seconds for graceful shutdown
+
+  metamcp:
+    container_name: metamcp
+    image: ghcr.io/metatool-ai/metamcp:latest
+    pull_policy: always
+    env_file:
+      - .env
+    ports:
+      - "12008:12008"
+    environment:
+      # Postgres connection details
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-metamcp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-m3t4mcp}
+      POSTGRES_DB: ${POSTGRES_DB:-metamcp_db}
+
+      # MetaMCP uses its own database - DO NOT set SPARKY_DB_URL here
+
+      # Application URL configuration
+      APP_URL: ${APP_URL:-http://localhost:12008}
+      NEXT_PUBLIC_APP_URL: ${APP_URL:-http://localhost:12008}
+
+      # Auth configuration
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-your-super-secret-key-change-this-in-production}
+
+      # Docker networking fix
+      TRANSFORM_LOCALHOST_TO_DOCKER_INTERNAL: ${TRANSFORM_LOCALHOST_TO_DOCKER_INTERNAL:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - sparky-network
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: metamcp-pg
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-metamcp_db}
+      POSTGRES_USER: ${POSTGRES_USER:-metamcp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-m3t4mcp}
+    ports:
+      - "${POSTGRES_EXTERNAL_PORT:-9433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./agent/scripts/init-sparky-db.sql:/docker-entrypoint-initdb.d/01-init-sparky-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-metamcp_user} -d ${POSTGRES_DB:-metamcp_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - sparky-network
+    stop_grace_period: 30s  # Give 30 seconds for graceful shutdown
+
+networks:
+  sparky-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local
+  postgres_data:
+    driver: local

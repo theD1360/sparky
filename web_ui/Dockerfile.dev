@@ -1,0 +1,24 @@
+# Dockerfile for React UI development with hot reloading
+FROM node:20-slim
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy the rest of the application
+COPY . .
+
+# Expose development server port
+EXPOSE 3000
+
+# Set environment variable to avoid opening browser automatically
+ENV BROWSER=none
+
+# Start development server with hot reloading
+CMD ["npm", "start"]
+

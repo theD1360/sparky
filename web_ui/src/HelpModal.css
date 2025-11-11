@@ -1,0 +1,171 @@
+.help-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.help-modal {
+  background-color: #1e293b;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  width: 90%;
+  max-width: 700px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  animation: slideUp 0.2s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.help-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid #334155;
+}
+
+.help-modal-header h2 {
+  margin: 0;
+  color: #f1f5f9;
+  font-size: 1.5em;
+}
+
+.help-modal-close {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 2em;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+
+.help-modal-close:hover {
+  color: #f1f5f9;
+}
+
+.help-modal-content {
+  padding: 24px;
+  overflow-y: auto;
+  color: #e2e8f0;
+}
+
+.help-section {
+  margin-bottom: 28px;
+}
+
+.help-section:last-child {
+  margin-bottom: 0;
+}
+
+.help-section h3 {
+  color: #60a5fa;
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 1.2em;
+}
+
+.help-section p {
+  color: #cbd5e1;
+  margin: 8px 0;
+  line-height: 1.6;
+}
+
+.help-section ul {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.help-section li {
+  padding: 8px 0;
+  border-bottom: 1px solid #334155;
+}
+
+.help-section li:last-child {
+  border-bottom: none;
+}
+
+.help-section code {
+  background-color: #334155;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.9em;
+  color: #22d3ee;
+}
+
+.help-section kbd {
+  background-color: #334155;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.85em;
+  color: #f1f5f9;
+  box-shadow: 0 2px 0 #1e293b;
+}
+
+.help-empty {
+  color: #64748b;
+  font-style: italic;
+}
+
+.help-args {
+  color: #94a3b8;
+  font-size: 0.9em;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+/* Custom scrollbar for modal content */
+.help-modal-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.help-modal-content::-webkit-scrollbar-track {
+  background: #0f172a;
+  border-radius: 4px;
+}
+
+.help-modal-content::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+.help-modal-content::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+

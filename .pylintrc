@@ -1,0 +1,11 @@
+[MASTER]
+disable=
+    C0103, 
+    C0114, 
+    C0115, 
+    C0116, 
+    C0301, 
+    W0511, 
+
+[REPORTS]
+reports=no

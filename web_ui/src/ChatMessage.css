@@ -1,0 +1,321 @@
+.chat-message {
+  display: flex;
+  margin-bottom: 12px;
+  line-height: 1.6;
+  width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+}
+
+/* User messages align right */
+.message-user {
+  justify-content: flex-end;
+}
+
+/* Bot/system messages align left */
+.message-bot,
+.message-error,
+.message-thought,
+.message-tool-use,
+.message-tool-result {
+  justify-content: flex-start;
+}
+
+/* Status messages - centered, no bubble */
+.message-status {
+  justify-content: center;
+  margin: 8px 0;
+}
+
+.message-content {
+  max-width: 75%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* User message bubble - muted green, on right */
+.message-user .message-content {
+  background-color: #2d4a3e;
+  border-bottom-right-radius: 4px;
+}
+
+/* Bot message bubble - muted blue, on left */
+.message-bot .message-content {
+  background-color: #2d3748;
+  border-bottom-left-radius: 4px;
+}
+
+/* Error message bubble - muted red, on left */
+.message-error .message-content {
+  background-color: #4a2d2d;
+  border-bottom-left-radius: 4px;
+  border-left: 2px solid #ef4444;
+}
+
+/* Thought message bubble - muted purple, on left */
+.message-thought .message-content {
+  background-color: #3a2d4a;
+  border-bottom-left-radius: 4px;
+  border-left: 2px solid #a78bfa;
+}
+
+/* Tool use message bubble - teal/cyan, on left */
+.message-tool-use .message-content {
+  background-color: #2d4a4a;
+  border-bottom-left-radius: 4px;
+  border-left: 2px solid #22d3ee;
+}
+
+/* Tool result message bubble - green/emerald, on left */
+.message-tool-result .message-content {
+  background-color: #2d4a3e;
+  border-bottom-left-radius: 4px;
+  border-left: 2px solid #10b981;
+}
+
+/* Status messages - small, gray, centered, no bubble */
+.status-content {
+  font-size: 0.8em;
+  color: #64748b;
+  text-align: center;
+  font-style: italic;
+  padding: 4px 8px;
+}
+
+.status-content p {
+  margin: 0;
+  color: #64748b;
+}
+
+.message-content p {
+  margin: 0 0 8px 0;
+  color: #e2e8f0;
+  font-size: 0.95em;
+}
+
+.message-content p:last-child {
+  margin-bottom: 0;
+}
+
+.message-content code {
+  background-color: #0f1419;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.88em;
+  color: #fbbf24;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+}
+
+.message-content pre {
+  background-color: #0f1419;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 8px 0;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.message-content pre code {
+  background-color: transparent;
+  padding: 0;
+  color: #e2e8f0;
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  border: none;
+}
+
+.message-content strong {
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+.message-content em {
+  color: #cbd5e1;
+}
+
+/* Message prefix styling (for thoughts, tools) */
+.message-prefix {
+  font-size: 0.85em;
+  font-weight: 600;
+  opacity: 0.8;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Message text container */
+.message-text {
+  position: relative;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Enhanced styling for tool messages markdown */
+.message-tool-use .message-content pre,
+.message-tool-result .message-content pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.message-tool-use .message-content code,
+.message-tool-result .message-content code {
+  word-break: break-all;
+}
+
+/* Ensure JSON formatting is readable */
+.message-tool-use .message-text,
+.message-tool-result .message-text {
+  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.9em;
+}
+
+/* Collapsed state - limit height and add fade effect */
+.message-collapsed .message-text {
+  max-height: 100px;
+  overflow: hidden;
+  position: relative;
+}
+
+.message-collapsed .message-text::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(to bottom, transparent, currentColor);
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+/* Expand/collapse toggle button */
+.expand-toggle {
+  display: block;
+  margin-top: 8px;
+  padding: 4px 12px;
+  background-color: rgba(255, 255, 255, 0.1);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  font-size: 0.85em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  width: 100%;
+  text-align: center;
+}
+
+.expand-toggle:hover {
+  background-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.expand-toggle:active {
+  transform: scale(0.98);
+}
+
+/* File attachment badges */
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.attachment-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  font-size: 0.85em;
+  color: #cbd5e1;
+  transition: all 0.2s ease;
+  max-width: 300px;
+}
+
+.attachment-badge:hover {
+  background-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.attachment-badge.attachment-image {
+  padding: 6px;
+}
+
+.attachment-icon {
+  font-size: 1.2em;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.attachment-thumbnail {
+  width: 60px;
+  height: 60px;
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background-color: rgba(0, 0, 0, 0.3);
+}
+
+.attachment-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.attachment-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.attachment-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #e2e8f0;
+}
+
+.attachment-description {
+  font-size: 0.85em;
+  opacity: 0.7;
+  line-height: 1.3;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: #94a3b8;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .message-content {
+    max-width: 85%;
+  }
+  
+  .message-content p {
+    font-size: 0.93em;
+  }
+  
+  .attachment-badge {
+    max-width: 250px;
+  }
+  
+  .attachment-thumbnail {
+    width: 50px;
+    height: 50px;
+  }
+}
+

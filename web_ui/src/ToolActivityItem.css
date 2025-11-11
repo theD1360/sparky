@@ -1,0 +1,64 @@
+.tool-activity-item {
+  display: flex;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+.activity-prefix {
+  font-weight: bold;
+  margin-right: 8px;
+  flex-shrink: 0;
+  min-width: 100px;
+}
+
+.activity-content {
+  flex: 1;
+  font-size: 0.9em;
+}
+
+.activity-tool-use .activity-prefix {
+  color: #d946ef; /* Magenta */
+}
+
+.activity-tool-result .activity-prefix {
+  color: #22d3ee; /* Cyan */
+}
+
+.activity-thought .activity-prefix {
+  color: #fbbf24; /* Yellow */
+  font-style: italic;
+}
+
+.activity-default .activity-prefix {
+  color: #ffffff;
+}
+
+.activity-content p {
+  margin: 0 0 8px 0;
+}
+
+.activity-content p:last-child {
+  margin-bottom: 0;
+}
+
+.activity-content code {
+  background-color: rgba(0, 0, 0, 0.4);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.activity-content pre {
+  background-color: rgba(0, 0, 0, 0.4);
+  padding: 12px;
+  border-radius: 5px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.activity-content pre code {
+  background-color: transparent;
+  padding: 0;
+}
+

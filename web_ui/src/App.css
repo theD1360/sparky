@@ -1,0 +1,262 @@
+/* Reset and base styles */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Roboto', 
+    'Helvetica Neue', 'Arial', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* App container */
+.app {
+  background-color: #0f172a;
+  min-height: 100vh;
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.app-container {
+  display: flex;
+  height: calc(100vh - 40px);
+  max-width: 1600px;
+  width: 100%;
+  gap: 0;
+}
+
+/* Chat panel - centered, takes most space */
+.chat-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: #1e293b;
+  border-radius: 12px;
+  overflow: hidden;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+/* Activity panel - collapsible sidebar on the right */
+.activity-panel {
+  width: 400px;
+  display: flex;
+  flex-direction: column;
+  background-color: #1e293b;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-left: 12px;
+  transition: all 0.3s ease;
+}
+
+.activity-panel.collapsed {
+  width: 0;
+  margin-left: 0;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.panel-header {
+  padding: 16px 20px;
+  background-color: #334155;
+  border-bottom: 2px solid #475569;
+  font-weight: bold;
+  font-size: 1.1em;
+  color: #f1f5f9;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Chat messages area */
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  background-color: #1e293b;
+}
+
+/* Activity messages area */
+.activity-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  background-color: #0f172a;
+}
+
+/* Input container */
+.input-container {
+  padding: 16px 20px;
+  background-color: #334155;
+  border-top: 2px solid #475569;
+}
+
+.input-wrapper {
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.chat-input {
+  width: 100%;
+  padding: 12px;
+  background-color: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 1em;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 60px;
+  max-height: 200px;
+}
+
+.chat-input:focus {
+  outline: none;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.2);
+}
+
+.chat-input::placeholder {
+  color: #64748b;
+}
+
+.input-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.help-button,
+.send-button,
+.toggle-button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 1em;
+}
+
+.help-button,
+.toggle-button {
+  background-color: #475569;
+  color: #e2e8f0;
+  min-width: 44px;
+}
+
+.help-button:hover,
+.toggle-button:hover {
+  background-color: #64748b;
+}
+
+.send-button {
+  background-color: #3b82f6;
+  color: #ffffff;
+  min-width: 100px;
+}
+
+.send-button:hover {
+  background-color: #2563eb;
+}
+
+.send-button:active {
+  transform: translateY(1px);
+}
+
+/* Custom scrollbar for webkit browsers */
+.chat-messages::-webkit-scrollbar,
+.activity-messages::-webkit-scrollbar {
+  width: 10px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+  background: #0f172a;
+  border-radius: 5px;
+}
+
+.activity-messages::-webkit-scrollbar-track {
+  background: #020617;
+  border-radius: 5px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb,
+.activity-messages::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 5px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb:hover,
+.activity-messages::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Responsive design */
+@media (max-width: 1200px) {
+  .activity-panel {
+    position: fixed;
+    right: 20px;
+    top: 20px;
+    bottom: 20px;
+    margin-left: 0;
+    z-index: 100;
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.5);
+  }
+  
+  .activity-panel.collapsed {
+    right: -420px;
+  }
+  
+  .chat-panel {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  .app {
+    padding: 10px;
+  }
+
+  .panel-header {
+    font-size: 1em;
+    padding: 12px 16px;
+  }
+
+  .chat-messages,
+  .activity-messages {
+    padding: 12px;
+  }
+
+  .input-container {
+    padding: 12px 16px;
+  }
+
+  .chat-input {
+    font-size: 0.95em;
+    padding: 10px;
+  }
+
+  .help-button,
+  .send-button,
+  .toggle-button {
+    padding: 8px 16px;
+    font-size: 0.95em;
+  }
+  
+  .activity-panel {
+    width: calc(100vw - 20px);
+    right: 10px;
+    top: 10px;
+    bottom: 10px;
+  }
+  
+  .activity-panel.collapsed {
+    right: calc(-100vw);
+  }
+}
