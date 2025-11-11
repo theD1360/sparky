@@ -28,13 +28,13 @@ scheduled_tasks:
     enabled: true
 
   # # Curiosity task - explore knowledge gaps and learn new things
-  #  - name: curiosity
-  #    interval: every(1 hour) # cycles
-  #    prompt: file(prompts/curiosity_prompt.md)
-  #    metadata:
-  #      scheduled_task_name: curiosity
-  #      source: auto_curiosity
-  #    enabled: false
+   - name: curiosity
+    interval: every(1 hour) # cycles
+    prompt: file(prompts/curiosity_prompt.md)
+    metadata:
+      scheduled_task_name: curiosity
+      source: auto_curiosity
+    enabled: true
     
   # # Memory curation task - summarize and integrate knowledge
   # - name: curation
