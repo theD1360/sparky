@@ -21,20 +21,18 @@ RUN curl -sSL https://install.python-poetry.org | python3 - && \
 # Configure Poetry to not create virtual environments
 RUN poetry config virtualenvs.create false
 
-# Copy dependency files
-COPY ./ ./
-
-# Install dependencies
-RUN poetry install --no-interaction --no-ansi
-
-# Copy the rest of the application
+# Copy the entire project
 COPY . .
 
+# Install dependencies from the agent directory where pyproject.toml is located
+WORKDIR /app/agent
+RUN poetry install --no-interaction --no-ansi
+
 # Create necessary directories
-RUN mkdir -p /app/logs /app/trusted_scripts
+RUN mkdir -p /app/agent/logs /app/agent/trusted_scripts
 
 # Set Python path to include src directory
-ENV PYTHONPATH=/app/src
+ENV PYTHONPATH=/app/agent/src
 
 # Expose port for server
 EXPOSE 8000

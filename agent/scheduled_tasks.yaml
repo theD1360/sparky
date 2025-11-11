@@ -20,12 +20,12 @@ scheduled_tasks:
       source: smart_maintenance
     enabled: true
 #   # Self-Correction/Reflection Task
-#   - name: reflection
-#     interval: every(6 hour)
-#     prompt: file(prompts/reflection_prompt.md)
-#     metadata:
-#       source: self_reflection
-#     enabled: true
+  - name: reflection
+    interval: every(6 hour)
+    prompt: file(prompts/reflection_prompt.md)
+    metadata:
+      source: self_reflection
+    enabled: true
 
   # # Curiosity task - explore knowledge gaps and learn new things
   #  - name: curiosity

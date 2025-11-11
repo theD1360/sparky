@@ -21,11 +21,11 @@ This guide explains how to run Sparky using Docker Compose for development.
    AGENT_MODEL=gemini-2.0-flash
 
    # Optional: History management
-   BADROBOT_MAX_HISTORY_TURNS=25
+   SPARKY_MAX_HISTORY_TURNS=25
 
    # Optional: Knowledge graph settings
-   BADROBOT_SUMMARY_EVERY=5
-   BADROBOT_REFLECT_EVERY=10
+   SPARKY_SUMMARY_EVERY=5
+   SPARKY_REFLECT_EVERY=10
 
    # Optional: Logging
    LOG_DIR=logs

@@ -285,7 +285,7 @@ for client, resource in resources:
 - Call `await bot.start_chat()` before using prompts/resources
 
 ### Resource returns error JSON
-- Check if database is initialized (BADROBOT_DB_URL)
+- Check if database is initialized (SPARKY_DB_URL)
 - Resource may exist but server encountered error
 - Parse JSON and check for "error" key
 
