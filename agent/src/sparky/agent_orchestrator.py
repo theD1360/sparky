@@ -90,6 +90,7 @@ class AgentOrchestrator:
         self.fallback_message_limit = 200  # Reasonable default for count-based fallback
 
         # Token-based summarization configuration
+        # Default to 90% (increased from 85% to reduce aggressive summarization)
         summary_threshold_env = os.getenv("SPARKY_SUMMARY_TOKEN_THRESHOLD")
         if summary_threshold_env:
             try:
@@ -104,12 +105,17 @@ class AgentOrchestrator:
                 )
             except ValueError:
                 logger.warning(
-                    "Invalid SPARKY_SUMMARY_TOKEN_THRESHOLD value '%s', using default 0.85",
+                    "Invalid SPARKY_SUMMARY_TOKEN_THRESHOLD value '%s', using default 0.90",
                     summary_threshold_env,
                 )
-                self.summary_token_threshold = 0.85
+                self.summary_token_threshold = 0.90
         else:
-            self.summary_token_threshold = 0.85
+            # Default to 90% threshold to reduce aggressive summarization
+            self.summary_token_threshold = 0.90
+            logger.info(
+                "Using default summary threshold: %.1f%% of token budget",
+                self.summary_token_threshold * 100,
+            )
 
         # Warn about deprecated environment variable
 
@@ -345,6 +351,10 @@ class AgentOrchestrator:
         """Check if conversation should be summarized based on token usage.
 
         Returns True if messages since last summary exceed the token threshold.
+        Includes safeguards to prevent premature summarization:
+        - Requires minimum of 10 message exchanges (20 total messages)
+        - Requires conversation to be at least 5 minutes old
+        - Requires token threshold to be exceeded
 
         Returns:
             True if summarization is needed, False otherwise
@@ -353,12 +363,13 @@ class AgentOrchestrator:
             return False
 
         try:
-            # Get all messages from the graph
+            # Get all messages from the graph (with session fallback)
             nodes = self.knowledge.repository.get_chat_messages(
-                chat_id=self._chat_id, limit=None
+                chat_id=self._chat_id, limit=None, use_session_fallback=True
             )
 
             if not nodes:
+                logger.debug("No messages found, skipping summarization check")
                 return False
 
             # Find the most recent summary
@@ -375,6 +386,30 @@ class AgentOrchestrator:
             else:
                 messages_to_check = nodes
 
+            # Safeguard 1: Minimum message count (at least 20 messages = ~10 exchanges)
+            # Don't summarize very short conversations
+            if len(messages_to_check) < 20:
+                logger.debug(
+                    "Skipping summarization: only %d messages (need at least 20)",
+                    len(messages_to_check)
+                )
+                return False
+
+            # Safeguard 2: Conversation age check (at least 5 minutes old)
+            # Don't summarize very recent conversations
+            if messages_to_check:
+                first_message = messages_to_check[0]
+                if first_message.created_at:
+                    conversation_age = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc) - first_message.created_at
+                    min_age_minutes = 5
+                    if conversation_age.total_seconds() < min_age_minutes * 60:
+                        logger.debug(
+                            "Skipping summarization: conversation only %.1f minutes old (need at least %d)",
+                            conversation_age.total_seconds() / 60,
+                            min_age_minutes
+                        )
+                        return False
+
             # Convert to LLM format for token estimation
             # Note: Using internal method as MessageService doesn't expose this publicly
             # pylint: disable=protected-access
@@ -384,6 +419,7 @@ class AgentOrchestrator:
             # pylint: enable=protected-access
 
             if not messages:
+                logger.debug("No messages to check after conversion, skipping summarization")
                 return False
 
             # Estimate tokens
@@ -397,7 +433,8 @@ class AgentOrchestrator:
 
             if should_summarize:
                 logger.info(
-                    "Summarization needed: %d tokens >= %d threshold (%.1f%% of %d budget)",
+                    "Summarization needed: %d messages, %d tokens >= %d threshold (%.1f%% of %d budget)",
+                    len(messages_to_check),
                     estimated_tokens,
                     threshold_tokens,
                     self.summary_token_threshold * 100,
@@ -405,9 +442,10 @@ class AgentOrchestrator:
                 )
             else:
                 logger.debug(
-                    "No summarization needed: %d tokens < %d threshold",
+                    "No summarization needed: %d tokens < %d threshold (%d messages)",
                     estimated_tokens,
                     threshold_tokens,
+                    len(messages_to_check),
                 )
 
             return should_summarize

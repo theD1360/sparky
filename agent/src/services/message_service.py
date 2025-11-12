@@ -6,15 +6,14 @@ and summary preference logic.
 
 import datetime
 import logging
-from typing import Any, Dict, List, Optional
+
+# Import TYPE_CHECKING to avoid circular imports
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from database.models import Node
 from database.repository import KnowledgeRepository
 
 from .token_usage import TokenEstimator
-
-# Import TYPE_CHECKING to avoid circular imports
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .file_service import FileService
@@ -49,7 +48,7 @@ class MessageService:
             self.token_estimator = CharacterBasedEstimator()
         else:
             self.token_estimator = token_estimator
-        
+
         self.file_service = file_service
 
     def save_message(
@@ -87,19 +86,30 @@ class MessageService:
             return None
 
         try:
-            # Get current message count from graph for this chat
+            # Get current message count from graph for this chat or session
             if chat_id:
-                current_messages = self.repository.get_chat_messages(chat_id=chat_id)
+                # Use session-fallback aware method to get accurate count
+                current_messages = self.repository.get_chat_messages(
+                    chat_id=chat_id, use_session_fallback=True
+                )
                 message_num = len(current_messages) + 1
+                logger.debug(
+                    f"Calculated message_num={message_num} for chat {chat_id} "
+                    f"(found {len(current_messages)} existing messages)"
+                )
             else:
                 # Fallback: use timestamp-based ID
                 message_num = int(datetime.datetime.utcnow().timestamp() * 1000)
+                logger.debug(
+                    f"No chat_id provided, using timestamp-based message_num={message_num}"
+                )
 
             chat_node_id = f"chat:{session_id}:{message_num}"
 
             logger.info(
                 f"Saving message to graph: node_id={chat_node_id}, role={role}, "
-                f"chat_id={chat_id}, internal={internal}, message_type={message_type}"
+                f"session_id={session_id}, chat_id={chat_id}, internal={internal}, "
+                f"message_type={message_type}"
             )
 
             # Build properties with role, internal flag, message type, and optional tool data
@@ -122,31 +132,54 @@ class MessageService:
                 content=content,
                 properties=properties,
             )
+            logger.debug(f"Created ChatMessage node: {chat_node_id}")
 
-            # Link to session
+            # Link to session (ALWAYS - this is our safety net)
             self.repository.add_edge(
                 source_id=session_id,
                 target_id=chat_node_id,
                 edge_type="CONTAINS",
             )
+            logger.debug(
+                f"Linked message to session: {session_id} -[CONTAINS]-> {chat_node_id}"
+            )
 
             # Also link from chat node if chat_id is available
             if chat_id:
-                logger.info(
-                    f"Linking message to chat node: chat:{chat_id} -> {chat_node_id}"
-                )
-                self.repository.add_edge(
-                    source_id=f"chat:{chat_id}",
-                    target_id=chat_node_id,
-                    edge_type="CONTAINS",
-                )
+                chat_node_full_id = f"chat:{chat_id}"
+                try:
+                    # Verify chat node exists before linking
+                    chat_node = self.repository.get_node(chat_node_full_id)
+                    if chat_node:
+                        self.repository.add_edge(
+                            source_id=chat_node_full_id,
+                            target_id=chat_node_id,
+                            edge_type="CONTAINS",
+                        )
+                        logger.info(
+                            f"Linked message to chat node: {chat_node_full_id} -[CONTAINS]-> {chat_node_id}"
+                        )
+                    else:
+                        logger.warning(
+                            f"Chat node {chat_node_full_id} not found! Message will only be linked to session. "
+                            f"This may cause message history issues."
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to link message to chat node {chat_node_full_id}: {e}. "
+                        f"Message is still linked to session {session_id}."
+                    )
             else:
-                logger.info("No chat_id available, skipping chat-to-message link")
+                logger.warning(
+                    f"No chat_id provided for message {chat_node_id}. "
+                    f"Message only linked to session {session_id}. "
+                    f"Future retrieval will rely on session fallback mechanism."
+                )
 
             # Link file attachment if provided
             if file_node_id:
-                logger.info(
-                    f"Linking file to message: {chat_node_id} -> {file_node_id}"
+                logger.debug(
+                    f"Linking file attachment: {chat_node_id} -> {file_node_id}"
                 )
                 # Use file service if available, otherwise use direct repository
                 if self.file_service:
@@ -157,16 +190,25 @@ class MessageService:
                         target_id=file_node_id,
                         edge_type="HAS_ATTACHMENT",
                     )
+                logger.info(
+                    f"Successfully linked file to message: {chat_node_id} -[HAS_ATTACHMENT]-> {file_node_id}"
+                )
 
             logger.info(f"Successfully saved message to graph: {chat_node_id}")
             return chat_node_id
 
         except Exception as e:
-            logger.error(f"Failed to create chat node: {e}", exc_info=True)
+            logger.error(
+                f"Failed to create chat node for session={session_id}, chat_id={chat_id}: {e}",
+                exc_info=True,
+            )
             return None
 
     def get_recent_messages(
-        self, chat_id: Optional[str], limit: Optional[int] = None, prefer_summaries: bool = True
+        self,
+        chat_id: Optional[str],
+        limit: Optional[int] = None,
+        prefer_summaries: bool = True,
     ) -> List[Dict[str, Any]]:
         """Retrieve recent messages from the knowledge graph.
 
@@ -174,6 +216,7 @@ class MessageService:
         - If summaries exist and prefer_summaries is True, only includes messages after the most recent summary
         - Includes the summary itself to provide context
         - This prevents loading all historical messages when they've been summarized
+        - Uses session fallback to handle orphaned messages
 
         Args:
             chat_id: Chat identifier to retrieve messages from
@@ -188,8 +231,13 @@ class MessageService:
             return []
 
         try:
-            # Get all messages from the graph
-            nodes = self.repository.get_chat_messages(chat_id=chat_id, limit=None)
+            # Get all messages from the graph (with session fallback enabled)
+            nodes = self.repository.get_chat_messages(
+                chat_id=chat_id, limit=None, use_session_fallback=True
+            )
+            logger.debug(
+                f"Retrieved {len(nodes)} total messages for chat {chat_id} (including session fallback)"
+            )
 
             if prefer_summaries:
                 # Find the most recent summary
@@ -232,13 +280,12 @@ class MessageService:
             logger.error(f"Failed to retrieve messages from graph: {e}", exc_info=True)
             return []
 
-    def format_for_summary(
-        self, chat_id: str, since_last_summary: bool = True
-    ) -> str:
+    def format_for_summary(self, chat_id: str, since_last_summary: bool = True) -> str:
         """Create a concise text dump of conversation for summarization.
 
         Only summarizes messages since the last summary to avoid re-summarizing
         already summarized content and to stay within token limits.
+        Uses session fallback to ensure all messages are included.
 
         Args:
             chat_id: Chat identifier
@@ -248,7 +295,13 @@ class MessageService:
             Formatted string with role: content pairs
         """
         try:
-            nodes = self.repository.get_chat_messages(chat_id=chat_id)
+            # Use session fallback to get all messages
+            nodes = self.repository.get_chat_messages(
+                chat_id=chat_id, use_session_fallback=True
+            )
+            logger.debug(
+                f"Retrieved {len(nodes)} messages for summary formatting (chat {chat_id})"
+            )
 
             if since_last_summary:
                 # Find the most recent summary to avoid re-summarizing old content
@@ -298,6 +351,7 @@ class MessageService:
 
         Retrieves messages starting from the most recent and working backward,
         stopping when the token limit would be exceeded.
+        Uses session fallback to ensure all messages are accessible.
 
         Args:
             chat_id: Chat identifier
@@ -307,9 +361,12 @@ class MessageService:
         Returns:
             List of messages in LLM format that fit within the token limit
         """
-        # Get recent messages (with summary preference if enabled)
+        # Get recent messages (with summary preference and session fallback enabled)
         messages = self.get_recent_messages(
             chat_id=chat_id, limit=None, prefer_summaries=prefer_summaries
+        )
+        logger.debug(
+            f"Retrieved {len(messages)} messages to fit within {max_tokens} token limit"
         )
 
         if not messages:
@@ -411,4 +468,3 @@ class MessageService:
 
         # Return last 400 lines to limit size
         return "\n".join(lines[-400:])
-

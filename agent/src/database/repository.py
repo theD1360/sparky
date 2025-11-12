@@ -441,7 +441,7 @@ class KnowledgeRepository:
             # Gemini embedding API has a limit of ~36,000 bytes
             # We'll use a conservative limit of 30,000 bytes to be safe
             MAX_EMBEDDING_BYTES = 30000
-            combined_text_bytes = combined_text.encode('utf-8')
+            combined_text_bytes = combined_text.encode("utf-8")
             if len(combined_text_bytes) > MAX_EMBEDDING_BYTES:
                 logger.warning(
                     f"Node {node.id} content too large ({len(combined_text_bytes)} bytes), "
@@ -450,7 +450,7 @@ class KnowledgeRepository:
                 # Truncate and decode, handling potential UTF-8 boundary issues
                 truncated_bytes = combined_text_bytes[:MAX_EMBEDDING_BYTES]
                 # Try to decode, removing invalid UTF-8 at the end if necessary
-                combined_text = truncated_bytes.decode('utf-8', errors='ignore')
+                combined_text = truncated_bytes.decode("utf-8", errors="ignore")
                 # Add ellipsis to indicate truncation
                 combined_text += "..."
 
@@ -1084,7 +1084,9 @@ class KnowledgeRepository:
 
                 if limit:
                     # If there's a limit and we're doing "both", split it between incoming/outgoing
-                    remaining_limit = limit - len(outgoing_results) if direction == "both" else limit
+                    remaining_limit = (
+                        limit - len(outgoing_results) if direction == "both" else limit
+                    )
                     if remaining_limit > 0:
                         incoming_query = incoming_query.limit(remaining_limit)
 
@@ -2610,34 +2612,33 @@ class KnowledgeRepository:
         chat_node_id = f"chat:{chat_id}"
         return self.get_node(chat_node_id)
 
-    def get_chat_messages(
-        self, chat_id: str, limit: Optional[int] = None, offset: int = 0
+    def get_session_messages(
+        self, session_id: str, limit: Optional[int] = None, offset: int = 0
     ) -> List[Node]:
-        """Get messages for a chat.
+        """Get all messages linked to a session.
 
         Args:
-            chat_id: Chat identifier
+            session_id: Session identifier
             limit: Maximum number of messages to return
             offset: Number of messages to skip
 
         Returns:
-            List of ChatMessage nodes
+            List of ChatMessage nodes ordered by creation time
         """
-        chat_node_id = f"chat:{chat_id}"
-
         with self.db_manager.get_session() as session:
-            # Check if chat exists
-            chat_node = session.query(Node).filter(Node.id == chat_node_id).first()
-            if not chat_node:
+            # Check if session exists
+            session_node = session.query(Node).filter(Node.id == session_id).first()
+            if not session_node:
+                logger.warning(f"Session {session_id} not found")
                 return []
 
-            # Get messages linked to the chat
-            # Chat -[:CONTAINS]-> ChatMessage
+            # Get messages linked to the session
+            # Session -[:CONTAINS]-> ChatMessage
             query = (
                 session.query(Node)
                 .join(Edge, Edge.target_id == Node.id)
                 .filter(
-                    Edge.source_id == chat_node_id,
+                    Edge.source_id == session_id,
                     Edge.edge_type == "CONTAINS",
                     Node.node_type == "ChatMessage",
                 )
@@ -2654,7 +2655,149 @@ class KnowledgeRepository:
             for msg in messages:
                 session.expunge(msg)
 
+            logger.debug(
+                f"Retrieved {len(messages)} messages from session {session_id}"
+            )
             return messages
+
+    def get_chat_messages(
+        self,
+        chat_id: str,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        use_session_fallback: bool = True,
+    ) -> List[Node]:
+        """Get messages for a chat with optional fallback to session messages.
+
+        This method implements a fallback strategy to handle orphaned messages:
+        1. First, try to get messages directly linked to the chat node
+        2. If no messages found and use_session_fallback=True, get messages from the session
+        3. Merge and deduplicate results, maintaining chronological order
+
+        Args:
+            chat_id: Chat identifier
+            limit: Maximum number of messages to return
+            offset: Number of messages to skip
+            use_session_fallback: If True, fallback to session-linked messages when needed
+
+        Returns:
+            List of ChatMessage nodes ordered by creation time
+        """
+        chat_node_id = f"chat:{chat_id}"
+
+        with self.db_manager.get_session() as session:
+            # Check if chat exists
+            chat_node = session.query(Node).filter(Node.id == chat_node_id).first()
+            if not chat_node:
+                logger.warning(f"Chat {chat_id} not found")
+                return []
+
+            # Get messages directly linked to the chat
+            # Chat -[:CONTAINS]-> ChatMessage
+            chat_query = (
+                session.query(Node)
+                .join(Edge, Edge.target_id == Node.id)
+                .filter(
+                    Edge.source_id == chat_node_id,
+                    Edge.edge_type == "CONTAINS",
+                    Node.node_type == "ChatMessage",
+                )
+            )
+
+            chat_messages = chat_query.all()
+            logger.debug(
+                f"Found {len(chat_messages)} messages directly linked to chat {chat_id}"
+            )
+
+            # If we have messages or fallback is disabled, use what we found
+            if chat_messages or not use_session_fallback:
+                # Apply ordering, offset, and limit
+                chat_messages.sort(
+                    key=lambda m: m.created_at
+                    or datetime.min.replace(tzinfo=timezone.utc)
+                )
+
+                if offset:
+                    chat_messages = chat_messages[offset:]
+                if limit:
+                    chat_messages = chat_messages[:limit]
+
+                # Expunge to detach from session
+                for msg in chat_messages:
+                    session.expunge(msg)
+
+                return chat_messages
+
+            # Fallback: Get session ID from chat properties and retrieve session messages
+            session_id = (
+                chat_node.properties.get("session_id") if chat_node.properties else None
+            )
+            if not session_id:
+                # Try to find session through edges: Chat -[:BELONGS_TO_SESSION]-> Session
+                session_edge = (
+                    session.query(Edge)
+                    .filter(
+                        Edge.source_id == chat_node_id,
+                        Edge.edge_type == "BELONGS_TO_SESSION",
+                    )
+                    .first()
+                )
+                if session_edge:
+                    session_id = session_edge.target_id
+                    logger.info(
+                        f"Found session {session_id} for chat {chat_id} via edge traversal"
+                    )
+
+            if not session_id:
+                logger.warning(
+                    f"No session found for chat {chat_id}, cannot use fallback"
+                )
+                return []
+
+            logger.info(
+                f"No messages found directly on chat {chat_id}, falling back to session {session_id}"
+            )
+
+            # Get all messages from the session
+            session_messages_query = (
+                session.query(Node)
+                .join(Edge, Edge.target_id == Node.id)
+                .filter(
+                    Edge.source_id == session_id,
+                    Edge.edge_type == "CONTAINS",
+                    Node.node_type == "ChatMessage",
+                )
+            )
+
+            session_messages = session_messages_query.all()
+            logger.info(
+                f"Found {len(session_messages)} messages in session {session_id}"
+            )
+
+            # Deduplicate by node ID (shouldn't be necessary but ensures safety)
+            seen_ids = set()
+            unique_messages = []
+            for msg in session_messages:
+                if msg.id not in seen_ids:
+                    seen_ids.add(msg.id)
+                    unique_messages.append(msg)
+
+            # Sort by creation time
+            unique_messages.sort(
+                key=lambda m: m.created_at or datetime.min.replace(tzinfo=timezone.utc)
+            )
+
+            # Apply offset and limit
+            if offset:
+                unique_messages = unique_messages[offset:]
+            if limit:
+                unique_messages = unique_messages[:limit]
+
+            # Expunge to detach from session
+            for msg in unique_messages:
+                session.expunge(msg)
+
+            return unique_messages
 
     def update_chat_name(self, chat_id: str, new_name: str) -> Optional[Node]:
         """Update the name of a chat.
@@ -2747,7 +2890,7 @@ class KnowledgeRepository:
             db_node.properties["archived"] = True
             db_node.properties["archived_at"] = datetime.now(timezone.utc).isoformat()
             db_node.updated_at = datetime.now(timezone.utc)
-            
+
             # Mark properties as modified for SQLAlchemy to detect changes
             flag_modified(db_node, "properties")
 
@@ -2788,7 +2931,7 @@ class KnowledgeRepository:
             db_node.properties.pop("archived", None)
             db_node.properties.pop("archived_at", None)
             db_node.updated_at = datetime.now(timezone.utc)
-            
+
             # Mark properties as modified for SQLAlchemy to detect changes
             flag_modified(db_node, "properties")
 
