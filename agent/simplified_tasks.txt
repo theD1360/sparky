@@ -1,0 +1,2 @@
+smart_maintenance: every(30 minutes)
+reflection: every(6 hour)
