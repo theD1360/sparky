@@ -213,6 +213,27 @@ async def domain_investigate(domain: str) -> dict:
     Perform comprehensive domain/network reconnaissance for a given domain.
     Returns WHOIS info, DNS records, enumerated subdomains, IP info, and web stack.
     """
+    try:
+        ip_address = socket.gethostbyname(domain)
+    except socket.gaierror as e:
+        print(f"Could not resolve domain {domain} to an IP address: {e}")
+        ip_address = None
+    except Exception as e:
+        print(f"An error occurred during IP resolution: {type(e).__name__}, {e}")
+        ip_address = None
+
+    if ip_address:
+        try:
+            criminal_ip_data = await criminal_ip_lookup(ip_address)
+            if criminal_ip_data and criminal_ip_data.get("status") == "success":
+                score = criminal_ip_data["result"].get("score")
+                tags = criminal_ip_data["result"].get("tags")
+                print(f"Criminal IP Lookup for {ip_address}: Score={score}, Tags={tags}")
+            else:
+                print(f"Criminal IP Lookup failed for {ip_address}: {criminal_ip_data.get('message') if criminal_ip_data else 'Unknown error'}")
+        except Exception as e:
+            print(f"An error occurred during criminal IP lookup: {type(e).__name__}, {e}")
+
     # We call the underlying functions directly, not as tools
     tasks = {
         "whois": whois_info(domain),

@@ -421,7 +421,7 @@ def _load_graph():
     if not db_url:
         # Also try BADROBOT_DB_URL for backward compatibility
         db_url = os.getenv("BADROBOT_DB_URL")
-    
+
     if not db_url:
         raise RuntimeError(
             "SPARKY_DB_URL or BADROBOT_DB_URL environment variable is required for database connection"
@@ -460,7 +460,7 @@ def _load_graph():
 
 def _ensure_graph_initialized():
     """Ensure graph is initialized, load if needed.
-    
+
     This is called by graph-powered tools to lazily initialize the graph
     on first use rather than at module import time.
     """
@@ -1966,7 +1966,7 @@ def main():
     except Exception as e:
         logger.warning(f"Failed to initialize knowledge graph: {e}")
         logger.warning("Graph-powered tools will not be available")
-    
+
     mcp.run()
 
 
