@@ -73,7 +73,7 @@ class FileService:
         """
         try:
             # Generate unique filename to prevent collisions
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
             safe_filename = Path(filename).name  # Remove any path components
             unique_filename = f"{timestamp}_{safe_filename}"
             file_path = os.path.join(self.upload_directory, unique_filename)
@@ -91,7 +91,7 @@ class FileService:
                 "unique_filename": unique_filename,
                 "mime_type": mime_type,
                 "file_size": file_size,
-                "upload_timestamp": datetime.utcnow().isoformat(),
+                "upload_timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "file_path": file_path,
             }
 
