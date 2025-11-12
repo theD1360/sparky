@@ -1,6 +1,6 @@
 # Documentation
 
-Sparky is an AI assistant designed for self-improvement and collaborative problem-solving. It leverages a knowledge graph, memory management, and various tools to assist users with a wide range of tasks. Sparky is built with the goal of continuous learning and adaptation, striving to become a more helpful and insightful partner over time.
+Sparky is a powerful AI assistant.
 
 
 ## Getting Started
@@ -46,3 +46,5 @@ Here are a few examples of how to interact with Sparky:
 
 *   [Tool Usage](docs/tool_usage.md): Information on the tools Sparky can use and how they are employed to accomplish tasks.
 *   [Knowledge Graph](docs/knowledge_graph.md): Description of Sparky's knowledge graph and how it is used for reasoning and information retrieval.
+
+This is a test append.
