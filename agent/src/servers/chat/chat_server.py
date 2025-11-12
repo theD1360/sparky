@@ -1513,9 +1513,21 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
 
 # --- Static Files (Web UI) ---
 # Only mount static files if the build directory exists
-BUILD_DIR = "agent/src/client/web_ui"
-if os.path.exists(BUILD_DIR):
-    logger.info("Frontend build directory found, mounting static files")
+# Try multiple paths to support both dev and Docker environments
+BUILD_DIR_CANDIDATES = [
+    "/app/agent/src/client/web_ui",  # Docker absolute path
+    "src/client/web_ui",  # Relative from /app/agent working dir
+    "agent/src/client/web_ui",  # Relative from /app
+]
+
+BUILD_DIR = None
+for candidate in BUILD_DIR_CANDIDATES:
+    if os.path.exists(candidate):
+        BUILD_DIR = candidate
+        break
+
+if BUILD_DIR:
+    logger.info(f"Frontend build directory found at {BUILD_DIR}, mounting static files")
 
     # Mount static files for assets (CSS, JS)
     static_dir = os.path.join(BUILD_DIR, "static")
@@ -1543,12 +1555,26 @@ if os.path.exists(BUILD_DIR):
         """Serve logo."""
         return FileResponse(os.path.join(BUILD_DIR, "robot-logo.svg"))
 
+    # Explicit root route for the main page
+    @app.get("/")
+    async def serve_root():
+        """Serve the main index.html."""
+        index_path = os.path.join(BUILD_DIR, "index.html")
+        if not os.path.exists(index_path):
+            logger.error(f"index.html not found at {index_path}")
+            return {"error": "UI not available", "expected_path": index_path}
+        return FileResponse(index_path)
+
     # Catch-all route for SPA - must be LAST
     # This handles all paths not matched above (like /chat/:chatId)
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         """Serve index.html for all unmatched routes (SPA routing)."""
-        return FileResponse(os.path.join(BUILD_DIR, "index.html"))
+        index_path = os.path.join(BUILD_DIR, "index.html")
+        if not os.path.exists(index_path):
+            logger.error(f"index.html not found at {index_path}")
+            return {"error": "UI not available", "expected_path": index_path}
+        return FileResponse(index_path)
 
 else:
     logger.warning(
