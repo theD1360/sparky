@@ -108,6 +108,7 @@ mcp = FastMCP("code-tools")
 # Global state
 _db_manager: Optional[DatabaseManager] = None
 _kb_repository: Optional[KnowledgeRepository] = None
+_graph_initialized: bool = False
 
 # File protection whitelist - tracks files that have been read and are safe to edit
 _file_read_whitelist: dict[str, dict[str, str]] = {}
@@ -409,13 +410,21 @@ class SandboxError(Exception):
 
 def _load_graph():
     """Load or initialize database using KnowledgeRepository."""
-    global _kb_repository, _db_manager  # pylint: disable=global-statement
+    global _kb_repository, _db_manager, _graph_initialized  # pylint: disable=global-statement
+
+    # Skip if already initialized
+    if _graph_initialized:
+        return
 
     # Get database URL from environment (required for PostgreSQL)
     db_url = os.getenv("SPARKY_DB_URL")
     if not db_url:
+        # Also try BADROBOT_DB_URL for backward compatibility
+        db_url = os.getenv("BADROBOT_DB_URL")
+    
+    if not db_url:
         raise RuntimeError(
-            "SPARKY_DB_URL environment variable is required for database connection"
+            "SPARKY_DB_URL or BADROBOT_DB_URL environment variable is required for database connection"
         )
 
     # Mask password in log for security
@@ -446,6 +455,17 @@ def _load_graph():
 
     # Initialize query engine with repository
     logger.debug("Query engine initialized successfully")
+    _graph_initialized = True
+
+
+def _ensure_graph_initialized():
+    """Ensure graph is initialized, load if needed.
+    
+    This is called by graph-powered tools to lazily initialize the graph
+    on first use rather than at module import time.
+    """
+    if not _graph_initialized:
+        _load_graph()
 
 
 # -----------------------------
@@ -964,11 +984,12 @@ async def read_file(path: str, index_to_graph: bool = True) -> dict:
         _mark_file_as_read(path, content)
 
         # Index to knowledge graph if enabled
-        if index_to_graph and _kb_repository:
+        if index_to_graph:
             try:
+                _ensure_graph_initialized()
                 await _index_file_to_graph(path, content)
             except Exception as e:
-                logger.warning(f"Failed to index file {path} to graph: {e}")
+                logger.warning(f"Graph indexing skipped for {path}: {e}")
 
         return MCPResponse.success(result=content).to_dict()
     except FileNotFoundError:
@@ -1816,9 +1837,13 @@ async def get_file_context(path: str) -> dict:
         ```
     """
     try:
-        if not _kb_repository:
+        # Ensure graph is initialized
+        try:
+            _ensure_graph_initialized()
+        except Exception as e:
             return MCPResponse.error(
-                "Knowledge graph not initialized. Graph features require database connection."
+                f"Knowledge graph initialization failed: {str(e)}\n"
+                "Ensure SPARKY_DB_URL or BADROBOT_DB_URL environment variable is set."
             ).to_dict()
 
         context = await _get_file_context(path)
@@ -1873,9 +1898,13 @@ async def search_codebase(query: str, file_type: str = None, limit: int = 10) ->
         ```
     """
     try:
-        if not _kb_repository:
+        # Ensure graph is initialized
+        try:
+            _ensure_graph_initialized()
+        except Exception as e:
             return MCPResponse.error(
-                "Knowledge graph not initialized. Graph features require database connection."
+                f"Knowledge graph initialization failed: {str(e)}\n"
+                "Ensure SPARKY_DB_URL or BADROBOT_DB_URL environment variable is set."
             ).to_dict()
 
         # Search using knowledge repository's semantic search
@@ -1930,6 +1959,14 @@ async def search_codebase(query: str, file_type: str = None, limit: int = 10) ->
 
 def main():
     """Run the MCP server."""
+    # Initialize knowledge graph on startup
+    try:
+        _load_graph()
+        logger.info("Knowledge graph initialized successfully")
+    except Exception as e:
+        logger.warning(f"Failed to initialize knowledge graph: {e}")
+        logger.warning("Graph-powered tools will not be available")
+    
     mcp.run()
 
 
