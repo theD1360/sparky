@@ -20,9 +20,6 @@ This guide explains how to run Sparky using Docker Compose for development.
    # Optional: Model configuration
    AGENT_MODEL=gemini-2.0-flash
 
-   # Optional: History management
-   SPARKY_MAX_HISTORY_TURNS=25
-
    # Optional: Knowledge graph settings
    SPARKY_SUMMARY_EVERY=5
    SPARKY_REFLECT_EVERY=10

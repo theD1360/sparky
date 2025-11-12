@@ -85,9 +85,9 @@ class AgentOrchestrator:
         self.provider = provider
         self.toolchain = toolchain
 
-        # Deprecated parameters - kept for backward compatibility
-
-        self.max_history_turns = int(os.getenv("SPARKY_MAX_HISTORY_TURNS", "30"))
+        # Fallback message count limit (only used when token limit is disabled)
+        # Token budget is the primary mechanism for limiting context
+        self.fallback_message_limit = 200  # Reasonable default for count-based fallback
 
         # Token-based summarization configuration
         summary_threshold_env = os.getenv("SPARKY_SUMMARY_TOKEN_THRESHOLD")
@@ -428,7 +428,7 @@ class AgentOrchestrator:
         - This prevents loading all historical messages when they've been summarized
 
         Args:
-            limit: Maximum number of messages to retrieve. If None, uses max_history_turns * 2.
+            limit: Maximum number of messages to retrieve. If None, uses fallback_message_limit.
             use_token_limit: If True, uses token budget to limit messages instead of count.
 
         Returns:
@@ -447,7 +447,7 @@ class AgentOrchestrator:
 
             # Otherwise use count-based limit
             if limit is None:
-                limit = self.max_history_turns * 2
+                limit = self.fallback_message_limit
 
             return self.message_service.get_recent_messages(
                 chat_id=self._chat_id, limit=limit, prefer_summaries=True
@@ -464,9 +464,9 @@ class AgentOrchestrator:
             logger.debug("No chat_id provided - starting fresh chat with no history")
             return []
 
-        # Calculate limit if not provided (turns * 2 for user + model messages)
+        # Calculate limit if not provided
         if limit is None:
-            limit = self.max_history_turns * 2
+            limit = self.fallback_message_limit
 
         try:
             # Get all messages from the graph
@@ -960,7 +960,9 @@ class AgentOrchestrator:
                 session_id
             )
         elif self.knowledge:
-            session_context = await self.identity_service.get_session_context(session_id)
+            session_context = await self.identity_service.get_session_context(
+                session_id
+            )
         else:
             session_context = None
 

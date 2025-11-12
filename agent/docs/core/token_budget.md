@@ -272,8 +272,8 @@ Monitor these logs to understand your token usage patterns and adjust the budget
 
 If you see frequent truncation, consider:
 - Increasing the `SPARKY_TOKEN_BUDGET_PERCENT` value
-- Reducing `SPARKY_MAX_HISTORY_TURNS` if using turn-based limiting
 - Enabling more aggressive summarization
+- Checking if your prompts are too long
 
 ### Context seems insufficient
 

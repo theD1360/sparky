@@ -81,7 +81,7 @@ class TestSummaryPreference:
         config = ProviderConfig(model_name="gemini-1.5-pro")
         provider = GeminiProvider(config)
         orchestrator = AgentOrchestrator(provider=provider)
-        orchestrator.max_history_turns = 2  # Limit to 2 turns = 4 messages
+        orchestrator.fallback_message_limit = 4  # Limit to 4 messages for testing
 
         # Mock knowledge and repository
         orchestrator.knowledge = Mock()
