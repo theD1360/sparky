@@ -39,12 +39,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from mcp.server.fastmcp import FastMCP
-
-from sparky.task_queue import TaskQueue
 from database.database import DatabaseManager, get_database_manager
 from database.repository import KnowledgeRepository
+from mcp.server.fastmcp import FastMCP
 from models import MCPResponse
+from sparky.task_queue import TaskQueue
 
 # SQLAlchemyError removed as it's no longer used in fastMCP version
 
@@ -103,7 +102,7 @@ def _load_graph():
 
     if node_count == 0:
         logger.warning(
-            "Empty database detected. Run 'badrobot db migrate' to initialize schema and seed bot identity data."
+            "Empty database detected. Run 'sparky db migrate' to initialize schema and seed bot identity data."
         )
     else:
         logger.debug(

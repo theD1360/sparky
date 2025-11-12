@@ -20,6 +20,7 @@ RUN curl -sSL https://install.python-poetry.org | python3 - && \
 
 # Configure Poetry to not create virtual environments
 RUN poetry config virtualenvs.create false
+RUN pip install pre-commit commitizen
 
 # Copy the entire project
 COPY . .

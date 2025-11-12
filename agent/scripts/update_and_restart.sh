@@ -3,8 +3,8 @@
 
 set -e
 
-PID_FILE="/tmp/badrobot.pid"
-LOG_FILE="logs/badrobot.log"
+PID_FILE="/tmp/sparky.pid"
+LOG_FILE="logs/sparky.log"
 
 # --- Cleanup function to be called on script exit ---
 cleanup() {
@@ -55,7 +55,7 @@ echo "Starting the new application instance..."
 # The application should be responsible for creating its own PID file on startup.
 # We pass the --daemon flag to indicate it should run in the background.
 # The PID file location is passed as an argument.
-nohup poetry run badrobot chat --daemon --pidfile "$PID_FILE" > "$LOG_FILE" 2>&1 &
+nohup poetry run sparky chat --daemon --pidfile "$PID_FILE" > "$LOG_FILE" 2>&1 &
 
 NEW_PID=$!
 echo "New application instance started with PID $NEW_PID."

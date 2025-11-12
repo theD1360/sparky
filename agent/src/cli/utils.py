@@ -4,11 +4,10 @@ import os
 from typing import Optional
 
 import typer
-
 from badmcp.config import MCPConfig
+from cli.common import console, logger
 from sparky import AgentOrchestrator
 from sparky.providers import GeminiProvider, ProviderConfig
-from cli.common import console, logger
 
 app = typer.Typer(name="utils", help="Utility commands")
 
@@ -98,7 +97,7 @@ def mcp_config_command(
     - create: Create a default badmcp.json config file
     - show: Show current config file path and contents
 
-    Note: Use 'badrobot client start' to automatically use all configured servers.
+    Note: Use 'sparky client start' to automatically use all configured servers.
     """
 
     if action == "create":
@@ -136,7 +135,7 @@ def mcp_config_command(
         if not servers:
             logger.warning("No servers configured")
             logger.info(
-                "\nAdd servers to badmcp.json, then run 'badrobot client start'\n"
+                "\nAdd servers to badmcp.json, then run 'sparky client start'\n"
             )
             return
 

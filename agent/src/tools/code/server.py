@@ -419,12 +419,12 @@ def _load_graph():
     # Get database URL from environment (required for PostgreSQL)
     db_url = os.getenv("SPARKY_DB_URL")
     if not db_url:
-        # Also try BADROBOT_DB_URL for backward compatibility
-        db_url = os.getenv("BADROBOT_DB_URL")
+        # Also try SPARKY_DB_URL for backward compatibility
+        db_url = os.getenv("SPARKY_DB_URL")
 
     if not db_url:
         raise RuntimeError(
-            "SPARKY_DB_URL or BADROBOT_DB_URL environment variable is required for database connection"
+            "SPARKY_DB_URL or SPARKY_DB_URL environment variable is required for database connection"
         )
 
     # Mask password in log for security
@@ -444,7 +444,7 @@ def _load_graph():
 
     if node_count == 0:
         logger.warning(
-            "Empty database detected. Run 'badrobot db migrate' to initialize schema and seed bot identity data."
+            "Empty database detected. Run 'sparky db migrate' to initialize schema and seed bot identity data."
         )
     else:
         logger.debug(
@@ -1843,7 +1843,7 @@ async def get_file_context(path: str) -> dict:
         except Exception as e:
             return MCPResponse.error(
                 f"Knowledge graph initialization failed: {str(e)}\n"
-                "Ensure SPARKY_DB_URL or BADROBOT_DB_URL environment variable is set."
+                "Ensure SPARKY_DB_URL or SPARKY_DB_URL environment variable is set."
             ).to_dict()
 
         context = await _get_file_context(path)
@@ -1904,7 +1904,7 @@ async def search_codebase(query: str, file_type: str = None, limit: int = 10) ->
         except Exception as e:
             return MCPResponse.error(
                 f"Knowledge graph initialization failed: {str(e)}\n"
-                "Ensure SPARKY_DB_URL or BADROBOT_DB_URL environment variable is set."
+                "Ensure SPARKY_DB_URL or SPARKY_DB_URL environment variable is set."
             ).to_dict()
 
         # Search using knowledge repository's semantic search

@@ -1466,7 +1466,7 @@ function App() {
                   </ListItemIcon>
                   <ListItemText 
                     primary="User Profile" 
-                    secondary="badrobot.user"
+                    secondary="sparky.user"
                     primaryTypographyProps={{ variant: 'body2' }}
                     secondaryTypographyProps={{ variant: 'caption' }}
                   />
