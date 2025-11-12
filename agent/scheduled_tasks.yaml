@@ -19,7 +19,6 @@ scheduled_tasks:
     metadata:
       source: smart_maintenance
     enabled: true
-#   # Self-Correction/Reflection Task
   - name: reflection
     interval: every(6 hour)
     prompt: file(prompts/reflection_prompt.md)
@@ -27,52 +26,46 @@ scheduled_tasks:
       source: self_reflection
     enabled: true
 
-  # # Curiosity task - explore knowledge gaps and learn new things
-  #  - name: curiosity
-  #    interval: every(1 hour) # cycles
-  #    prompt: file(prompts/curiosity_prompt.md)
-  #    metadata:
-  #      scheduled_task_name: curiosity
-  #      source: auto_curiosity
-  #    enabled: false
+  - name: curiosity
+    interval: every(1 hour) # cycles
+    prompt: file(prompts/curiosity_prompt.md)
+    metadata:
+      scheduled_task_name: curiosity
+      source: auto_curiosity
+    enabled: true
     
-  # # Memory curation task - summarize and integrate knowledge
-  # - name: curation
-  #   interval: every(1 hour) # cycles
-  #   prompt: file(prompts/curation_prompt.md)
-  #   metadata:
-  #     source: auto_curation
-  #   enabled: false
+  - name: curation
+    interval: every(1 hour) # cycles
+    prompt: file(prompts/curation_prompt.md)
+    metadata:
+      source: auto_curation
+    enabled: true
 
 
-  # # Introspection task - introspect the system and the environment
-  # - name: gardener
-  #   interval: every(1 hour) # cycles
-  #   prompt: file(prompts/gardener_prompt.md)
-  #   metadata:
-  #     source: auto_gardener
-  #   enabled: false
+  - name: gardener
+    interval: every(1 hour) # cycles
+    prompt: file(prompts/gardener_prompt.md)
+    metadata:
+      source: auto_gardener
+    enabled: true
 
-  # # Alignment task - ensure system actions remain aligned with goals and values
-  # - name: alignment
-  #   interval: every(1 day)
-  #   prompt: file(prompts/alignment_prompt.md)
-  #   metadata:
-  #     source: auto_alignment
-  #   enabled: false
+  - name: alignment
+    interval: every(1 day)
+    prompt: file(prompts/alignment_prompt.md)
+    metadata:
+      source: auto_alignment
+    enabled: true
 
-  # # Metacognition task - reflect on reasoning and task selection processes
-  # - name: metacognition
-  #   interval: every(1 day)
-  #   prompt: file(prompts/metacognition_prompt.md)
-  #   metadata:
-  #     source: auto_metacognition
-  #   enabled: false
+  - name: metacognition
+    interval: every(1 day)
+    prompt: file(prompts/metacognition_prompt.md)
+    metadata:
+      source: auto_metacognition
+    enabled: true
 
-  # # Workflow discovery task - analyze and refine agent workflows for efficiency and effectiveness
-  # - name: workflow_discovery
-  #   interval: every(1 day)
-  #   prompt: file(prompts/workflow_discovery_prompt.md)
-  #   metadata:
-  #     source: auto_workflow_discovery
-  #   enabled: false
+  - name: workflow_discovery
+    interval: every(1 day)
+    prompt: file(prompts/workflow_discovery_prompt.md)
+    metadata:
+      source: auto_workflow_discovery
+    enabled: true
