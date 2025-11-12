@@ -8,7 +8,7 @@ Tool Categories:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1. CODE EXECUTION
-   - run_code: Execute Python with optional sandboxing
+   - execute: Execute Python with optional sandboxing
    - Sandboxed mode: Restricted builtins, no imports, AST validation
    - Unsandboxed mode: Full Python capabilities (use with caution)
 
@@ -41,7 +41,7 @@ Tool Categories:
    - git_add, git_commit: Change staging and commits
 
 7. DEVELOPMENT TOOLS
-   - run_linter: Execute linters (currently ruff for Python)
+   - lint: Execute linters (currently ruff for Python)
 
 8. GRAPH-POWERED TOOLS ⚡ NEW!
    - get_file_context: Get intelligent context about a file (imports, symbols, related files)
@@ -68,6 +68,12 @@ FUTURE ENHANCEMENTS
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import ast
 import asyncio
@@ -1776,6 +1782,37 @@ def resource_read_whitelist() -> str:
     )
 
 
+@mcp.resource("file://{path}")
+def resource_file(path: str) -> str:
+    """Provides the content of a file."""
+    path_obj = Path(path).absolute()
+    if not path_obj.exists():
+        return MCPResponse.error(f"Path not found: {path}").to_dict()
+    if path_obj.is_dir():
+        return MCPResponse.error(f"Path is a directory: {path}").to_dict()
+
+    return path_obj.read_text()
+
+
+@mcp.resource("directory://{path}")
+def resource_directory(path: str) -> str:
+    """Provides the content of a directory."""
+    path_obj = Path(path).absolute()
+    if not path_obj.exists():
+        return MCPResponse.error(f"Path not found: {path}").to_dict()
+    if not path_obj.is_dir():
+        return MCPResponse.error(f"Path is not a directory: {path}").to_dict()
+    try:
+        return os.listdir(path_obj)
+    except Exception as e:
+        return MCPResponse.error(f"Error listing directory: {str(e)}").to_dict()
+
+
+# ============================================================================
+# GRAPH-POWERED TOOLS - PHASE 1
+# ============================================================================
+
+
 @mcp.tool()
 async def lint(path: str) -> dict:
     """Run a linter on a file to find errors and style issues."""
@@ -1796,11 +1833,6 @@ async def lint(path: str) -> dict:
             ).to_dict()
     except Exception as e:
         return MCPResponse.error(message=f"Error running linter: {str(e)}").to_dict()
-
-
-# ============================================================================
-# GRAPH-POWERED TOOLS - PHASE 1
-# ============================================================================
 
 
 @mcp.tool()

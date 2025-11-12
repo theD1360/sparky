@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 import os
 import shlex
 import subprocess
@@ -7,7 +13,6 @@ import time
 from typing import Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
-
 from models import MCPResponse
 
 mcp = FastMCP("badmcp-shell-server")
@@ -94,7 +99,9 @@ def _run_process(
         if e.errno == 2:  # errno.ENOENT: No such file or directory
             error_message += ". Check the file path."
         stderr_b = error_message.encode("utf-8")
-        print(f"run_shell error: {error_message}", file=os.sys.stderr)  # Simple logging to stderr
+        print(
+            f"shell command error: {error_message}", file=os.sys.stderr
+        )  # Simple logging to stderr
     except Exception as e:
         exit_code = -1
         stdout_b = b""
@@ -106,7 +113,7 @@ def _run_process(
 
 
 @mcp.tool()
-async def run_shell(
+async def shell(
     argv: Optional[List[str]] = None,
     command: Optional[str] = None,
     shell: bool = False,

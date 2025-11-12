@@ -1,39 +1,11 @@
 {
   "mcpServers": {
-    "calculator": {
-      "command": "python",
-      "args": [
-        "src/tools/calculator/server.py"
-      ],
-      "description": "Calculator tools for mathematical operations"
-    },
-    "strings": {
-      "command": "python",
-      "args": [
-        "src/tools/strings/server.py"
-      ],
-      "description": "String manipulation tools"
-    },
     "network": {
       "command": "python",
       "args": [
         "src/tools/network/server.py"
       ],
-      "description": "Network tools for HTTP requests and web operations"
-    },
-    "advanced_networking": {
-      "command": "python",
-      "args": [
-        "src/tools/advanced_networking/server.py"
-      ],
-      "description": "Advanced networking tools for domain/network reconnaissance"
-    },
-    "datetime": {
-      "command": "python",
-      "args": [
-        "src/tools/datetime/server.py"
-      ],
-      "description": "Date and time utilities"
+      "description": "Comprehensive network tools: HTTP requests, WHOIS, DNS, subdomain enumeration, IP info, web stack detection"
     },
     "code": {
       "command": "python",
@@ -42,7 +14,7 @@
       ],
       "description": "Code execution and analysis tools",
       "env": {
-        "SPARKY_DB_URL": "postgresql://metamcp_user:m3t4mcp@postgres:5432/sparky_db"
+        "SPARKY_DB_URL": "${SPARKY_DB_URL}"
       }
     },
     "shell": {
@@ -59,12 +31,12 @@
       ],
       "description": "Self-update functionality"
     },
-    "miscellaneous": {
+    "utilities": {
       "command": "python",
       "args": [
         "src/tools/miscellaneous/server.py"
       ],
-      "description": "Miscellaneous tools"
+      "description": "Comprehensive utility tools: math operations, string manipulation, base64 encoding, JSON operations, sandboxed code execution"
     },
     "criminal_ip": {
       "command": "python",
@@ -78,14 +50,10 @@
       "args": [
         "src/tools/knowledge_graph/server.py"
       ],
-      "description": "Knowledge graph and memory management (unified SQLite storage)"
-    },
-    "encryption": {
-      "command": "python",
-      "args": [
-        "src/tools/encryption/server.py"
-      ],
-      "description": "Encryption and encoding tools (base64, etc.)"
+      "description": "Knowledge graph and memory management (unified SQLite storage)",
+      "env": {
+        "SPARKY_DB_URL": "${SPARKY_DB_URL}"
+      }
     },
     "introspection": {
       "command": "python",

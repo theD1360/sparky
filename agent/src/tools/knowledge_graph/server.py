@@ -32,11 +32,16 @@ RESOURCES (direct data access):
 - knowledge://plans - List all plan files from plans/ directory
 """
 
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 import json
 import logging
 import os
 from datetime import datetime
-from pathlib import Path
 from typing import List, Optional
 
 from database.database import DatabaseManager, get_database_manager
@@ -2388,7 +2393,7 @@ def execute_plan(plan_name: str) -> str:
     return f"""Execute the plan '{plan_name}' from the plans/ directory.
 
 Steps:
-1. Read the plan file from plans/ directory
+1. Read the plan file from @directory://plans
 2. Review the problem statement and approach
 3. Verify all required resources and dependencies are available
 4. Execute each step in the plan sequentially
@@ -2665,118 +2670,7 @@ def resource_plans() -> str:
 
 
 # ============================================================================
-# SECTION 7: Date and Time Tools
-# ============================================================================
-
-
-@mcp.tool()
-def get_current_datetime() -> dict:
-    """Get the current date and time."""
-    return MCPResponse.success(result=datetime.now().isoformat()).to_dict()
-
-
-@mcp.tool()
-def format_datetime(datetime_str: str, format_string: str) -> dict:
-    """Format a datetime string using a format string."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, format_string).isoformat()
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_difference(datetime1: str, datetime2: str, unit: str = "seconds") -> dict:
-    """Calculate the difference between two datetimes in a given unit."""
-    return MCPResponse.success(
-        result=abs(datetime1 - datetime2).total_seconds()
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_add(datetime_str: str, timedelta: str) -> dict:
-    """Add a timedelta to a datetime string."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, timedelta).isoformat()
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_subtract(datetime_str: str, timedelta: str) -> dict:
-    """Subtract a timedelta from a datetime string."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, timedelta).isoformat()
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_convert(datetime_str: str, from_timezone: str, to_timezone: str) -> dict:
-    """Convert a datetime string from one timezone to another."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, from_timezone)
-        .astimezone(to_timezone)
-        .isoformat()
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_is_valid(datetime_str: str) -> dict:
-    """Check if a datetime string is valid."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S").isoformat()
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_is_leap_year(year: int) -> dict:
-    """Check if a year is a leap year."""
-    return MCPResponse.success(result=datetime.datetime(year, 1, 1).isleap()).to_dict()
-
-
-@mcp.tool()
-def datetime_is_weekend(datetime_str: str) -> dict:
-    """Check if a datetime string is a weekend."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S").weekday() in [5, 6]
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_is_business_day(datetime_str: str) -> dict:
-    """Check if a datetime string is a business day."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S").weekday()
-        not in [5, 6]
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_is_holiday(datetime_str: str) -> dict:
-    """Check if a datetime string is a holiday."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S").weekday()
-        in [0, 1, 2, 3, 4]
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_is_working_day(datetime_str: str) -> dict:
-    """Check if a datetime string is a working day."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S").weekday()
-        not in [5, 6]
-    ).to_dict()
-
-
-@mcp.tool()
-def datetime_is_weekday(datetime_str: str) -> dict:
-    """Check if a datetime string is a weekday."""
-    return MCPResponse.success(
-        result=datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S").weekday()
-        not in [5, 6]
-    ).to_dict()
-
-
-# ============================================================================
-# SECTION 8: SERVER ENTRY POINT
+# SECTION 7: SERVER ENTRY POINT
 # ============================================================================
 
 
