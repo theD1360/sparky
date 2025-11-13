@@ -17,28 +17,34 @@ class PersonalityPayload(BaseModel):
 class ChatMessagePayload(BaseModel):
     text: str = Field(default="<Empty message>", description="User chat message text")
     file_id: Optional[str] = Field(None, description="Optional file node ID for attachments")
+    task_id: Optional[str] = Field(None, description="Optional task ID if message is from task execution")
 
 
 class StatusPayload(BaseModel):
     message: str
+    task_id: Optional[str] = Field(None, description="Optional task ID if status is from task execution")
 
 
 class ErrorPayload(BaseModel):
     message: str
+    task_id: Optional[str] = Field(None, description="Optional task ID if error is from task execution")
 
 
 class ToolUsePayload(BaseModel):
     name: str
     args: dict
+    task_id: Optional[str] = Field(None, description="Optional task ID if tool use is from task execution")
 
 
 class ToolResultPayload(BaseModel):
     name: str
     result: str
+    task_id: Optional[str] = Field(None, description="Optional task ID if tool result is from task execution")
 
 
 class ThoughtPayload(BaseModel):
     text: str = Field(min_length=1, description="AI thinking/reasoning text")
+    task_id: Optional[str] = Field(None, description="Optional task ID if thought is from task execution")
 
 
 class ConnectPayload(BaseModel):
@@ -238,16 +244,28 @@ class WSMessage(BaseModel):
             data = {"text": self.data.text}
             if self.data.file_id:
                 data["file_id"] = self.data.file_id
+            if self.data.task_id:
+                data["task_id"] = self.data.task_id
         elif isinstance(self.data, StatusPayload):
             data = {"message": self.data.message}
+            if self.data.task_id:
+                data["task_id"] = self.data.task_id
         elif isinstance(self.data, ErrorPayload):
             data = {"message": self.data.message}
+            if self.data.task_id:
+                data["task_id"] = self.data.task_id
         elif isinstance(self.data, ToolUsePayload):
             data = {"name": self.data.name, "args": self.data.args}
+            if self.data.task_id:
+                data["task_id"] = self.data.task_id
         elif isinstance(self.data, ToolResultPayload):
             data = {"name": self.data.name, "result": self.data.result}
+            if self.data.task_id:
+                data["task_id"] = self.data.task_id
         elif isinstance(self.data, ThoughtPayload):
             data = {"text": self.data.text}
+            if self.data.task_id:
+                data["task_id"] = self.data.task_id
         elif isinstance(self.data, ConnectPayload):
             data = {"session_id": self.data.session_id}
         elif isinstance(self.data, SessionInfoPayload):

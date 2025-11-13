@@ -5,11 +5,11 @@ from dotenv import load_dotenv
 
 from sparky.logging_config import setup_logging
 from cli.agent import agent
+from cli.chat import chat
 from cli.client import client
 from cli.db import db
 from cli.generate import app as generate_app
 from cli.models import app as models_app
-from cli.server import server
 from cli.utils import app as utils_app
 
 # Load environment variables and setup logging
@@ -24,7 +24,7 @@ app = typer.Typer(
 )
 
 # Add command groups
-app.add_typer(server, name="server")
+app.add_typer(chat, name="chat")
 app.add_typer(client, name="client")
 app.add_typer(agent, name="agent")
 app.add_typer(db, name="db")

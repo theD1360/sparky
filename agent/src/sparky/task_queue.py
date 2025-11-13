@@ -217,18 +217,24 @@ class TaskQueue:
         metadata: Optional[Dict[str, Any]] = None,
         depends_on: Optional[List[str]] = None,
         allow_duplicates: bool = False,
+        chat_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Add a new task to the queue.
 
         Args:
             instruction: Natural language instruction for the bot to execute
             metadata: Optional metadata about the task (e.g., source, priority)
-            depends_on: Optional list of task IDs this task depends on
+            depends_on: Optional[list of task IDs this task depends on
             allow_duplicates: If False, prevents duplicate tasks that are pending or in_progress
+            chat_id: Optional chat_id to execute the task in (task will use chat's context and user)
 
         Returns:
             The newly created task dictionary
         """
+        # If chat_id provided, store it in metadata
+        if chat_id:
+            metadata = metadata or {}
+            metadata["chat_id"] = chat_id
         # Check for duplicates only if not explicitly allowed
         if not allow_duplicates:
             # Search for similar tasks with exact instruction match

@@ -100,6 +100,8 @@ class ConnectionManager:
         self.last_activity: Dict[str, datetime] = {}
         # session_id -> current websocket (if connected)
         self.active_connections: Dict[str, WebSocket] = {}
+        # session_id -> user_id mapping
+        self.session_to_user: Dict[str, str] = {}
         # session_id -> tools initialized flag
         self.tools_initialized: Dict[str, bool] = {}
         # session_id -> (identity_memory, identity_summary) cached at session level
@@ -545,16 +547,24 @@ class ConnectionManager:
             logger.info(f"[{session_id}:{chat_id}] Creating new bot for chat")
             return await self.create_bot_for_chat(session_id, chat_id, user_id)
 
-    def connect(self, session_id: str, websocket: WebSocket):
+    def connect(
+        self, session_id: str, websocket: WebSocket, user_id: Optional[str] = None
+    ):
         """Register active websocket connection for a session.
 
         Args:
             session_id: Session identifier
             websocket: WebSocket connection
+            user_id: Optional user identifier to associate with this session
         """
         self.active_connections[session_id] = websocket
+        if user_id:
+            self.session_to_user[session_id] = user_id
         self.last_activity[session_id] = datetime.utcnow()
-        logger.info(f"[{session_id}] WebSocket connected")
+        logger.info(
+            f"[{session_id}] WebSocket connected"
+            + (f" (user: {user_id})" if user_id else "")
+        )
 
     def disconnect(self, session_id: str):
         """Remove websocket connection but keep bot session.
@@ -565,7 +575,33 @@ class ConnectionManager:
         if session_id in self.active_connections:
             del self.active_connections[session_id]
             self.last_activity[session_id] = datetime.utcnow()
-            logger.info(f"[{session_id}] WebSocket disconnected (session preserved)")
+            user_id = self.session_to_user.get(session_id)
+            logger.info(
+                f"[{session_id}] WebSocket disconnected (session preserved)"
+                + (f", user={user_id}" if user_id else "")
+            )
+
+    def get_active_connection_by_user(
+        self, user_id: str
+    ) -> Optional[Tuple[str, WebSocket, Optional[str]]]:
+        """Get active WebSocket connection for a user.
+
+        Args:
+            user_id: User identifier to lookup
+
+        Returns:
+            Tuple of (session_id, websocket, current_chat_id) if user has active connection, None otherwise
+        """
+        for session_id, ws_user_id in self.session_to_user.items():
+            if ws_user_id == user_id and session_id in self.active_connections:
+                websocket = self.active_connections[session_id]
+                current_chat_id = self.current_chat.get(session_id)
+                logger.debug(
+                    f"Found active connection for user {user_id}: session={session_id}, chat={current_chat_id}"
+                )
+                return session_id, websocket, current_chat_id
+        logger.debug(f"No active connection found for user {user_id}")
+        return None
 
     def cleanup_expired_sessions(self):
         """Remove bot sessions that have been inactive too long."""
@@ -583,6 +619,7 @@ class ConnectionManager:
             self.tools_initialized.pop(sid, None)
             self.last_activity.pop(sid, None)
             self.active_connections.pop(sid, None)
+            self.session_to_user.pop(sid, None)
 
     def get_session_info(self) -> dict:
         """Get info about all sessions (for future admin endpoints).
@@ -652,6 +689,8 @@ def _setup_signal_handlers():
 async def cleanup_server(app: FastAPI):
     """Cleanup the server process when the app is shut down."""
     cleanup_task = None
+    agent_loop_task = None
+    agent_loop_instance = None
     try:
         global _app_toolchain, _app_knowledge, _startup_error, _connection_manager
 
@@ -679,9 +718,38 @@ async def cleanup_server(app: FastAPI):
         cleanup_task = asyncio.create_task(_periodic_cleanup())
         logger.info("Periodic session cleanup task started")
 
+        # Optionally start agent loop if enabled via environment variable
+        enable_agent_loop = (
+            os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
+        )
+        if enable_agent_loop:
+            logger.info("Starting agent loop as background task...")
+            from servers.task import AgentLoop
+
+            poll_interval = int(os.getenv("SPARKY_AGENT_POLL_INTERVAL", "10"))
+            agent_loop_instance = AgentLoop(
+                toolchain=_app_toolchain,
+                poll_interval=poll_interval,
+                enable_scheduled_tasks=True,
+                connection_manager=_connection_manager,
+            )
+            agent_loop_task = agent_loop_instance.start_background()
+            logger.info("Agent loop started in background")
+
         yield
 
         # Cleanup on shutdown
+        if agent_loop_instance:
+            logger.info("Stopping agent loop...")
+            await agent_loop_instance.stop()
+
+        if agent_loop_task:
+            agent_loop_task.cancel()
+            try:
+                await agent_loop_task
+            except asyncio.CancelledError:
+                pass
+
         if cleanup_task:
             cleanup_task.cancel()
             try:
@@ -1151,8 +1219,8 @@ async def websocket_endpoint(websocket: WebSocket):
             connect_payload.session_id
         )
 
-        # Register connection
-        _connection_manager.connect(session_id, websocket)
+        # Register connection with user_id
+        _connection_manager.connect(session_id, websocket, user_id)
 
         # Send session info back to client IMMEDIATELY
         logger.info(f"[{session_id}] Sending session info...")

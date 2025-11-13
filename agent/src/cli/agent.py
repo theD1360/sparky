@@ -1,28 +1,19 @@
 """Agent management commands for Sparky CLI."""
 
-import atexit
-import os
-import signal
 from pathlib import Path
 from typing import List, Optional
 
-import psutil
 import typer
-from daemon import DaemonContext
-from daemon.pidfile import PIDLockFile
+from cli.common import console, logger
 from rich.table import Table
-
 from sparky.scheduled_tasks import (
-    load_scheduled_tasks,
-    load_raw_config,
     add_scheduled_task,
-    update_scheduled_task,
     delete_scheduled_task,
+    load_raw_config,
+    load_scheduled_tasks,
+    update_scheduled_task,
 )
 from sparky.task_queue import create_task_queue
-from sparky.constants import SPARKY_AGENT_PID_FILE
-from cli.common import console, initialize_agent_toolchain, logger
-from servers.task import TaskServer
 from utils.async_util import run_async
 
 agent = typer.Typer(name="agent", help="Manage the proactive agent background tasks")
@@ -30,160 +21,12 @@ tasks = typer.Typer(name="tasks", help="Manage agent task queue")
 schedule = typer.Typer(name="schedule", help="Manage scheduled tasks")
 
 
-@agent.command("start")
-def start_agent(
-    daemon: bool = typer.Option(
-        False, "--daemon", "-d", help="Run the agent in the background as a daemon."
-    ),
-    poll_interval: int = typer.Option(
-        10, "--interval", "-i", help="Seconds to wait between polling for tasks."
-    ),
-):
-    """Start the proactive agent loop to process background tasks."""
-    os.makedirs("logs", exist_ok=True)
-    pidfile = PIDLockFile(SPARKY_AGENT_PID_FILE)
-
-    # Check for stale PID file
-    if pidfile.is_locked():
-        # Verify the process is actually running
-        try:
-            with open(SPARKY_AGENT_PID_FILE, "r") as f:
-                pid = int(f.read().strip())
-
-            if not psutil.pid_exists(pid):
-                logger.warning(
-                    f"Found stale PID file with non-existent process {pid}. Cleaning up."
-                )
-                pidfile.break_lock()
-            else:
-                logger.warning("Agent is already running (PID file locked).")
-                logger.info("To stop the agent, run: sparky agent stop")
-                raise typer.Exit(1)
-        except (IOError, ValueError) as e:
-            logger.warning(f"Invalid PID file. Cleaning up. Error: {e}")
-            pidfile.break_lock()
-
-    async def run_agent():
-        """Async function to run the agent loop."""
-        toolchain = await initialize_agent_toolchain()
-        server = TaskServer(toolchain, poll_interval=poll_interval)
-        await server.run()
-
-    if not daemon:
-        # Foreground mode with signal handling
-        shutdown_requested = False
-
-        def cleanup_pidfile():
-            """Ensure PID file is cleaned up."""
-            if pidfile.is_locked():
-                try:
-                    pidfile.release()
-                    logger.info("PID file cleaned up")
-                except Exception as e:
-                    logger.warning(f"Error releasing PID file: {e}")
-
-        def signal_handler(signum, frame):
-            """Handle shutdown signals."""
-            nonlocal shutdown_requested
-            sig_name = signal.Signals(signum).name
-            logger.info(f"\nReceived {sig_name}, shutting down gracefully...")
-            shutdown_requested = True
-            cleanup_pidfile()
-            raise SystemExit(0)
-
-        # Register signal handlers for graceful shutdown
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
-
-        # Register cleanup to run on exit
-        atexit.register(cleanup_pidfile)
-
-        try:
-            logger.info("Starting agent in foreground. Press Ctrl+C to stop.")
-            pidfile.acquire()
-            run_async(run_agent())
-        except (KeyboardInterrupt, SystemExit):
-            if not shutdown_requested:
-                logger.info("\nAgent stopped by user.")
-        except Exception as e:
-            logger.error(f"Agent error: {e}", exc_info=True)
-        finally:
-            cleanup_pidfile()
-            logger.info("✓ Agent stopped.")
-    else:
-        # Daemon mode
-        logger.info(f"Starting agent as a daemon. PID file: {SPARKY_AGENT_PID_FILE}")
-        log_file = os.path.join("logs", "agent.log")
-
-        with DaemonContext(
-            working_directory=os.getcwd(),
-            pidfile=pidfile,
-            stdout=open(log_file, "a+"),
-            stderr=open(log_file, "a+"),
-        ):
-            run_async(run_agent())
-
-
-@agent.command("stop")
-def stop_agent():
-    """Stop the background agent loop."""
-    if not os.path.exists(SPARKY_AGENT_PID_FILE):
-        logger.warning("Agent is not running (PID file not found).")
-        raise typer.Exit()
-
-    try:
-        with open(SPARKY_AGENT_PID_FILE, "r") as f:
-            pid = int(f.read().strip())
-    except (IOError, ValueError):
-        logger.error("Error reading PID file. Cleaning up.")
-        os.remove(SPARKY_AGENT_PID_FILE)
-        raise typer.Exit(1)
-
-    if not psutil.pid_exists(pid):
-        logger.warning(f"Agent process {pid} not found. Cleaning up stale PID file.")
-        os.remove(SPARKY_AGENT_PID_FILE)
-        raise typer.Exit()
-
-    try:
-        proc = psutil.Process(pid)
-        logger.info(f"Sending termination signal to agent process {pid}...")
-        proc.terminate()
-
-        try:
-            proc.wait(timeout=10)
-            logger.info(f"✓ Agent process {pid} stopped gracefully.")
-        except psutil.TimeoutExpired:
-            logger.warning("Graceful shutdown timed out. Forcing termination...")
-            proc.kill()
-            proc.wait(timeout=5)
-            logger.info(f"✓ Agent process {pid} forcefully terminated.")
-
-    except psutil.NoSuchProcess:
-        logger.warning(f"Agent process {pid} was already gone.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-        raise typer.Exit(1)
-    finally:
-        if os.path.exists(SPARKY_AGENT_PID_FILE):
-            os.remove(SPARKY_AGENT_PID_FILE)
-
-
 @agent.command("status")
 def agent_status():
-    """Check if the agent is running and show task statistics."""
-    # Check if agent is running
-    if os.path.exists(SPARKY_AGENT_PID_FILE):
-        try:
-            with open(SPARKY_AGENT_PID_FILE, "r") as f:
-                pid = int(f.read().strip())
-            if psutil.pid_exists(pid):
-                logger.info(f"✓ Agent is running (PID: {pid})")
-            else:
-                logger.warning(f"✗ Agent PID file exists but process {pid} not found")
-        except Exception as e:
-            logger.error(f"Error checking agent status: {e}")
-    else:
-        logger.info("✗ Agent is not running")
+    """Show task queue statistics."""
+    logger.info("ℹ️  Agent loop runs within the chat server")
+    logger.info("   Start with: SPARKY_ENABLE_AGENT_LOOP=true sparky chat")
+    logger.info("")
 
     # Show task statistics
     try:
@@ -249,7 +92,7 @@ def list_tasks(
             instruction = task.get("instruction", "")
             if len(instruction) > 47:
                 instruction = instruction[:47] + "..."
-            
+
             table.add_row(
                 task.get("id", "")[:36],
                 instruction,
@@ -277,6 +120,12 @@ def add_task(
         "-m",
         help="Metadata in key=value format (can be specified multiple times)",
     ),
+    chat_id: Optional[str] = typer.Option(
+        None,
+        "--chat",
+        "-c",
+        help="Chat ID to execute the task in (task will appear in that chat)",
+    ),
 ):
     """Add a new task to the agent's queue."""
 
@@ -293,8 +142,9 @@ def add_task(
     async def _add_task():
         task_queue = create_task_queue()
         return await task_queue.add_task(
-            instruction=instruction, 
-            metadata=metadata if metadata else None
+            instruction=instruction,
+            metadata=metadata if metadata else None,
+            chat_id=chat_id,
         )
 
     try:
@@ -304,6 +154,8 @@ def add_task(
         raise typer.Exit(1)
     logger.info(f"✓ Added task {task['id']}")
     logger.info(f"  Status: {task['status']}")
+    if chat_id:
+        logger.info(f"  Chat ID: {chat_id}")
     if metadata:
         logger.info(f"  Metadata: {metadata}")
 
@@ -330,16 +182,16 @@ def get_task(
         logger.info(f"  Instruction: {task['instruction']}")
         logger.info(f"  Created:     {task.get('created_at', 'N/A')}")
         logger.info(f"  Updated:     {task.get('updated_at', 'N/A')}")
-        
-        if task.get('metadata'):
+
+        if task.get("metadata"):
             logger.info(f"  Metadata:")
-            for key, value in task['metadata'].items():
+            for key, value in task["metadata"].items():
                 logger.info(f"    {key}: {value}")
-        
-        if task.get('response'):
+
+        if task.get("response"):
             logger.info(f"  Response:    {task['response'][:100]}...")
-        
-        if task.get('error'):
+
+        if task.get("error"):
             logger.info(f"  Error:       {task['error']}")
 
     except Exception as e:
@@ -580,7 +432,9 @@ def clear_tasks(
         # Show what will be deleted
         logger.info(f"\n{len(tasks_to_delete)} task(s) will be deleted:")
         for task in tasks_to_delete[:5]:  # Show first 5
-            logger.info(f"  - {task['id'][:8]}... ({task['status']}): {task['instruction'][:50]}...")
+            logger.info(
+                f"  - {task['id'][:8]}... ({task['status']}): {task['instruction'][:50]}..."
+            )
         if len(tasks_to_delete) > 5:
             logger.info(f"  ... and {len(tasks_to_delete) - 5} more")
 
@@ -628,7 +482,7 @@ def list_scheduled_tasks():
             prompt = task.get("prompt", "")
             if len(prompt) > 47:
                 prompt = prompt[:47] + "..."
-            
+
             table.add_row(
                 task.get("name", ""),
                 str(task.get("interval", "")),
@@ -661,7 +515,7 @@ def show_scheduled_task(
         logger.info(f"  Interval:  {task.get('interval', 'N/A')}")
         logger.info(f"  Enabled:   {task.get('enabled', True)}")
         logger.info(f"  Prompt:    {task.get('prompt', 'N/A')}")
-        
+
         if task.get("metadata"):
             logger.info(f"  Metadata:")
             for key, value in task["metadata"].items():
@@ -761,8 +615,13 @@ def run_scheduled_tasks(
 @schedule.command("add")
 def add_scheduled_task_cmd(
     name: str = typer.Argument(..., help="Unique name for the scheduled task"),
-    interval: str = typer.Argument(..., help="Interval specification (e.g., 'every(1 hour)', 'cron(0 * * * *)', or cycles)"),
-    prompt: str = typer.Argument(..., help="Prompt text or file reference (e.g., 'file(prompts/task.md)')"),
+    interval: str = typer.Argument(
+        ...,
+        help="Interval specification (e.g., 'every(1 hour)', 'cron(0 * * * *)', or cycles)",
+    ),
+    prompt: str = typer.Argument(
+        ..., help="Prompt text or file reference (e.g., 'file(prompts/task.md)')"
+    ),
     metadata_pairs: Optional[List[str]] = typer.Option(
         None,
         "--metadata",
@@ -836,7 +695,9 @@ def delete_scheduled_task_cmd(
 
         # Confirm deletion unless --force
         if not force:
-            confirm = typer.confirm("\nAre you sure you want to delete this scheduled task?")
+            confirm = typer.confirm(
+                "\nAre you sure you want to delete this scheduled task?"
+            )
             if not confirm:
                 logger.info("Cancelled.")
                 return

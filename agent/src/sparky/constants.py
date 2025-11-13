@@ -12,5 +12,4 @@ def _get_pid_file_path(filename: str):
     return filename
 
 
-SPARKY_AGENT_PID_FILE = _get_pid_file_path("sparky-agent.pid")
 SPARKY_CHAT_PID_FILE = _get_pid_file_path("sparky-chat.pid")

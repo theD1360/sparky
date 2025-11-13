@@ -2,18 +2,18 @@
 
 The Sparky Command-Line Interface (CLI) is used to manage the chat server and launch the client.
 
-## Server Commands
+## Chat Commands
 
-The server commands are used to start, stop, and restart the Sparky chat server.
+The chat commands are used to start, stop, and restart the Sparky chat server. The chat server includes both the WebSocket interface and optionally the agent loop for background task processing.
 
-### `sparky server start`
+### `sparky chat start`
 
-This command starts the chat server.
+This command starts the chat server (with optional agent loop).
 
 **Usage:**
 
-```
-sparky server start [OPTIONS]
+```bash
+sparky chat start [OPTIONS]
 ```
 
 **Options:**
@@ -21,30 +21,51 @@ sparky server start [OPTIONS]
 *   `--host TEXT`: The host to bind the server to. Defaults to `127.0.0.1`.
 *   `--port INTEGER`: The port to bind the server to. Defaults to `8000`.
 *   `--daemon`: Run the server in the background.
-*   `--pidfile TEXT`: The path to the PID file. Defaults to `bot.pid`.
+*   `--pidfile TEXT`: The path to the PID file. Defaults to `sparky-chat.pid`.
 
-### `sparky server stop`
+**Environment Variables:**
+
+*   `SPARKY_ENABLE_AGENT_LOOP`: Set to `true` to enable background task processing (default: `false`)
+*   `SPARKY_AGENT_POLL_INTERVAL`: Seconds between task polls when agent loop is enabled (default: `10`)
+
+**Examples:**
+
+```bash
+# Start chat server only
+sparky chat start
+
+# Start with agent loop enabled
+SPARKY_ENABLE_AGENT_LOOP=true sparky chat start
+
+# Start on custom host/port
+sparky chat start --host 0.0.0.0 --port 8080
+
+# Start as daemon
+sparky chat start --daemon
+```
+
+### `sparky chat stop`
 
 This command stops the chat server.
 
 **Usage:**
 
-```
-sparky server stop [OPTIONS]
+```bash
+sparky chat stop [OPTIONS]
 ```
 
 **Options:**
 
-*   `--pidfile TEXT`: The path to the PID file. Defaults to `bot.pid`.
+*   `--pidfile TEXT`: The path to the PID file. Defaults to `sparky-chat.pid`.
 
-### `sparky server restart`
+### `sparky chat restart`
 
 This command restarts the chat server.
 
 **Usage:**
 
-```
-sparky server restart [OPTIONS]
+```bash
+sparky chat restart [OPTIONS]
 ```
 
 **Options:**
@@ -52,7 +73,7 @@ sparky server restart [OPTIONS]
 *   `--host TEXT`: The host to bind the server to. Defaults to `127.0.0.1`.
 *   `--port INTEGER`: The port to bind the server to. Defaults to `8000`.
 *   `--daemon`: Run the server in the background.
-*   `--pidfile TEXT`: The path to the PID file. Defaults to `bot.pid`.
+*   `--pidfile TEXT`: The path to the PID file. Defaults to `sparky-chat.pid`.
 
 ## Client Commands
 
@@ -80,36 +101,23 @@ sparky client start [OPTIONS]
 
 The agent commands are used to manage the proactive agent background tasks.
 
-### Agent Lifecycle Commands
+### Agent Lifecycle
 
-#### `sparky agent start`
+The agent loop runs integrated within the chat server. To enable it:
 
-Start the proactive agent loop to process background tasks.
-
-**Usage:**
-
-```
-sparky agent start [OPTIONS]
+```bash
+export SPARKY_ENABLE_AGENT_LOOP=true
+sparky chat
 ```
 
-**Options:**
+**Environment Variables:**
 
-*   `--daemon / -d`: Run the agent in the background as a daemon.
-*   `--interval / -i INTEGER`: Seconds to wait between polling for tasks. Defaults to `10`.
-
-#### `sparky agent stop`
-
-Stop the background agent loop.
-
-**Usage:**
-
-```
-sparky agent stop
-```
+*   `SPARKY_ENABLE_AGENT_LOOP`: Set to `true` to enable the agent loop (default: `false`)
+*   `SPARKY_AGENT_POLL_INTERVAL`: Seconds between task queue polls (default: `10`)
 
 #### `sparky agent status`
 
-Check if the agent is running and show task statistics.
+Show task queue statistics and agent configuration.
 
 **Usage:**
 

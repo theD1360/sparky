@@ -54,8 +54,7 @@ That's it! Sparky is now running and ready to chat. 🎉
 
 The Docker Compose setup starts several services:
 
-- **sparky-agent**: The autonomous agent that processes tasks and learns
-- **sparky-server**: FastAPI backend providing the chat API
+- **sparky-server**: FastAPI backend with chat API and integrated agent loop
 - **sparky-ui-dev**: React web interface for interacting with Sparky
 - **postgres**: PostgreSQL database with pgvector extension
 - **metamcp**: Model Context Protocol server for tool integration
@@ -86,11 +85,8 @@ The Docker Compose setup starts several services:
 
 4. **Run Sparky**
    ```bash
-   # Start the server
-   poetry run uvicorn servers.chat:app --reload
-   
-   # In another terminal, start the agent
-   poetry run sparky agent start
+   # Start the chat server (with agent loop enabled)
+   SPARKY_ENABLE_AGENT_LOOP=true poetry run sparky chat start
    ```
 
 ### Web UI Development

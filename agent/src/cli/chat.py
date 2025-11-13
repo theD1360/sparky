@@ -1,4 +1,4 @@
-"""Server management commands for Sparky CLI."""
+"""Chat server management commands for Sparky CLI."""
 
 import os
 import sys
@@ -12,11 +12,11 @@ from daemon.pidfile import PIDLockFile
 from servers.chat import ChatServer
 from sparky.constants import SPARKY_CHAT_PID_FILE
 
-server = typer.Typer(name="server", help="Server management commands")
+chat = typer.Typer(name="chat", help="Chat server management commands")
 
 
 def run_server(host, port, daemon):
-    """Helper function to run the server."""
+    """Helper function to run the chat server."""
     try:
         uvicorn.run(
             ChatServer,
@@ -35,7 +35,7 @@ def run_server(host, port, daemon):
         return sys.exit(1)
 
 
-@server.command("start")
+@chat.command("start")
 def start_server(
     host: str = typer.Option(
         "127.0.0.1", "--host", help="Host to bind the chat server to."
@@ -48,11 +48,19 @@ def start_server(
         SPARKY_CHAT_PID_FILE, "--pidfile", help="Path to the PID file."
     ),
 ):
-    """Launch the Sparky Chat Server."""
+    """Launch the Sparky Chat Server (includes agent loop if SPARKY_ENABLE_AGENT_LOOP=true)."""
     if not daemon:
         try:
             # Non-daemon mode - server will handle its own PID file
             logger.info(f"Starting Sparky Chat Server on ws://{host}:{port}/ws/chat")
+            
+            # Show agent loop status
+            agent_enabled = os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
+            if agent_enabled:
+                logger.info("✅ Agent loop enabled - background tasks will be processed")
+            else:
+                logger.info("ℹ️  Agent loop disabled - set SPARKY_ENABLE_AGENT_LOOP=true to enable")
+            
             logger.info("Press Ctrl+C to stop.")
             run_server(host, port, daemon=False)
 
@@ -70,7 +78,7 @@ def start_server(
             run_server(host, port, daemon=False)
 
 
-@server.command("stop")
+@chat.command("stop")
 def kill_server(
     pidfile: str = typer.Option(
         SPARKY_CHAT_PID_FILE, "--pidfile", help="Path to the PID file."
@@ -125,7 +133,7 @@ def kill_server(
             os.remove(pidfile)
 
 
-@server.command("restart")
+@chat.command("restart")
 def restart_server(
     host: str = typer.Option(
         "127.0.0.1", "--host", help="Host to bind the chat server to."
@@ -147,3 +155,4 @@ def restart_server(
     finally:
         logger.info(f"Restarting Sparky Chat Server on ws://{host}:{port}/ws/chat")
         start_server(host=host, port=port, daemon=daemon, pidfile=pidfile)
+

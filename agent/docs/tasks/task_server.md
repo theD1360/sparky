@@ -2,7 +2,19 @@
 
 ## Overview
 
-The Sparky tasking system is an integrated component responsible for managing and executing background tasks. It is not a standalone microservice but is built into the main application's event loop. The system is comprised of two key modules: the `AgentLoop` and the `TaskQueue`.
+The Sparky tasking system is an integrated component responsible for managing and executing background tasks. The agent loop runs within the chat server process and can be enabled via environment variable. The system is comprised of two key modules: the `AgentLoop` and the `TaskQueue`.
+
+## Running the Agent Loop
+
+The agent loop is integrated into the chat server and can be enabled with:
+
+```bash
+export SPARKY_ENABLE_AGENT_LOOP=true
+export SPARKY_AGENT_POLL_INTERVAL=10  # Optional, defaults to 10 seconds
+sparky chat
+```
+
+When enabled, the agent loop runs as a background task within the chat server, processing tasks and scheduled jobs continuously.
 
 **Locations:**
 - AgentLoop: `src/servers/task/task_server.py`

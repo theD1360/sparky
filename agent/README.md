@@ -10,8 +10,8 @@ To get Sparky running, follow these steps:
 1.  **Clone the repository:** `git clone <repository_url>`
 2.  **Install dependencies:** `poetry install`
 3.  **Configure API keys:** Set the necessary API keys in the `.env` file.
-4.  **Run the bot:** `sparky server start` or `docker-compose up`
-5. **Connect to bot:**: `sparky client start`
+4.  **Run the server:** `sparky chat start` or `docker-compose up`
+5.  **Connect to bot:** `sparky client start` or use the web UI
 
 ## License
 

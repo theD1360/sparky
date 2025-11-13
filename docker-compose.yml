@@ -56,6 +56,7 @@ services:
       - POSTGRES_PASSWORD=m3t4mcp
       - SPARKY_DB=sparky_db
       - SPARKY_DB_URL=postgresql://${POSTGRES_USER:-metamcp_user}:${POSTGRES_PASSWORD:-m3t4mcp}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${SPARKY_DB:-sparky_db}
+      - SPARKY_ENABLE_AGENT_LOOP=${SPARKY_ENABLE_AGENT_LOOP:-false}
     volumes:
       # Mount source code for live reload
       - ./:/app:delegated
@@ -73,40 +74,6 @@ services:
         condition: service_healthy
       # metamcp:
       #   condition: service_healthy
-    stop_grace_period: 30s  # Give 30 seconds for graceful shutdown
-
-  agent:
-    build:
-      context: ./agent
-      dockerfile: ../Dockerfile
-    container_name: sparky-agent
-    command: poetry run sparky agent start --interval 10
-    working_dir: /app/agent
-    env_file:
-      - .env
-    environment:
-      - PYTHONPATH=/app/agent/src
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - AGENT_MODEL=${AGENT_MODEL:-gemini-2.0-flash}
-      - SPARKY_SUMMARY_TOKEN_THRESHOLD=${SPARKY_SUMMARY_TOKEN_THRESHOLD:-0.85}
-      - SPARKY_REFLECT_EVERY=${SPARKY_REFLECT_EVERY:-10}
-      - SPARKY_TOKEN_BUDGET_PERCENT=${SPARKY_TOKEN_BUDGET_PERCENT:-0.8}
-      - LOG_DIR=/app/agent/logs
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=metamcp_user
-      - POSTGRES_PASSWORD=m3t4mcp
-      - SPARKY_DB=sparky_db
-      - SPARKY_DB_URL=postgresql://${POSTGRES_USER:-metamcp_user}:${POSTGRES_PASSWORD:-m3t4mcp}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${SPARKY_DB:-sparky_db}
-    volumes:
-      # Mount source code for live changes
-      - ./:/app:delegated
-    restart: unless-stopped
-    networks:
-      - sparky-network
-    depends_on:
-      postgres:
-        condition: service_healthy
     stop_grace_period: 30s  # Give 30 seconds for graceful shutdown
 
   metamcp:
