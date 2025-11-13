@@ -581,6 +581,201 @@ class KnowledgeRepository:
                 logger.info(f"Created node {node_id}")
                 return node
 
+    def bulk_add_nodes(
+        self,
+        nodes: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Add or update multiple nodes in a single transaction.
+
+        Args:
+            nodes: List of node dictionaries, each containing:
+                - node_id: Unique identifier for the node
+                - node_type: Type of the node (e.g., 'Memory', 'Concept')
+                - label: Human-readable label
+                - content: Optional text content
+                - properties: Optional metadata dictionary
+
+        Returns:
+            Dictionary with:
+                - added: List of node IDs that were created
+                - updated: List of node IDs that were updated
+                - failed: List of dicts with node_id and error message
+                - total: Total number of nodes processed
+        """
+        added = []
+        updated = []
+        failed = []
+
+        with self.db_manager.get_session() as session:
+            is_postgres = self.db_manager.engine.dialect.name == "postgresql"
+
+            for node_data in nodes:
+                try:
+                    node_id = node_data.get("node_id")
+                    node_type = node_data.get("node_type")
+                    label = node_data.get("label")
+                    content = node_data.get("content")
+                    properties = node_data.get("properties", {})
+
+                    if not node_id or not node_type or not label:
+                        failed.append(
+                            {
+                                "node_id": node_id or "unknown",
+                                "error": "Missing required fields: node_id, node_type, or label",
+                            }
+                        )
+                        continue
+
+                    # Normalize node type
+                    node_type = normalize_node_type(node_type)
+
+                    # Check if node exists
+                    existing = session.query(Node).filter(Node.id == node_id).first()
+
+                    if existing:
+                        # Update existing node
+                        existing.node_type = node_type
+                        existing.label = label
+                        existing.content = content
+                        existing.properties = properties
+                        existing.updated_at = datetime.now(timezone.utc)
+                        session.flush()
+
+                        # Generate embedding for updated node
+                        if not is_postgres:
+                            rowid_result = session.execute(
+                                text("SELECT rowid FROM nodes WHERE id = :node_id"),
+                                {"node_id": node_id},
+                            ).fetchone()
+                            if rowid_result:
+                                self._generate_and_store_embedding(
+                                    session, existing, rowid_result[0]
+                                )
+                        else:
+                            self._generate_and_store_embedding(session, existing)
+
+                        updated.append(node_id)
+                    else:
+                        # Create new node
+                        node = Node(
+                            id=node_id,
+                            node_type=node_type,
+                            label=label,
+                            content=content,
+                            properties=properties,
+                        )
+                        session.add(node)
+                        session.flush()
+
+                        # Generate embedding for new node
+                        if not is_postgres:
+                            rowid_result = session.execute(
+                                text("SELECT rowid FROM nodes WHERE id = :node_id"),
+                                {"node_id": node_id},
+                            ).fetchone()
+                            if rowid_result:
+                                self._generate_and_store_embedding(
+                                    session, node, rowid_result[0]
+                                )
+                        else:
+                            self._generate_and_store_embedding(session, node)
+
+                        added.append(node_id)
+
+                except Exception as e:
+                    logger.error(
+                        f"Error adding/updating node {node_data.get('node_id', 'unknown')}: {e}"
+                    )
+                    failed.append(
+                        {
+                            "node_id": node_data.get("node_id", "unknown"),
+                            "error": str(e),
+                        }
+                    )
+
+            # Commit all changes at once
+            session.commit()
+
+        logger.info(
+            f"Bulk add nodes: {len(added)} added, {len(updated)} updated, {len(failed)} failed"
+        )
+        return {
+            "added": added,
+            "updated": updated,
+            "failed": failed,
+            "total": len(nodes),
+        }
+
+    def update_node(
+        self,
+        node_id: str,
+        node_type: Optional[str] = None,
+        label: Optional[str] = None,
+        content: Optional[str] = None,
+        properties: Optional[Dict[str, Any]] = None,
+    ) -> Node:
+        """Update an existing node in the knowledge graph.
+
+        Unlike add_node which creates or updates, this method only updates existing nodes
+        and raises an error if the node doesn't exist. This is useful when you want to
+        ensure you're modifying an existing node rather than accidentally creating a new one.
+
+        Args:
+            node_id: Unique identifier for the node to update
+            node_type: New type for the node (optional, keeps existing if not provided)
+            label: New label (optional, keeps existing if not provided)
+            content: New content (optional, keeps existing if not provided)
+            properties: New properties (optional, keeps existing if not provided)
+
+        Returns:
+            The updated Node instance
+
+        Raises:
+            ValueError: If the node doesn't exist
+        """
+        with self.db_manager.get_session() as session:
+            # Check if node exists
+            existing = session.query(Node).filter(Node.id == node_id).first()
+
+            if not existing:
+                raise ValueError(f"Node {node_id} not found")
+
+            # Update only provided fields
+            if node_type is not None:
+                existing.node_type = normalize_node_type(node_type)
+            if label is not None:
+                existing.label = label
+            if content is not None:
+                existing.content = content
+            if properties is not None:
+                existing.properties = properties
+
+            existing.updated_at = datetime.now(timezone.utc)
+            session.flush()
+
+            # Generate embedding for updated node
+            is_postgres = self.db_manager.engine.dialect.name == "postgresql"
+            if not is_postgres:
+                # SQLite: Get rowid for vector storage
+                rowid_result = session.execute(
+                    text("SELECT rowid FROM nodes WHERE id = :node_id"),
+                    {"node_id": node_id},
+                ).fetchone()
+                if rowid_result:
+                    self._generate_and_store_embedding(
+                        session, existing, rowid_result[0]
+                    )
+            else:
+                # PostgreSQL: rowid not needed
+                self._generate_and_store_embedding(session, existing)
+
+            session.commit()
+            # Refresh to load all attributes, then expunge to detach from session
+            session.refresh(existing)
+            session.expunge(existing)
+            logger.info(f"Updated node {node_id}")
+            return existing
+
     def get_node(self, node_id: str) -> Optional[Node]:
         """Get a node by its ID.
 
@@ -717,6 +912,778 @@ class KnowledgeRepository:
                 session.commit()
                 logger.info(f"Created edge {source_id} -> {target_id}")
                 return edge
+
+    def bulk_add_edges(
+        self,
+        edges: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Add or update multiple edges in a single transaction.
+
+        Args:
+            edges: List of edge dictionaries, each containing:
+                - source_id: ID of the source node
+                - target_id: ID of the target node
+                - edge_type: Type of relationship
+                - properties: Optional metadata dictionary
+
+        Returns:
+            Dictionary with:
+                - added: List of edge descriptions (source_id -> target_id) that were created
+                - updated: List of edge descriptions that were updated
+                - failed: List of dicts with edge info and error message
+                - total: Total number of edges processed
+        """
+        added = []
+        updated = []
+        failed = []
+
+        with self.db_manager.get_session() as session:
+            # First, get all unique node IDs from edges to verify they exist
+            all_node_ids = set()
+            for edge_data in edges:
+                source_id = edge_data.get("source_id")
+                target_id = edge_data.get("target_id")
+                if source_id:
+                    all_node_ids.add(source_id)
+                if target_id:
+                    all_node_ids.add(target_id)
+
+            # Fetch all nodes in one query
+            existing_nodes = (
+                session.query(Node.id).filter(Node.id.in_(all_node_ids)).all()
+                if all_node_ids
+                else []
+            )
+            existing_node_ids = {node.id for node in existing_nodes}
+
+            for edge_data in edges:
+                try:
+                    source_id = edge_data.get("source_id")
+                    target_id = edge_data.get("target_id")
+                    edge_type = edge_data.get("edge_type")
+                    properties = edge_data.get("properties", {})
+
+                    if not source_id or not target_id or not edge_type:
+                        failed.append(
+                            {
+                                "edge": f"{source_id} -> {target_id}",
+                                "error": "Missing required fields: source_id, target_id, or edge_type",
+                            }
+                        )
+                        continue
+
+                    # Check if nodes exist
+                    if source_id not in existing_node_ids:
+                        failed.append(
+                            {
+                                "edge": f"{source_id} -> {target_id}",
+                                "error": f"Source node {source_id} not found",
+                            }
+                        )
+                        continue
+
+                    if target_id not in existing_node_ids:
+                        failed.append(
+                            {
+                                "edge": f"{source_id} -> {target_id}",
+                                "error": f"Target node {target_id} not found",
+                            }
+                        )
+                        continue
+
+                    # Normalize edge type
+                    edge_type = normalize_edge_type(edge_type)
+
+                    # Check if edge already exists
+                    existing = (
+                        session.query(Edge)
+                        .filter(
+                            and_(
+                                Edge.source_id == source_id,
+                                Edge.target_id == target_id,
+                                Edge.edge_type == edge_type,
+                            )
+                        )
+                        .first()
+                    )
+
+                    edge_desc = f"{source_id} -> {target_id} ({edge_type})"
+
+                    if existing:
+                        # Update existing edge
+                        existing.properties = properties
+                        updated.append(edge_desc)
+                    else:
+                        # Create new edge
+                        edge = Edge(
+                            source_id=source_id,
+                            target_id=target_id,
+                            edge_type=edge_type,
+                            properties=properties,
+                        )
+                        session.add(edge)
+                        added.append(edge_desc)
+
+                except Exception as e:
+                    logger.error(
+                        f"Error adding/updating edge {edge_data.get('source_id', '?')} -> {edge_data.get('target_id', '?')}: {e}"
+                    )
+                    failed.append(
+                        {
+                            "edge": f"{edge_data.get('source_id', '?')} -> {edge_data.get('target_id', '?')}",
+                            "error": str(e),
+                        }
+                    )
+
+            # Commit all changes at once
+            session.commit()
+
+        logger.info(
+            f"Bulk add edges: {len(added)} added, {len(updated)} updated, {len(failed)} failed"
+        )
+        return {
+            "added": added,
+            "updated": updated,
+            "failed": failed,
+            "total": len(edges),
+        }
+
+    def append_graph(
+        self,
+        nodes: List[Dict[str, Any]],
+        edges: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Append a subgraph (nodes and edges) to the knowledge graph in a single operation.
+
+        This is a convenience method that combines bulk_add_nodes and bulk_add_edges
+        into a single atomic operation. It's useful when you have a complete subgraph
+        (collection of related nodes and edges) that you want to merge into the
+        knowledge graph all at once.
+
+        The operation is performed in a single transaction: nodes are added first,
+        then edges. If any individual node or edge fails, it's recorded in the
+        failures list, but other items continue to be processed.
+
+        Args:
+            nodes: List of node dictionaries (same format as bulk_add_nodes)
+            edges: List of edge dictionaries (same format as bulk_add_edges)
+
+        Returns:
+            Dictionary with:
+                - nodes_added: List of node IDs that were created
+                - nodes_updated: List of node IDs that were updated
+                - nodes_failed: List of node failures
+                - edges_added: List of edge descriptions that were created
+                - edges_updated: List of edge descriptions that were updated
+                - edges_failed: List of edge failures
+                - total_nodes: Total number of nodes processed
+                - total_edges: Total number of edges processed
+        """
+        # Use the existing bulk operations
+        node_result = self.bulk_add_nodes(nodes)
+        edge_result = self.bulk_add_edges(edges)
+
+        logger.info(
+            f"Append graph: nodes ({len(node_result['added'])} added, "
+            f"{len(node_result['updated'])} updated, {len(node_result['failed'])} failed), "
+            f"edges ({len(edge_result['added'])} added, "
+            f"{len(edge_result['updated'])} updated, {len(edge_result['failed'])} failed)"
+        )
+
+        return {
+            "nodes_added": node_result["added"],
+            "nodes_updated": node_result["updated"],
+            "nodes_failed": node_result["failed"],
+            "edges_added": edge_result["added"],
+            "edges_updated": edge_result["updated"],
+            "edges_failed": edge_result["failed"],
+            "total_nodes": node_result["total"],
+            "total_edges": edge_result["total"],
+        }
+
+    def find_similar_nodes(
+        self,
+        node_id: str,
+        similarity_threshold: float = 0.7,
+        limit: int = 20,
+        include_self: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Find nodes similar to a given node using embedding similarity.
+
+        Args:
+            node_id: ID of the reference node
+            similarity_threshold: Minimum cosine similarity (0-1)
+            limit: Maximum number of similar nodes to return
+            include_self: Whether to include the reference node in results
+
+        Returns:
+            List of dictionaries with node data and similarity scores
+
+        Raises:
+            ValueError: If node doesn't exist or has no embedding
+        """
+        with self.db_manager.get_session() as session:
+            # Get the reference node
+            ref_node = session.query(Node).filter(Node.id == node_id).first()
+            if not ref_node:
+                raise ValueError(f"Node {node_id} not found")
+
+            is_postgres = self.db_manager.engine.dialect.name == "postgresql"
+
+            # Get embedding for reference node
+            if is_postgres:
+                # PostgreSQL: embedding is in the node table
+                if not ref_node.embedding:
+                    raise ValueError(f"Node {node_id} has no embedding")
+
+                # Use the embedding column directly
+                embedding_array = "[" + ",".join(map(str, ref_node.embedding)) + "]"
+
+                base_query = """
+                    SELECT 
+                        n.id,
+                        n.node_type,
+                        n.label,
+                        n.content,
+                        n.properties,
+                        n.created_at,
+                        n.updated_at,
+                        1 - (n.embedding <=> %s::vector) as similarity
+                    FROM nodes n
+                    WHERE n.embedding IS NOT NULL
+                        AND 1 - (n.embedding <=> %s::vector) >= %s
+                """
+                if not include_self:
+                    base_query += " AND n.id != %s"
+                base_query += " ORDER BY n.embedding <=> %s::vector LIMIT %s"
+
+                conn = session.connection()
+                dbapi_conn = conn.connection
+                cursor = dbapi_conn.cursor()
+
+                params = [embedding_array, embedding_array, similarity_threshold]
+                if not include_self:
+                    params.append(node_id)
+                params.extend([embedding_array, limit])
+
+                cursor.execute(base_query, params)
+                results = cursor.fetchall()
+                cursor.close()
+
+                similar_nodes = []
+                for row in results:
+                    similar_nodes.append(
+                        {
+                            "id": row[0],
+                            "type": row[1],
+                            "label": row[2],
+                            "content": row[3],
+                            "properties": row[4],
+                            "created_at": row[5].isoformat() if row[5] else None,
+                            "updated_at": row[6].isoformat() if row[6] else None,
+                            "similarity": float(row[7]),
+                        }
+                    )
+
+            else:
+                # SQLite: embeddings are in nodes_vec table
+                # Get rowid for reference node
+                rowid_result = session.execute(
+                    text("SELECT rowid FROM nodes WHERE id = :node_id"),
+                    {"node_id": node_id},
+                ).fetchone()
+
+                if not rowid_result:
+                    raise ValueError(f"Node {node_id} not found")
+
+                ref_rowid = rowid_result[0]
+
+                # Check if embedding exists
+                vec_result = session.execute(
+                    text("SELECT embedding FROM nodes_vec WHERE rowid = :rowid"),
+                    {"rowid": ref_rowid},
+                ).fetchone()
+
+                if not vec_result:
+                    raise ValueError(f"Node {node_id} has no embedding")
+
+                # Use vec_distance_cosine for similarity search
+                query_sql = """
+                    SELECT 
+                        n.id,
+                        n.node_type,
+                        n.label,
+                        n.content,
+                        n.properties,
+                        n.created_at,
+                        n.updated_at,
+                        1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) as similarity
+                    FROM nodes n
+                    JOIN nodes_vec nv ON nv.rowid = n.rowid
+                    CROSS JOIN nodes_vec ref_vec
+                    WHERE ref_vec.rowid = :ref_rowid
+                        AND 1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) >= :threshold
+                """
+                if not include_self:
+                    query_sql += " AND n.id != :node_id"
+                query_sql += " ORDER BY vec_distance_cosine(nv.embedding, ref_vec.embedding) LIMIT :limit"
+
+                params = {
+                    "ref_rowid": ref_rowid,
+                    "threshold": similarity_threshold,
+                    "limit": limit,
+                }
+                if not include_self:
+                    params["node_id"] = node_id
+
+                results = session.execute(text(query_sql), params).fetchall()
+
+                similar_nodes = []
+                for row in results:
+                    similar_nodes.append(
+                        {
+                            "id": row[0],
+                            "type": row[1],
+                            "label": row[2],
+                            "content": row[3],
+                            "properties": row[4],
+                            "created_at": row[5].isoformat() if row[5] else None,
+                            "updated_at": row[6].isoformat() if row[6] else None,
+                            "similarity": float(row[7]),
+                        }
+                    )
+
+            logger.info(f"Found {len(similar_nodes)} similar nodes to {node_id}")
+            return similar_nodes
+
+    def validate_graph_integrity(
+        self, checks: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Run integrity checks on the graph to detect issues.
+
+        Args:
+            checks: List of checks to run. If None, runs all checks.
+                Available checks:
+                - orphaned_nodes: Nodes with no edges
+                - dangling_edges: Edges referencing non-existent nodes
+                - missing_embeddings: Nodes without vector embeddings
+                - duplicate_edges: Duplicate edge relationships
+                - self_loops: Edges from a node to itself
+
+        Returns:
+            Dictionary with check results and issue counts
+        """
+        if checks is None:
+            checks = [
+                "orphaned_nodes",
+                "dangling_edges",
+                "missing_embeddings",
+                "duplicate_edges",
+                "self_loops",
+            ]
+
+        results = {
+            "checks_run": checks,
+            "issues_found": {},
+            "total_issues": 0,
+            "healthy": True,
+        }
+
+        with self.db_manager.get_session() as session:
+            is_postgres = self.db_manager.engine.dialect.name == "postgresql"
+
+            # Check for orphaned nodes (nodes with no edges)
+            if "orphaned_nodes" in checks:
+                orphan_query = """
+                    SELECT n.id, n.node_type, n.label
+                    FROM nodes n
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM edges e WHERE e.source_id = n.id OR e.target_id = n.id
+                    )
+                    AND n.node_type NOT IN ('Memory', 'Session', 'ThinkingPattern', 'Workflow')
+                """
+                orphaned = session.execute(text(orphan_query)).fetchall()
+                if orphaned:
+                    results["issues_found"]["orphaned_nodes"] = [
+                        {"id": row[0], "type": row[1], "label": row[2]}
+                        for row in orphaned
+                    ]
+                    results["total_issues"] += len(orphaned)
+                    results["healthy"] = False
+
+            # Check for dangling edges (edges pointing to non-existent nodes)
+            if "dangling_edges" in checks:
+                dangling_query = """
+                    SELECT e.id, e.source_id, e.target_id, e.edge_type
+                    FROM edges e
+                    WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.source_id)
+                       OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.target_id)
+                """
+                dangling = session.execute(text(dangling_query)).fetchall()
+                if dangling:
+                    results["issues_found"]["dangling_edges"] = [
+                        {
+                            "edge_id": row[0],
+                            "source_id": row[1],
+                            "target_id": row[2],
+                            "edge_type": row[3],
+                        }
+                        for row in dangling
+                    ]
+                    results["total_issues"] += len(dangling)
+                    results["healthy"] = False
+
+            # Check for nodes without embeddings
+            if "missing_embeddings" in checks:
+                if is_postgres:
+                    missing_emb_query = """
+                        SELECT id, node_type, label
+                        FROM nodes
+                        WHERE embedding IS NULL
+                        AND node_type NOT IN ('Session', 'ToolCall', 'Message')
+                        LIMIT 100
+                    """
+                else:
+                    missing_emb_query = """
+                        SELECT n.id, n.node_type, n.label
+                        FROM nodes n
+                        WHERE n.rowid NOT IN (SELECT rowid FROM nodes_vec)
+                        AND n.node_type NOT IN ('Session', 'ToolCall', 'Message')
+                        LIMIT 100
+                    """
+                missing_emb = session.execute(text(missing_emb_query)).fetchall()
+                if missing_emb:
+                    results["issues_found"]["missing_embeddings"] = [
+                        {"id": row[0], "type": row[1], "label": row[2]}
+                        for row in missing_emb
+                    ]
+                    results["total_issues"] += len(missing_emb)
+                    # Don't mark as unhealthy for missing embeddings alone
+
+            # Check for duplicate edges
+            if "duplicate_edges" in checks:
+                dup_edges_query = """
+                    SELECT source_id, target_id, edge_type, COUNT(*) as count
+                    FROM edges
+                    GROUP BY source_id, target_id, edge_type
+                    HAVING COUNT(*) > 1
+                """
+                duplicates = session.execute(text(dup_edges_query)).fetchall()
+                if duplicates:
+                    results["issues_found"]["duplicate_edges"] = [
+                        {
+                            "source_id": row[0],
+                            "target_id": row[1],
+                            "edge_type": row[2],
+                            "count": row[3],
+                        }
+                        for row in duplicates
+                    ]
+                    results["total_issues"] += len(duplicates)
+                    results["healthy"] = False
+
+            # Check for self-loops
+            if "self_loops" in checks:
+                self_loop_query = """
+                    SELECT id, source_id, edge_type
+                    FROM edges
+                    WHERE source_id = target_id
+                """
+                self_loops = session.execute(text(self_loop_query)).fetchall()
+                if self_loops:
+                    results["issues_found"]["self_loops"] = [
+                        {"edge_id": row[0], "node_id": row[1], "edge_type": row[2]}
+                        for row in self_loops
+                    ]
+                    results["total_issues"] += len(self_loops)
+                    # Self-loops might be intentional, don't mark as unhealthy
+
+        logger.info(
+            f"Graph integrity check complete: {results['total_issues']} issues found, "
+            f"healthy={results['healthy']}"
+        )
+        return results
+
+    def extract_subgraph(
+        self,
+        root_node_ids: List[str],
+        depth: int = 2,
+        include_node_types: Optional[List[str]] = None,
+        export_format: str = "json",
+    ) -> Dict[str, Any]:
+        """Extract a subgraph around specified root nodes.
+
+        Args:
+            root_node_ids: List of node IDs to use as starting points
+            depth: How many hops to traverse from root nodes
+            include_node_types: Optional list of node types to include
+            export_format: Format for export (json, cypher, graphml)
+
+        Returns:
+            Dictionary with nodes, edges, and formatted export
+        """
+        with self.db_manager.get_session() as session:
+            # Collect all nodes and edges in the subgraph
+            visited_nodes = set()
+            all_nodes = []
+            all_edges = []
+
+            # BFS to collect nodes
+            queue = deque([(node_id, 0) for node_id in root_node_ids])
+            visited = set(root_node_ids)
+
+            while queue:
+                current_id, current_depth = queue.popleft()
+
+                # Get the node
+                node = session.query(Node).filter(Node.id == current_id).first()
+                if not node:
+                    continue
+
+                # Check type filter
+                if include_node_types and node.node_type not in include_node_types:
+                    continue
+
+                visited_nodes.add(current_id)
+                all_nodes.append(node)
+
+                # Don't traverse beyond depth
+                if current_depth >= depth:
+                    continue
+
+                # Get connected edges
+                edges = (
+                    session.query(Edge)
+                    .filter(
+                        or_(Edge.source_id == current_id, Edge.target_id == current_id)
+                    )
+                    .all()
+                )
+
+                for edge in edges:
+                    # Add edge if both ends are in visited nodes or will be visited
+                    if (
+                        edge.source_id in visited_nodes
+                        or edge.target_id in visited_nodes
+                    ):
+                        if edge not in all_edges:
+                            all_edges.append(edge)
+
+                    # Queue the other end of the edge
+                    other_id = (
+                        edge.target_id
+                        if edge.source_id == current_id
+                        else edge.source_id
+                    )
+                    if other_id not in visited:
+                        visited.add(other_id)
+                        queue.append((other_id, current_depth + 1))
+
+            # Convert to dictionaries
+            nodes_data = [node.to_dict() for node in all_nodes]
+            edges_data = [
+                {
+                    "source_id": edge.source_id,
+                    "target_id": edge.target_id,
+                    "edge_type": edge.edge_type,
+                    "properties": edge.properties,
+                }
+                for edge in all_edges
+            ]
+
+            result = {
+                "nodes": nodes_data,
+                "edges": edges_data,
+                "stats": {
+                    "node_count": len(nodes_data),
+                    "edge_count": len(edges_data),
+                    "depth": depth,
+                },
+            }
+
+            # Format output
+            if export_format == "json":
+                result["export"] = json.dumps(
+                    {"nodes": nodes_data, "edges": edges_data}, indent=2
+                )
+
+            elif export_format == "cypher":
+                # Generate Cypher CREATE statements
+                cypher_statements = []
+                for node in nodes_data:
+                    props = json.dumps(node.get("properties", {}))
+                    cypher_statements.append(
+                        f"CREATE (n:{node['type']} {{id: '{node['id']}', "
+                        f"label: '{node['label']}', properties: {props}}})"
+                    )
+                for edge in edges_data:
+                    cypher_statements.append(
+                        f"MATCH (a {{id: '{edge['source_id']}'}}), "
+                        f"(b {{id: '{edge['target_id']}'}}) "
+                        f"CREATE (a)-[:{edge['edge_type']}]->(b)"
+                    )
+                result["export"] = "\n".join(cypher_statements)
+
+            elif export_format == "graphml":
+                # Generate GraphML XML
+                graphml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+                graphml_parts.append(
+                    '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">'
+                )
+                graphml_parts.append('  <graph id="G" edgedefault="directed">')
+
+                for node in nodes_data:
+                    graphml_parts.append(
+                        f'    <node id="{node["id"]}">'
+                        f'<data key="label">{node["label"]}</data>'
+                        f'<data key="type">{node["type"]}</data></node>'
+                    )
+
+                for i, edge in enumerate(edges_data):
+                    graphml_parts.append(
+                        f'    <edge id="e{i}" source="{edge["source_id"]}" '
+                        f'target="{edge["target_id"]}">'
+                        f'<data key="type">{edge["edge_type"]}</data></edge>'
+                    )
+
+                graphml_parts.append("  </graph>")
+                graphml_parts.append("</graphml>")
+                result["export"] = "\n".join(graphml_parts)
+
+            logger.info(
+                f"Extracted subgraph: {len(nodes_data)} nodes, {len(edges_data)} edges"
+            )
+            return result
+
+    def merge_duplicate_nodes(
+        self, node_ids: List[str], keep_node_id: str, merge_strategy: str = "union"
+    ) -> Dict[str, Any]:
+        """Merge duplicate nodes into a single node.
+
+        Args:
+            node_ids: List of node IDs to merge (including keep_node_id)
+            keep_node_id: ID of the node to keep
+            merge_strategy: How to merge properties:
+                - union: Combine all properties
+                - keep: Keep only properties from keep_node
+                - prefer_newer: Use properties from most recently updated node
+
+        Returns:
+            Dictionary with merge results and updated node
+        """
+        if keep_node_id not in node_ids:
+            raise ValueError(f"keep_node_id {keep_node_id} must be in node_ids list")
+
+        if len(node_ids) < 2:
+            raise ValueError("Need at least 2 nodes to merge")
+
+        with self.db_manager.get_session() as session:
+            # Get all nodes
+            nodes = session.query(Node).filter(Node.id.in_(node_ids)).all()
+            if len(nodes) != len(node_ids):
+                found_ids = {n.id for n in nodes}
+                missing = set(node_ids) - found_ids
+                raise ValueError(f"Some nodes not found: {missing}")
+
+            keep_node = next(n for n in nodes if n.id == keep_node_id)
+            merge_nodes = [n for n in nodes if n.id != keep_node_id]
+
+            # Merge properties based on strategy
+            merged_props = keep_node.properties.copy() if keep_node.properties else {}
+
+            if merge_strategy == "union":
+                for node in merge_nodes:
+                    if node.properties:
+                        merged_props.update(node.properties)
+
+            elif merge_strategy == "prefer_newer":
+                all_nodes_sorted = sorted(
+                    nodes, key=lambda n: n.updated_at, reverse=True
+                )
+                for node in reversed(all_nodes_sorted):
+                    if node.properties:
+                        merged_props.update(node.properties)
+
+            # merge_strategy == "keep" - keep existing properties
+
+            # Update keep_node properties
+            keep_node.properties = merged_props
+            keep_node.updated_at = datetime.now(timezone.utc)
+
+            # Redirect all edges from merge_nodes to keep_node
+            edges_updated = 0
+            for merge_node in merge_nodes:
+                # Update outgoing edges
+                outgoing = (
+                    session.query(Edge).filter(Edge.source_id == merge_node.id).all()
+                )
+                for edge in outgoing:
+                    # Check if edge already exists with keep_node
+                    existing = (
+                        session.query(Edge)
+                        .filter(
+                            and_(
+                                Edge.source_id == keep_node_id,
+                                Edge.target_id == edge.target_id,
+                                Edge.edge_type == edge.edge_type,
+                            )
+                        )
+                        .first()
+                    )
+                    if existing:
+                        # Delete duplicate
+                        session.delete(edge)
+                    else:
+                        edge.source_id = keep_node_id
+                    edges_updated += 1
+
+                # Update incoming edges
+                incoming = (
+                    session.query(Edge).filter(Edge.target_id == merge_node.id).all()
+                )
+                for edge in incoming:
+                    # Check if edge already exists with keep_node
+                    existing = (
+                        session.query(Edge)
+                        .filter(
+                            and_(
+                                Edge.source_id == edge.source_id,
+                                Edge.target_id == keep_node_id,
+                                Edge.edge_type == edge.edge_type,
+                            )
+                        )
+                        .first()
+                    )
+                    if existing:
+                        # Delete duplicate
+                        session.delete(edge)
+                    else:
+                        edge.target_id = keep_node_id
+                    edges_updated += 1
+
+            # Delete merged nodes
+            for merge_node in merge_nodes:
+                session.delete(merge_node)
+
+            session.commit()
+
+            # Refresh keep_node to get updated data
+            session.refresh(keep_node)
+            session.expunge(keep_node)
+
+            result = {
+                "kept_node_id": keep_node_id,
+                "merged_node_ids": [n.id for n in merge_nodes],
+                "edges_redirected": edges_updated,
+                "merged_properties": merged_props,
+                "node": keep_node.to_dict(),
+            }
+
+            logger.info(
+                f"Merged {len(merge_nodes)} nodes into {keep_node_id}, "
+                f"redirected {edges_updated} edges"
+            )
+            return result
 
     def get_edges(
         self,

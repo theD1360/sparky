@@ -5,7 +5,10 @@
       "args": [
         "src/tools/network/server.py"
       ],
-      "description": "Comprehensive network tools: HTTP requests, WHOIS, DNS, subdomain enumeration, IP info, web stack detection"
+      "description": "Comprehensive network tools: HTTP requests, WHOIS, DNS, subdomain enumeration, IP info, web stack detection",
+      "env": {
+        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+      }
     },
     "code": {
       "command": "python",
@@ -14,6 +17,7 @@
       ],
       "description": "Code execution and analysis tools",
       "env": {
+        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}",
         "SPARKY_DB_URL": "${SPARKY_DB_URL}"
       }
     },
@@ -22,36 +26,49 @@
       "args": [
         "src/tools/shell/server.py"
       ],
-      "description": "Shell command execution tools"
+      "description": "Shell command execution tools",
+      "env": {
+        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+      }
     },
-    "self-update": {
+    "update": {
       "command": "python",
       "args": [
-        "src/tools/self_update/server.py"
+        "src/tools/update/server.py"
       ],
-      "description": "Self-update functionality"
+      "description": "Update functionality",
+      "env": {
+        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+      }
     },
     "utilities": {
       "command": "python",
       "args": [
         "src/tools/miscellaneous/server.py"
       ],
-      "description": "Comprehensive utility tools: math operations, string manipulation, base64 encoding, JSON operations, sandboxed code execution"
+      "description": "Comprehensive utility tools: math operations, string manipulation, base64 encoding, JSON operations, sandboxed code execution",
+      "env": {
+        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+      }
     },
     "criminal_ip": {
       "command": "python",
       "args": [
         "src/tools/criminal_ip/server.py"
       ],
-      "description": "Criminal IP threat intelligence tools"
+      "description": "Criminal IP threat intelligence tools",
+      "env": {
+        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+      }
     },
-    "knowledge_graph": {
+    "knowledge": {
       "command": "python",
       "args": [
-        "src/tools/knowledge_graph/server.py"
+        "src/tools/knowledge/server.py"
       ],
       "description": "Knowledge graph and memory management (unified SQLite storage)",
       "env": {
+        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}",
         "SPARKY_DB_URL": "${SPARKY_DB_URL}"
       }
     },
@@ -60,7 +77,10 @@
       "args": [
         "src/tools/introspection/server.py"
       ],
-      "description": "Introspection tools for system and self-monitoring"
+      "description": "Introspection tools for system and self-monitoring",
+      "env": {
+        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+      }
     },
     "metaMCP": {
       "url" : "http://metamcp:12008/metamcp/sparky/sse",

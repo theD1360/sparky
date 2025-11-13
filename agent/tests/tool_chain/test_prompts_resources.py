@@ -19,7 +19,7 @@ async def test_prompts():
             name="knowledge-graph-tools",
             type="stdio",
             command="python",
-            args=["-m", "tools.knowledge_graph.server"],
+            args=["-m", "tools.knowledge.server"],
             env={"SPARKY_DB_URL": os.getenv("SPARKY_DB_URL")},
         )
     )
@@ -83,7 +83,7 @@ async def test_resources():
             name="knowledge-graph-tools",
             type="stdio",
             command="python",
-            args=["-m", "tools.knowledge_graph.server"],
+            args=["-m", "tools.knowledge.server"],
             env={"SPARKY_DB_URL": os.getenv("SPARKY_DB_URL")},
         )
     )

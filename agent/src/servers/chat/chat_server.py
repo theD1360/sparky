@@ -45,7 +45,7 @@ from servers.chat.routes import (
 
 # Import the necessary components for the agent orchestrator
 from sparky import AgentOrchestrator
-from sparky.constants import PID_FILE
+from sparky.constants import SPARKY_CHAT_PID_FILE
 from sparky.initialization import initialize_toolchain_with_knowledge
 from sparky.knowledge import Knowledge
 from sparky.logging_config import setup_logging
@@ -619,9 +619,9 @@ async def _periodic_cleanup():
 def _create_pid_file():
     """Create the PID file for the server process."""
     try:
-        with open(PID_FILE, "w") as f:
+        with open(SPARKY_CHAT_PID_FILE, "w") as f:
             f.write(str(os.getpid()))
-        logger.info(f"Created PID file: {PID_FILE}")
+        logger.info(f"Created PID file: {SPARKY_CHAT_PID_FILE}")
     except Exception as e:
         logger.error(f"Failed to create PID file: {e}")
 
@@ -629,9 +629,9 @@ def _create_pid_file():
 def _remove_pid_file():
     """Remove the PID file."""
     try:
-        if os.path.exists(PID_FILE):
-            os.remove(PID_FILE)
-            logger.info(f"Removed PID file: {PID_FILE}")
+        if os.path.exists(SPARKY_CHAT_PID_FILE):
+            os.remove(SPARKY_CHAT_PID_FILE)
+            logger.info(f"Removed PID file: {SPARKY_CHAT_PID_FILE}")
     except Exception as e:
         logger.error(f"Failed to remove PID file: {e}")
 

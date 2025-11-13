@@ -1,19 +1,12 @@
 """MCP Server for triggering self-updates."""
 
-import sys
-from pathlib import Path
-
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 import asyncio
 import os
 import signal
 
 from mcp.server.fastmcp import FastMCP
-
-from sparky.constants import PID_FILE
 from models import MCPResponse
+from sparky.constants import SPARKY_CHAT_PID_FILE
 
 # Initialize the MCP server
 mcp = FastMCP("self-update-tools")
@@ -40,12 +33,12 @@ async def trigger_self_update() -> dict:
 
 
 @mcp.tool()
-async def restart_server() -> dict:
+async def restart_chat_server() -> dict:
     """Restarts the chat server by sending a SIGTERM signal to the current process, allowing the process manager to restart it."""
     try:
         # Send SIGTERM to current process to trigger graceful shutdown
         # The process manager (like systemd, docker, or the update script) will restart it
-        with open(PID_FILE, "r") as f:
+        with open(SPARKY_CHAT_PID_FILE, "r") as f:
             pid = int(f.read())
         os.kill(pid, signal.SIGTERM)
 
@@ -61,7 +54,7 @@ async def stop_server() -> dict:
     """Stops the chat server by sending a SIGTERM signal to the current process."""
     try:
         # Send SIGTERM to current process to trigger graceful shutdown
-        with open(PID_FILE, "r") as f:
+        with open(SPARKY_CHAT_PID_FILE, "r") as f:
             pid = int(f.read())
         os.kill(pid, signal.SIGTERM)
 

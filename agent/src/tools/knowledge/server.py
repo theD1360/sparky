@@ -1,7 +1,9 @@
 """MCP Server for Knowledge Graph Tools with Advanced Querying.
 
 This server provides comprehensive graph operations including:
-- Basic CRUD operations (add_node, add_edge, get_node_by_id, etc.)
+- Basic CRUD operations (add_node, add_edge, update_node, get_node_by_id, etc.)
+- Bulk operations (bulk_add_nodes, bulk_add_edges, append_graph) for efficient batch processing
+- Graph intelligence (find_similar_nodes, validate_graph_integrity, extract_subgraph, merge_duplicate_nodes)
 - Advanced querying with openCypher-like syntax (query_graph)
 - Path finding algorithms (find_path)
 - Graph analytics (analyze_graph)
@@ -31,12 +33,6 @@ RESOURCES (direct data access):
 - knowledge://tool-usage/recent - Recent tool usage stats
 - knowledge://plans - List all plan files from plans/ directory
 """
-
-import sys
-from pathlib import Path
-
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import json
 import logging
@@ -83,13 +79,15 @@ MAX_NODE_CONTENT_SIZE = 5000  # 5KB per node content
 MAX_TOTAL_RESULT_SIZE = 100000  # 100KB total result size
 
 
-def _truncate_node_content(node_dict: dict, max_size: int = MAX_NODE_CONTENT_SIZE) -> dict:
+def _truncate_node_content(
+    node_dict: dict, max_size: int = MAX_NODE_CONTENT_SIZE
+) -> dict:
     """Truncate node content if too large to prevent massive tool results.
-    
+
     Args:
         node_dict: Node dictionary with 'content' field
         max_size: Maximum content size in bytes
-        
+
     Returns:
         Modified node dict with truncated content if needed
     """
@@ -97,7 +95,9 @@ def _truncate_node_content(node_dict: dict, max_size: int = MAX_NODE_CONTENT_SIZ
         content = node_dict["content"]
         if len(content) > max_size:
             original_size = len(content)
-            node_dict["content"] = content[:max_size] + f"\n[... truncated: {original_size:,} bytes total]"
+            node_dict["content"] = (
+                content[:max_size] + f"\n[... truncated: {original_size:,} bytes total]"
+            )
             node_dict["_truncated"] = True
             node_dict["_original_size"] = original_size
     return node_dict
@@ -199,6 +199,65 @@ def add_node(
 
 
 @mcp.tool()
+def update_node(
+    node_id: str,
+    node_type: str = None,
+    label: str = None,
+    content: str = None,
+    properties: dict = None,
+) -> dict:
+    """Update an existing node in the knowledge graph.
+
+    Unlike add_node which creates new nodes or updates existing ones, this tool ONLY updates
+    existing nodes and returns an error if the node doesn't exist. Use this when you want
+    to modify a node and ensure it already exists rather than accidentally creating a new one.
+
+    You can update any combination of fields - only provided fields will be changed, others
+    will remain unchanged.
+
+    Args:
+        node_id: Unique identifier of the node to update (required)
+        node_type: New type for the node (optional)
+        label: New label (optional)
+        content: New content (optional)
+        properties: New properties dictionary (optional, replaces existing properties)
+
+    Returns:
+        Dictionary with updated node data
+
+    Example:
+        # Update just the content of an existing node
+        update_node("concept:python", content="Updated description of Python...")
+
+        # Update multiple fields
+        update_node("concept:python", label="Python 3.x",
+                   properties={"version": "3.12", "importance": "critical"})
+    """
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        updated_node = _kb_repository.update_node(
+            node_id=node_id,
+            node_type=node_type,
+            label=label,
+            content=content,
+            properties=properties,
+        )
+
+        result_msg = f"Successfully updated node '{node_id}'"
+        return MCPResponse.success(
+            result=updated_node.to_dict(), message=result_msg
+        ).to_dict()
+    except ValueError as e:
+        # Node not found
+        return MCPResponse.error(str(e)).to_dict()
+    except Exception as e:
+        logger.error("Error updating node: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to update node: {str(e)}").to_dict()
+
+
+@mcp.tool()
 def add_edge(
     source_id: str, target_id: str, edge_type: str, properties: dict = None
 ) -> dict:
@@ -252,6 +311,431 @@ def add_edge(
     except Exception as e:
         logger.error("Error adding edge: %s", e, exc_info=True)
         return MCPResponse.error(f"Failed to add edge: {str(e)}").to_dict()
+
+
+@mcp.tool()
+def bulk_add_nodes(nodes: list[dict]) -> dict:
+    """Add or update multiple nodes in the knowledge graph in a single operation.
+
+    This is an optimized version of add_node for batch operations. All nodes are processed
+    in a single transaction, making it much more efficient when adding many nodes at once.
+    Each node in the list can be added or updated independently - failures on individual
+    nodes don't affect the others.
+
+    Args:
+        nodes: List of node dictionaries, each containing:
+            - node_id: Unique identifier for the node (required)
+            - node_type: Type category of the node (required)
+            - label: Human-readable short description (required)
+            - content: Full text content (optional)
+            - properties: Additional metadata as key-value pairs (optional)
+
+    Returns:
+        Dictionary with summary of the operation:
+            - added: List of node IDs that were created
+            - updated: List of node IDs that were updated
+            - failed: List of failures with node_id and error message
+            - total: Total number of nodes processed
+
+    Example:
+        bulk_add_nodes([
+            {
+                "node_id": "concept:python",
+                "node_type": "Concept",
+                "label": "Python Programming",
+                "content": "Python is a high-level language...",
+                "properties": {"importance": "high"}
+            },
+            {
+                "node_id": "concept:java",
+                "node_type": "Concept",
+                "label": "Java Programming",
+                "content": "Java is an object-oriented language..."
+            }
+        ])
+    """
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        result = _kb_repository.bulk_add_nodes(nodes)
+
+        summary = (
+            f"Bulk operation completed: {len(result['added'])} added, "
+            f"{len(result['updated'])} updated, {len(result['failed'])} failed"
+        )
+
+        return MCPResponse.success(result=result, message=summary).to_dict()
+    except Exception as e:
+        logger.error("Error in bulk_add_nodes: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to bulk add nodes: {str(e)}").to_dict()
+
+
+@mcp.tool()
+def bulk_add_edges(edges: list[dict]) -> dict:
+    """Add or update multiple edges (relationships) in the knowledge graph in a single operation.
+
+    This is an optimized version of add_edge for batch operations. All edges are processed
+    in a single transaction, making it much more efficient when adding many relationships at once.
+    Both source and target nodes must exist before creating edges. Individual edge failures
+    don't affect the processing of other edges.
+
+    Args:
+        edges: List of edge dictionaries, each containing:
+            - source_id: ID of the source node (required)
+            - target_id: ID of the target node (required)
+            - edge_type: Type of relationship (required)
+            - properties: Additional metadata (optional)
+
+    Returns:
+        Dictionary with summary of the operation:
+            - added: List of edge descriptions that were created
+            - updated: List of edge descriptions that were updated
+            - failed: List of failures with edge info and error message
+            - total: Total number of edges processed
+
+    Example:
+        bulk_add_edges([
+            {
+                "source_id": "concept:python",
+                "target_id": "concept:programming",
+                "edge_type": "INSTANCE_OF"
+            },
+            {
+                "source_id": "concept:java",
+                "target_id": "concept:programming",
+                "edge_type": "INSTANCE_OF",
+                "properties": {"strength": 0.9}
+            }
+        ])
+    """
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        result = _kb_repository.bulk_add_edges(edges)
+
+        summary = (
+            f"Bulk operation completed: {len(result['added'])} added, "
+            f"{len(result['updated'])} updated, {len(result['failed'])} failed"
+        )
+
+        return MCPResponse.success(result=result, message=summary).to_dict()
+    except Exception as e:
+        logger.error("Error in bulk_add_edges: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to bulk add edges: {str(e)}").to_dict()
+
+
+@mcp.tool()
+def append_graph(nodes: list[dict], edges: list[dict]) -> dict:
+    """Append a complete subgraph (nodes and edges together) to the knowledge graph.
+
+    This is a convenience tool for adding a collection of related nodes and their
+    relationships all at once. It's essentially "merging" a subgraph into the main
+    knowledge graph. This is more efficient and convenient than calling bulk_add_nodes
+    and bulk_add_edges separately.
+
+    Nodes are added first, then edges are created between them. All operations happen
+    in optimized bulk transactions. Individual failures don't prevent other items
+    from being processed.
+
+    Args:
+        nodes: List of node dictionaries, each containing:
+            - node_id: Unique identifier (required)
+            - node_type: Type category (required)
+            - label: Human-readable description (required)
+            - content: Full text content (optional)
+            - properties: Additional metadata (optional)
+        edges: List of edge dictionaries, each containing:
+            - source_id: ID of source node (required)
+            - target_id: ID of target node (required)
+            - edge_type: Type of relationship (required)
+            - properties: Additional metadata (optional)
+
+    Returns:
+        Dictionary with detailed results:
+            - nodes_added: List of created node IDs
+            - nodes_updated: List of updated node IDs
+            - nodes_failed: List of node failures with errors
+            - edges_added: List of created edge descriptions
+            - edges_updated: List of updated edge descriptions
+            - edges_failed: List of edge failures with errors
+            - total_nodes: Total nodes processed
+            - total_edges: Total edges processed
+
+    Example:
+        # Add a small concept hierarchy
+        append_graph(
+            nodes=[
+                {
+                    "node_id": "concept:animals",
+                    "node_type": "Concept",
+                    "label": "Animals",
+                    "content": "Living organisms that..."
+                },
+                {
+                    "node_id": "concept:mammals",
+                    "node_type": "Concept",
+                    "label": "Mammals",
+                    "content": "Warm-blooded vertebrates..."
+                },
+                {
+                    "node_id": "concept:dogs",
+                    "node_type": "Concept",
+                    "label": "Dogs",
+                    "content": "Domesticated mammals..."
+                }
+            ],
+            edges=[
+                {
+                    "source_id": "concept:mammals",
+                    "target_id": "concept:animals",
+                    "edge_type": "SUBCLASS_OF"
+                },
+                {
+                    "source_id": "concept:dogs",
+                    "target_id": "concept:mammals",
+                    "edge_type": "SUBCLASS_OF"
+                }
+            ]
+        )
+    """
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        result = _kb_repository.append_graph(nodes, edges)
+
+        summary = (
+            f"Graph appended: {len(result['nodes_added'])} nodes added, "
+            f"{len(result['nodes_updated'])} nodes updated, "
+            f"{len(result['edges_added'])} edges added, "
+            f"{len(result['edges_updated'])} edges updated"
+        )
+
+        if result["nodes_failed"] or result["edges_failed"]:
+            summary += (
+                f" ({len(result['nodes_failed'])} node failures, "
+                f"{len(result['edges_failed'])} edge failures)"
+            )
+
+        return MCPResponse.success(result=result, message=summary).to_dict()
+    except Exception as e:
+        logger.error("Error in append_graph: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to append graph: {str(e)}").to_dict()
+
+
+@mcp.tool()
+def find_similar_nodes(
+    node_id: str,
+    similarity_threshold: float = 0.7,
+    limit: int = 20,
+    include_self: bool = False,
+) -> dict:
+    """Find nodes semantically similar to a given node using vector embeddings.
+
+    Uses cosine similarity on the node's embedding vector to find related nodes.
+    This is great for discovering connections, finding related concepts, or
+    identifying potential duplicate nodes.
+
+    Args:
+        node_id: ID of the reference node to find similar nodes for
+        similarity_threshold: Minimum similarity score (0.0-1.0), where 1.0 is identical
+        limit: Maximum number of similar nodes to return
+        include_self: Whether to include the reference node in results
+
+    Returns:
+        List of similar nodes with their similarity scores, ordered by relevance
+
+    Example:
+        # Find concepts similar to Python
+        find_similar_nodes("concept:python", similarity_threshold=0.8, limit=10)
+
+        # Find potential duplicates (very high threshold)
+        find_similar_nodes("concept:python", similarity_threshold=0.95, limit=5)
+    """
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        similar_nodes = _kb_repository.find_similar_nodes(
+            node_id=node_id,
+            similarity_threshold=similarity_threshold,
+            limit=limit,
+            include_self=include_self,
+        )
+
+        message = f"Found {len(similar_nodes)} similar nodes to '{node_id}'"
+        return MCPResponse.success(result=similar_nodes, message=message).to_dict()
+    except ValueError as e:
+        return MCPResponse.error(str(e)).to_dict()
+    except Exception as e:
+        logger.error("Error finding similar nodes: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to find similar nodes: {str(e)}").to_dict()
+
+
+@mcp.tool()
+def validate_graph_integrity(checks: list[str] = None) -> dict:
+    """Run comprehensive health checks on the knowledge graph.
+
+    Detects various issues like orphaned nodes, dangling edges, missing embeddings,
+    duplicates, and other structural problems. Use this regularly to maintain
+    graph quality and catch issues early.
+
+    Args:
+        checks: List of specific checks to run. If None, runs all checks.
+            Available checks:
+            - orphaned_nodes: Nodes with no connections
+            - dangling_edges: Edges pointing to non-existent nodes
+            - missing_embeddings: Nodes without vector embeddings
+            - duplicate_edges: Duplicate edge relationships
+            - self_loops: Edges from a node to itself
+
+    Returns:
+        Dictionary with check results, issue details, and health status
+
+    Example:
+        # Run all checks
+        validate_graph_integrity()
+
+        # Run specific checks
+        validate_graph_integrity(["orphaned_nodes", "dangling_edges"])
+    """
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        results = _kb_repository.validate_graph_integrity(checks=checks)
+
+        status = "healthy" if results["healthy"] else "issues detected"
+        message = (
+            f"Graph integrity check complete: {status}. "
+            f"Found {results['total_issues']} issues across {len(results['checks_run'])} checks."
+        )
+
+        return MCPResponse.success(result=results, message=message).to_dict()
+    except Exception as e:
+        logger.error("Error validating graph integrity: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to validate graph: {str(e)}").to_dict()
+
+
+@mcp.tool()
+def extract_subgraph(
+    root_node_ids: list[str],
+    depth: int = 2,
+    include_node_types: list[str] = None,
+    export_format: str = "json",
+) -> dict:
+    """Extract a subgraph around specified nodes and export in various formats.
+
+    Useful for backing up portions of the graph, sharing knowledge structures,
+    or integrating with external tools. Supports multiple export formats.
+
+    Args:
+        root_node_ids: List of node IDs to use as starting points for extraction
+        depth: How many relationship hops to traverse from root nodes
+        include_node_types: Optional filter to only include certain node types
+        export_format: Format for export:
+            - json: Standard JSON format (default)
+            - cypher: Neo4j Cypher CREATE statements
+            - graphml: GraphML XML format for visualization tools
+
+    Returns:
+        Dictionary with nodes, edges, statistics, and formatted export string
+
+    Example:
+        # Extract a concept hierarchy
+        extract_subgraph(
+            root_node_ids=["concept:programming"],
+            depth=3,
+            include_node_types=["Concept"],
+            export_format="json"
+        )
+
+        # Export to Cypher for Neo4j import
+        extract_subgraph(
+            root_node_ids=["concept:python", "concept:java"],
+            depth=2,
+            export_format="cypher"
+        )
+    """
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        result = _kb_repository.extract_subgraph(
+            root_node_ids=root_node_ids,
+            depth=depth,
+            include_node_types=include_node_types,
+            export_format=export_format,
+        )
+
+        message = (
+            f"Extracted subgraph: {result['stats']['node_count']} nodes, "
+            f"{result['stats']['edge_count']} edges (depth={depth}, format={export_format})"
+        )
+
+        return MCPResponse.success(result=result, message=message).to_dict()
+    except Exception as e:
+        logger.error("Error extracting subgraph: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to extract subgraph: {str(e)}").to_dict()
+
+
+@mcp.tool()
+def merge_duplicate_nodes(
+    node_ids: list[str], keep_node_id: str, merge_strategy: str = "union"
+) -> dict:
+    """Merge duplicate or redundant nodes into a single consolidated node.
+
+    Combines multiple nodes that represent the same concept, redirecting all
+    their edges to the kept node. Useful for cleaning up duplicates and
+    consolidating knowledge from multiple sources.
+
+    Args:
+        node_ids: List of all node IDs to merge (must include keep_node_id)
+        keep_node_id: ID of the node to keep (others will be deleted)
+        merge_strategy: How to merge node properties:
+            - union: Combine all properties from all nodes (default)
+            - keep: Keep only properties from the kept node
+            - prefer_newer: Use properties from most recently updated node
+
+    Returns:
+        Dictionary with merge results, updated node, and edge redirect count
+
+    Example:
+        # Merge duplicate Python concepts
+        merge_duplicate_nodes(
+            node_ids=["concept:python", "concept:python_lang", "concept:python3"],
+            keep_node_id="concept:python",
+            merge_strategy="union"
+        )
+
+        # Merge keeping only target node's properties
+        merge_duplicate_nodes(
+            node_ids=["user:john_doe", "user:john"],
+            keep_node_id="user:john_doe",
+            merge_strategy="keep"
+        )
+    """
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        result = _kb_repository.merge_duplicate_nodes(
+            node_ids=node_ids, keep_node_id=keep_node_id, merge_strategy=merge_strategy
+        )
+
+        message = (
+            f"Merged {len(result['merged_node_ids'])} nodes into '{keep_node_id}', "
+            f"redirected {result['edges_redirected']} edges"
+        )
+
+        return MCPResponse.success(result=result, message=message).to_dict()
+    except ValueError as e:
+        return MCPResponse.error(str(e)).to_dict()
+    except Exception as e:
+        logger.error("Error merging nodes: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to merge nodes: {str(e)}").to_dict()
 
 
 @mcp.tool()
@@ -465,7 +949,9 @@ def get_graph_map(
             all_nodes = _kb_repository.get_nodes(limit=nodes_limit, offset=nodes_offset)
             if include_details:
                 # Truncate large content to prevent massive results
-                graph_map["nodes"] = [_truncate_node_content(node.to_dict()) for node in all_nodes]
+                graph_map["nodes"] = [
+                    _truncate_node_content(node.to_dict()) for node in all_nodes
+                ]
             else:
                 graph_map["nodes"] = [
                     {"id": node.id, "label": node.label or ""} for node in all_nodes
@@ -1442,8 +1928,10 @@ def get_tool_usage_history(
             # Truncate large tool results to prevent massive responses
             result = props.get("result")
             if result and isinstance(result, str) and len(result) > 10000:
-                result = result[:10000] + f"\n[... truncated: {len(result):,} chars total]"
-            
+                result = (
+                    result[:10000] + f"\n[... truncated: {len(result):,} chars total]"
+                )
+
             filtered_calls.append(
                 {
                     "tool_call_id": tc["id"],

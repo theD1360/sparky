@@ -71,7 +71,7 @@ class MCPConfig:
     def _interpolate_env_vars(value: Any) -> Any:
         """Recursively interpolate environment variables in config values.
 
-        Supports ${VAR_NAME} syntax.
+        Supports ${VAR_NAME} and ${VAR_NAME:-default} syntax.
 
         Args:
             value: Config value (can be string, dict, list, etc.)
@@ -80,10 +80,16 @@ class MCPConfig:
             Value with environment variables replaced
         """
         if isinstance(value, str):
-            # Replace ${VAR_NAME} with environment variable value
+            # Replace ${VAR_NAME:-default} with environment variable or default
             def replace_var(match):
-                var_name = match.group(1)
-                return os.environ.get(var_name, "")
+                full_expr = match.group(1)
+                # Check if it has a default value (VAR:-default)
+                if ":-" in full_expr:
+                    var_name, default_value = full_expr.split(":-", 1)
+                    return os.environ.get(var_name, default_value)
+                else:
+                    # Simple ${VAR_NAME} syntax
+                    return os.environ.get(full_expr, "")
 
             return re.sub(r"\$\{([^}]+)\}", replace_var, value)
         elif isinstance(value, dict):
@@ -145,13 +151,17 @@ class MCPConfig:
     def _ensure_required_servers(self):
         """Ensure required servers are present in the configuration.
 
-        Currently ensures knowledge_graph server is always present.
+        Currently ensures knowledge server is always present.
         """
         required_servers = {
-            "knowledge_graph": {
+            "knowledge": {
                 "command": "python",
-                "args": ["src/tools/knowledge_graph/server.py"],
+                "args": ["src/tools/knowledge/server.py"],
                 "description": "Knowledge graph and memory management (required)",
+                "env": {
+                    "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}",
+                    "SPARKY_DB_URL": "${SPARKY_DB_URL}"
+                }
             }
         }
 

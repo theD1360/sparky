@@ -43,9 +43,17 @@ Tool Categories:
 7. DEVELOPMENT TOOLS
    - lint: Execute linters (currently ruff for Python)
 
-8. GRAPH-POWERED TOOLS ⚡ NEW!
+8. GRAPH-POWERED TOOLS ⚡
    - get_file_context: Get intelligent context about a file (imports, symbols, related files)
    - search_codebase: Semantic search across codebase by meaning
+   - symbol_search: Find functions/classes in codebase (with wildcards)
+   - find_references: Track where modules/symbols are used
+
+9. ENHANCED SEARCH TOOLS ⚡ NEW!
+   - file_search: Now supports regex patterns for advanced matching
+
+10. BATCH OPERATIONS ⚡ NEW!
+   - batch_read_files: Read multiple files in one operation
 
 GRAPH INTEGRATION STATUS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -68,12 +76,6 @@ FUTURE ENHANCEMENTS
 """
 
 from __future__ import annotations
-
-import sys
-from pathlib import Path
-
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import ast
 import asyncio
@@ -1312,12 +1314,16 @@ def tail(path: str, lines: int = 10) -> dict:
 
 @mcp.tool()
 def file_search(
-    pattern: str, query: str, case_sensitive: bool = True, max_results: int = 100
+    pattern: str,
+    query: str,
+    case_sensitive: bool = True,
+    use_regex: bool = False,
+    max_results: int = 100,
 ) -> dict:
     """Search for text across multiple files using glob patterns.
 
     **Enhanced tool** that searches for text across one or many files. Supports
-    glob patterns to search multiple files at once.
+    glob patterns to search multiple files at once, and regex for advanced matching.
 
     Args:
         pattern: File path or glob pattern to search
@@ -1326,8 +1332,9 @@ def file_search(
                  - "*.py" - all Python files in current dir
                  - "src/**/*.py" - all Python files recursively in src/
                  - "**/*.{py,js}" - all Python and JS files everywhere
-        query: Text string to search for
+        query: Text string or regex pattern to search for
         case_sensitive: Whether search is case-sensitive (default: True)
+        use_regex: Whether to treat query as a regex pattern (default: False)
         max_results: Maximum number of results to return (default: 100)
 
     Returns:
@@ -1340,11 +1347,15 @@ def file_search(
         # Search all Python files
         file_search("**/*.py", "TODO")
 
-        # Search all JS/TS files in src/
-        file_search("src/**/*.{js,ts}", "import React")
+        # Regex search for function definitions
+        file_search(r"**/*.py", r"def \\w+\\(.*\\):", use_regex=True)
+
+        # Find all class definitions
+        file_search(r"**/*.py", r"class \\w+.*:", use_regex=True)
     """
     try:
         import glob
+        import re
 
         # Get matching files
         if "**" in pattern or "*" in pattern or "?" in pattern or "{" in pattern:
@@ -1364,8 +1375,16 @@ def file_search(
                 f"No files found matching pattern: {pattern}"
             ).to_dict()
 
-        # Prepare query for case-insensitive search
-        search_query = query if case_sensitive else query.lower()
+        # Compile regex if needed
+        if use_regex:
+            try:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                regex_pattern = re.compile(query, flags)
+            except re.error as e:
+                return MCPResponse.error(f"Invalid regex pattern: {str(e)}").to_dict()
+        else:
+            # Prepare query for case-insensitive search
+            search_query = query if case_sensitive else query.lower()
 
         # Search across all files
         results = []
@@ -1378,20 +1397,33 @@ def file_search(
 
                 for line_num, line in enumerate(lines, start=1):
                     # Check for match
-                    line_to_check = line if case_sensitive else line.lower()
-                    if search_query in line_to_check:
-                        results.append(
-                            {
-                                "file": file_path,
-                                "line": line_num,
-                                "content": line.rstrip(),
-                            }
-                        )
-                        total_matches += 1
+                    if use_regex:
+                        match = regex_pattern.search(line)
+                        if match:
+                            results.append(
+                                {
+                                    "file": file_path,
+                                    "line": line_num,
+                                    "content": line.rstrip(),
+                                    "match": match.group(0),
+                                }
+                            )
+                            total_matches += 1
+                    else:
+                        line_to_check = line if case_sensitive else line.lower()
+                        if search_query in line_to_check:
+                            results.append(
+                                {
+                                    "file": file_path,
+                                    "line": line_num,
+                                    "content": line.rstrip(),
+                                }
+                            )
+                            total_matches += 1
 
-                        # Stop if we hit the limit
-                        if total_matches >= max_results:
-                            break
+                    # Stop if we hit the limit
+                    if total_matches >= max_results:
+                        break
 
                 if total_matches >= max_results:
                     break
@@ -1404,7 +1436,8 @@ def file_search(
         files_searched = len(files)
         files_with_matches = len(set(r["file"] for r in results))
 
-        message = f"Found {total_matches} match(es) in {files_with_matches} file(s)"
+        search_type = "regex" if use_regex else "text"
+        message = f"Found {total_matches} {search_type} match(es) in {files_with_matches} file(s)"
         message += f" (searched {files_searched} file(s))"
 
         if total_matches >= max_results:
@@ -1419,6 +1452,7 @@ def file_search(
                 "query": query,
                 "pattern": pattern,
                 "case_sensitive": case_sensitive,
+                "use_regex": use_regex,
             },
             message=message,
         ).to_dict()
@@ -1987,6 +2021,307 @@ async def search_codebase(query: str, file_type: str = None, limit: int = 10) ->
 
     except Exception as e:
         return MCPResponse.error(f"Error searching codebase: {str(e)}").to_dict()
+
+
+@mcp.tool()
+async def symbol_search(
+    symbol_name: str = None,
+    symbol_type: str = None,
+    file_pattern: str = None,
+    limit: int = 50,
+) -> dict:
+    """Search for symbols (functions, classes) in the codebase using the knowledge graph.
+
+    **GRAPH-POWERED TOOL**: Quickly find all functions, classes, or other symbols
+    in your codebase. Much faster than regex searching because it uses the indexed
+    knowledge graph.
+
+    Args:
+        symbol_name: Name or partial name of the symbol to find (optional)
+                     Supports wildcards: "test_*", "*Handler", "*manager*"
+        symbol_type: Type of symbol to find: "function", "class", "method" (optional)
+        file_pattern: Limit search to files matching this pattern (optional)
+                      Example: "src/", "**/*_test.py"
+        limit: Maximum number of results (default: 50)
+
+    Returns:
+        List of symbols with their names, types, files, and line numbers
+
+    Examples:
+        # Find all functions
+        symbol_search(symbol_type="function")
+
+        # Find all classes ending with "Handler"
+        symbol_search(symbol_name="*Handler", symbol_type="class")
+
+        # Find all test functions
+        symbol_search(symbol_name="test_*", symbol_type="function")
+
+        # Find symbols in a specific directory
+        symbol_search(file_pattern="src/tools/", symbol_type="function")
+    """
+    try:
+        # Ensure graph is initialized
+        try:
+            _ensure_graph_initialized()
+        except Exception as e:
+            return MCPResponse.error(
+                f"Knowledge graph initialization failed: {str(e)}\n"
+                "Ensure SPARKY_DB_URL environment variable is set."
+            ).to_dict()
+
+        if not _kb_repository:
+            return MCPResponse.error("Knowledge graph not available").to_dict()
+
+        # Get all symbol nodes
+        symbols = []
+
+        # Query symbols from the graph - use search if we have a name pattern
+        if symbol_name:
+            # Use semantic search for symbol names
+            nodes = _kb_repository.search_nodes(
+                query_text=symbol_name, node_type="Symbol", limit=limit * 2
+            )
+        else:
+            # Get all symbols of a certain type
+            from database.models import Node
+            from sqlalchemy import select
+
+            stmt = select(Node).where(Node.node_type == "Symbol")
+            result = _kb_repository.session.execute(stmt)
+            nodes = [row[0] for row in result.fetchall()][: limit * 2]
+
+        # Filter and format results
+        for node in nodes:
+            if not node or node.node_type != "Symbol":
+                continue
+
+            name = node.properties.get("name", "")
+            kind = node.properties.get("kind", "")
+            file_path = node.properties.get("file", "")
+            line = node.properties.get("line", 0)
+            signature = node.properties.get("signature", "")
+
+            # Apply filters
+            if symbol_type and kind != symbol_type:
+                continue
+
+            # Apply name filter with wildcard support
+            if symbol_name:
+                import fnmatch
+
+                # Convert wildcards to pattern
+                if not fnmatch.fnmatch(
+                    name.lower(), symbol_name.lower().replace("*", "*")
+                ):
+                    # Also try semantic match from search results
+                    if symbol_name not in name.lower():
+                        continue
+
+            # Apply file pattern filter
+            if file_pattern:
+                if file_pattern not in file_path:
+                    continue
+
+            symbols.append(
+                {
+                    "name": name,
+                    "type": kind,
+                    "file": file_path,
+                    "line": line,
+                    "signature": signature,
+                }
+            )
+
+            if len(symbols) >= limit:
+                break
+
+        # Sort by file and line
+        symbols.sort(key=lambda x: (x["file"], x["line"]))
+
+        message = f"Found {len(symbols)} symbol(s)"
+        if symbol_name:
+            message += f" matching '{symbol_name}'"
+        if symbol_type:
+            message += f" of type '{symbol_type}'"
+
+        return MCPResponse.success(
+            result={"symbols": symbols, "count": len(symbols)}, message=message
+        ).to_dict()
+
+    except Exception as e:
+        logger.exception("Error in symbol_search")
+        return MCPResponse.error(f"Error searching symbols: {str(e)}").to_dict()
+
+
+@mcp.tool()
+async def find_references(
+    module_or_symbol: str, reference_type: str = "imports"
+) -> dict:
+    """Find all files that reference a module or symbol.
+
+    **GRAPH-POWERED TOOL**: Track where a module or symbol is used across your
+    codebase. Essential for understanding dependencies and safe refactoring.
+
+    Args:
+        module_or_symbol: Name of the module or symbol to find references for
+                          Examples: "os", "pathlib", "requests", "MyClass"
+        reference_type: Type of reference to find:
+                        - "imports": Find files that import this module (default)
+                        - "all": Find all types of references
+
+    Returns:
+        List of files that reference the module/symbol with context
+
+    Examples:
+        # Find all files that import 'requests'
+        find_references("requests")
+
+        # Find all files that import 'database.models'
+        find_references("database.models")
+
+        # Find usages of a custom module
+        find_references("utils.helpers")
+    """
+    try:
+        # Ensure graph is initialized
+        try:
+            _ensure_graph_initialized()
+        except Exception as e:
+            return MCPResponse.error(
+                f"Knowledge graph initialization failed: {str(e)}\n"
+                "Ensure SPARKY_DB_URL environment variable is set."
+            ).to_dict()
+
+        if not _kb_repository:
+            return MCPResponse.error("Knowledge graph not available").to_dict()
+
+        # Look for module node
+        module_node_id = f"module:{module_or_symbol}"
+        module_node = _kb_repository.get_node(module_node_id)
+
+        if not module_node:
+            return MCPResponse.error(
+                f"Module '{module_or_symbol}' not found in knowledge graph.\n"
+                "Make sure files that import it have been read and indexed."
+            ).to_dict()
+
+        # Find all files that import this module (incoming IMPORTS edges)
+        import_edges = _kb_repository.get_edges(
+            target_id=module_node_id, edge_type="IMPORTS"
+        )
+
+        references = []
+        for edge in import_edges:
+            # Get the source file
+            source_node = _kb_repository.get_node(edge.source_id)
+            if source_node and source_node.node_type == "File":
+                file_path = source_node.properties.get("path", "")
+                language = source_node.properties.get("language", "")
+                lines = source_node.properties.get("lines", 0)
+
+                references.append(
+                    {
+                        "file": file_path,
+                        "language": language,
+                        "lines": lines,
+                        "reference_type": "import",
+                    }
+                )
+
+        # Sort by file path
+        references.sort(key=lambda x: x["file"])
+
+        message = f"Found {len(references)} file(s) that reference '{module_or_symbol}'"
+
+        return MCPResponse.success(
+            result={
+                "module": module_or_symbol,
+                "references": references,
+                "count": len(references),
+            },
+            message=message,
+        ).to_dict()
+
+    except Exception as e:
+        logger.exception("Error in find_references")
+        return MCPResponse.error(f"Error finding references: {str(e)}").to_dict()
+
+
+@mcp.tool()
+async def batch_read_files(paths: list[str], index_to_graph: bool = True) -> dict:
+    """Read multiple files at once and return their contents.
+
+    **EFFICIENCY TOOL**: Read many files in a single operation instead of
+    calling read_file multiple times. Useful for analyzing related files,
+    comparing implementations, or understanding a module.
+
+    Args:
+        paths: List of file paths to read
+        index_to_graph: Whether to index files to knowledge graph (default: True)
+
+    Returns:
+        Dictionary mapping file paths to their contents, with error tracking
+
+    Examples:
+        # Read all Python files in a directory
+        batch_read_files(["src/main.py", "src/utils.py", "src/config.py"])
+
+        # Read related test files
+        batch_read_files(["tests/test_auth.py", "tests/test_user.py"])
+    """
+    try:
+        results = {}
+        errors = {}
+        successful = 0
+
+        for path in paths:
+            try:
+                # Check if file exists
+                if not os.path.exists(path):
+                    errors[path] = "File not found"
+                    continue
+
+                if not os.path.isfile(path):
+                    errors[path] = "Not a file"
+                    continue
+
+                # Read file
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                # Mark as read for protection system
+                _mark_file_as_read(path, content)
+
+                # Index to graph if enabled
+                if index_to_graph:
+                    try:
+                        _ensure_graph_initialized()
+                        await _index_file_to_graph(path, content)
+                    except Exception as e:
+                        logger.warning(f"Graph indexing skipped for {path}: {e}")
+
+                results[path] = content
+                successful += 1
+
+            except PermissionError:
+                errors[path] = "Permission denied"
+            except UnicodeDecodeError:
+                errors[path] = "Cannot decode file (binary or invalid encoding)"
+            except Exception as e:
+                errors[path] = str(e)
+
+        message = f"Successfully read {successful}/{len(paths)} file(s)"
+        if errors:
+            message += f", {len(errors)} error(s)"
+
+        return MCPResponse.success(
+            result={"files": results, "errors": errors, "successful_count": successful},
+            message=message,
+        ).to_dict()
+
+    except Exception as e:
+        return MCPResponse.error(f"Error in batch read: {str(e)}").to_dict()
 
 
 def main():

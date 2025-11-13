@@ -6,12 +6,11 @@ import sys
 import psutil
 import typer
 import uvicorn
+from cli.common import logger
 from daemon import DaemonContext
 from daemon.pidfile import PIDLockFile
-
-from sparky.constants import PID_FILE
-from cli.common import logger
 from servers.chat import ChatServer
+from sparky.constants import SPARKY_CHAT_PID_FILE
 
 server = typer.Typer(name="server", help="Server management commands")
 
@@ -45,7 +44,9 @@ def start_server(
     daemon: bool = typer.Option(
         False, "--daemon", help="Run the server in the background."
     ),
-    pidfile: str = typer.Option(PID_FILE, "--pidfile", help="Path to the PID file."),
+    pidfile: str = typer.Option(
+        SPARKY_CHAT_PID_FILE, "--pidfile", help="Path to the PID file."
+    ),
 ):
     """Launch the Sparky Chat Server."""
     if not daemon:
@@ -71,7 +72,9 @@ def start_server(
 
 @server.command("stop")
 def kill_server(
-    pidfile: str = typer.Option(PID_FILE, "--pidfile", help="Path to the PID file.")
+    pidfile: str = typer.Option(
+        SPARKY_CHAT_PID_FILE, "--pidfile", help="Path to the PID file."
+    )
 ):
     """Stop the Sparky Chat Server."""
     if not os.path.exists(pidfile):
@@ -131,7 +134,9 @@ def restart_server(
     daemon: bool = typer.Option(
         False, "--daemon", help="Run the server in the background."
     ),
-    pidfile: str = typer.Option(PID_FILE, "--pidfile", help="Path to the PID file."),
+    pidfile: str = typer.Option(
+        SPARKY_CHAT_PID_FILE, "--pidfile", help="Path to the PID file."
+    ),
 ):
     """Restart the Sparky Chat Server."""
     try:

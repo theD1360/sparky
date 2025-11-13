@@ -14,7 +14,8 @@ from rich.table import Table
 
 from sparky.scheduled_tasks import load_scheduled_tasks
 from sparky.task_queue import create_task_queue
-from cli.common import AGENT_PID_FILE, console, initialize_agent_toolchain, logger
+from sparky.constants import SPARKY_AGENT_PID_FILE
+from cli.common import console, initialize_agent_toolchain, logger
 from servers.task import TaskServer
 from utils.async_util import run_async
 
@@ -32,13 +33,13 @@ def start_agent(
 ):
     """Start the proactive agent loop to process background tasks."""
     os.makedirs("logs", exist_ok=True)
-    pidfile = PIDLockFile(AGENT_PID_FILE)
+    pidfile = PIDLockFile(SPARKY_AGENT_PID_FILE)
 
     # Check for stale PID file
     if pidfile.is_locked():
         # Verify the process is actually running
         try:
-            with open(AGENT_PID_FILE, "r") as f:
+            with open(SPARKY_AGENT_PID_FILE, "r") as f:
                 pid = int(f.read().strip())
 
             if not psutil.pid_exists(pid):
@@ -103,7 +104,7 @@ def start_agent(
             logger.info("✓ Agent stopped.")
     else:
         # Daemon mode
-        logger.info(f"Starting agent as a daemon. PID file: {AGENT_PID_FILE}")
+        logger.info(f"Starting agent as a daemon. PID file: {SPARKY_AGENT_PID_FILE}")
         log_file = os.path.join("logs", "agent.log")
 
         with DaemonContext(
@@ -118,21 +119,21 @@ def start_agent(
 @agent.command("stop")
 def stop_agent():
     """Stop the background agent loop."""
-    if not os.path.exists(AGENT_PID_FILE):
+    if not os.path.exists(SPARKY_AGENT_PID_FILE):
         logger.warning("Agent is not running (PID file not found).")
         raise typer.Exit()
 
     try:
-        with open(AGENT_PID_FILE, "r") as f:
+        with open(SPARKY_AGENT_PID_FILE, "r") as f:
             pid = int(f.read().strip())
     except (IOError, ValueError):
         logger.error("Error reading PID file. Cleaning up.")
-        os.remove(AGENT_PID_FILE)
+        os.remove(SPARKY_AGENT_PID_FILE)
         raise typer.Exit(1)
 
     if not psutil.pid_exists(pid):
         logger.warning(f"Agent process {pid} not found. Cleaning up stale PID file.")
-        os.remove(AGENT_PID_FILE)
+        os.remove(SPARKY_AGENT_PID_FILE)
         raise typer.Exit()
 
     try:
@@ -155,17 +156,17 @@ def stop_agent():
         logger.error(f"An unexpected error occurred: {e}")
         raise typer.Exit(1)
     finally:
-        if os.path.exists(AGENT_PID_FILE):
-            os.remove(AGENT_PID_FILE)
+        if os.path.exists(SPARKY_AGENT_PID_FILE):
+            os.remove(SPARKY_AGENT_PID_FILE)
 
 
 @agent.command("status")
 def agent_status():
     """Check if the agent is running and show task statistics."""
     # Check if agent is running
-    if os.path.exists(AGENT_PID_FILE):
+    if os.path.exists(SPARKY_AGENT_PID_FILE):
         try:
-            with open(AGENT_PID_FILE, "r") as f:
+            with open(SPARKY_AGENT_PID_FILE, "r") as f:
                 pid = int(f.read().strip())
             if psutil.pid_exists(pid):
                 logger.info(f"✓ Agent is running (PID: {pid})")
