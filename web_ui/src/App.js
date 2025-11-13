@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
+import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom';
 import ReconnectingWebSocket from 'reconnecting-websocket';
 import {
   Box,
@@ -29,16 +29,13 @@ import {
 import {
   Help as HelpIcon,
   Close as CloseIcon,
-  Home as HomeIcon,
   Chat as ChatIcon,
   Settings as SettingsIcon,
   Person as PersonIcon,
-  Code as CodeIcon,
   Send as SendIcon,
   Delete as DeleteIcon,
   Edit as EditIcon,
   AttachFile as AttachFileIcon,
-  Cancel as CancelIcon,
   Error as ErrorIcon,
   InsertDriveFile as FileIcon,
   Menu as MenuIcon,
@@ -48,17 +45,18 @@ import {
   ExpandMore as ExpandMoreIcon,
   ChevronRight as ChevronRightIcon,
 } from '@mui/icons-material';
-import ChatMessage from './ChatMessage';
-import ToolActivityItem from './ToolActivityItem';
-import AutocompleteDropdown from './AutocompleteDropdown';
-import HelpModal from './HelpModal';
-import SplashScreen from './SplashScreen';
+import ChatMessage from './components/chat/ChatMessage';
+import AutocompleteDropdown from './components/chat/AutocompleteDropdown';
+import { HelpModal, UserModal, SettingsModal } from './components/modals';
+import SplashScreen from './components/common/SplashScreen';
+import Home from './pages/Home';
 
 const SIDEBAR_WIDTH = 280;
 
 function App() {
   // Router hooks
   const navigate = useNavigate();
+  const location = useLocation();
   const { chatId: urlChatId } = useParams();
   
   // Responsive design
@@ -68,9 +66,8 @@ function App() {
   const [mobileLeftDrawerOpen, setMobileLeftDrawerOpen] = useState(false);
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true); // Desktop sidebar state
 
-  // Chat and activity state
+  // Chat state
   const [chatMessages, setChatMessages] = useState([]);
-  const [toolActivity, setToolActivity] = useState([]);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [pendingMessage, setPendingMessage] = useState(null);
   
@@ -110,8 +107,10 @@ function App() {
   const [actionMenuAnchor, setActionMenuAnchor] = useState(null);
   const [actionMenuChatId, setActionMenuChatId] = useState(null);
 
-  // UI state
+  // UI state - Modals
   const [showHelpModal, setShowHelpModal] = useState(false);
+  const [showUserModal, setShowUserModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   
@@ -247,7 +246,6 @@ function App() {
     
     // Clear current chat state
     setChatMessages([]);
-    setToolActivity([]);
     setChatReady(false); // Mark chat as NOT ready until server confirms
     setMessageQueue([]); // Clear message queue for new chat
     setEstimatedTokens(0); // Reset estimated tokens for new chat
@@ -294,9 +292,8 @@ function App() {
         const data = await response.json();
         console.log('Loaded chat history:', data);
         
-        // Transform backend messages to UI format and populate tool activity
+        // Transform backend messages to UI format
         const loadedMessages = [];
-        const loadedToolActivity = [];
         
         data.messages.forEach(msg => {
           const message_type = msg.message_type || 'message';
@@ -313,8 +310,6 @@ function App() {
               text: toolUseText,
               toolData: { name: msg.tool_name, args: msg.tool_args }
             });
-            // Add to tool activity
-            loadedToolActivity.push({ kind: 'tool_use', text: toolUseText });
           } else if (message_type === 'tool_result') {
             // Add to chat messages with special role
             loadedMessages.push({
@@ -322,16 +317,12 @@ function App() {
               text: msg.text,
               toolData: { result: msg.text }
             });
-            // Add to tool activity
-            loadedToolActivity.push({ kind: 'tool_result', text: msg.text });
           } else if (message_type === 'thought') {
             // Thoughts get special role for styling
             loadedMessages.push({
               role: 'thought',
               text: msg.text
             });
-            // Also add to tool activity
-            loadedToolActivity.push({ kind: 'thought', text: msg.text });
           } else {
             // Regular messages (user or model)
             loadedMessages.push({
@@ -343,12 +334,10 @@ function App() {
         });
         
         setChatMessages(loadedMessages);
-        setToolActivity(loadedToolActivity);
-        console.log(`Loaded ${loadedMessages.length} messages and ${loadedToolActivity.length} tool activity items`);
+        console.log(`Loaded ${loadedMessages.length} messages`);
       } else {
         console.log('No history found for chat, starting fresh');
         setChatMessages([]);
-        setToolActivity([]);
       }
     } catch (error) {
       if (error.name === 'AbortError') {
@@ -361,7 +350,6 @@ function App() {
         console.error('Error loading chat history:', error);
       }
       setChatMessages([]);
-      setToolActivity([]);
     } finally {
       setIsLoadingChat(false);
     }
@@ -376,7 +364,6 @@ function App() {
     
     console.log('Switching to chat:', chatId);
     setCurrentChatId(chatId);
-    setToolActivity([]);
     setChatReady(false); // Mark chat as NOT ready until server confirms
     setMessageQueue([]); // Clear message queue when switching chats
     setEstimatedTokens(0); // Reset estimated tokens (will be set by history estimate)
@@ -512,7 +499,6 @@ function App() {
     }
   };
 
-  const [showToolActivity, setShowToolActivity] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [autocompleteType, setAutocompleteType] = useState(null);
   const [autocompleteItems, setAutocompleteItems] = useState([]);
@@ -566,16 +552,30 @@ function App() {
     return userId;
   };
 
-  // WebSocket setup - connect on mount
+  // Fetch resources and prompts early (not just on chat route)
   useEffect(() => {
+    console.log('useEffect running for resources/prompts fetch');
     const fetchResourcesAndPrompts = async () => {
       try {
+        console.log('Fetching resources and prompts...');
         const resourcesResponse = await fetch('/api/resources');
+        console.log('Resources response status:', resourcesResponse.status);
+        if (!resourcesResponse.ok) {
+          console.error('Resources API failed:', resourcesResponse.status);
+          return;
+        }
         const resourcesData = await resourcesResponse.json();
+        console.log('Resources fetched:', resourcesData);
         setResources(resourcesData);
 
         const promptsResponse = await fetch('/api/prompts');
+        console.log('Prompts response status:', promptsResponse.status);
+        if (!promptsResponse.ok) {
+          console.error('Prompts API failed:', promptsResponse.status);
+          return;
+        }
         const promptsData = await promptsResponse.json();
+        console.log('Prompts fetched:', promptsData);
         setPrompts(promptsData);
       } catch (error) {
         console.error('Error fetching resources/prompts:', error);
@@ -583,15 +583,25 @@ function App() {
     };
 
     fetchResourcesAndPrompts();
+  }, []); // Fetch once on mount
 
-    // Connect immediately on mount (not waiting for chat selection)
+  // WebSocket setup - connect only when on chat route
+  useEffect(() => {
+    // Only connect if we're on the chat route
+    const isOnChatRoute = location.pathname.startsWith('/chat');
+    if (!isOnChatRoute) {
+      console.log('Not on chat route, skipping WebSocket connection');
+      return;
+    }
+
+    // Connect when entering chat route
     // Use WebSocket URL from environment variables or fall back to current page host
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = process.env.REACT_APP_WS_HOST || window.location.hostname;
     const wsPort = process.env.REACT_APP_WS_PORT || window.location.port || '8000';
     const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws/chat`;
     
-    console.log('Connecting to WebSocket on mount:', wsUrl);
+    console.log('Connecting to WebSocket for chat route:', wsUrl);
     socket.current = new ReconnectingWebSocket(wsUrl, null, {reconnectInterval: 3000});
 
     socket.current.onopen = () => {
@@ -694,6 +704,29 @@ function App() {
           setToolsReady(true);
           setTotalTools(data.data.tools_loaded);
           
+          // Refetch resources and prompts now that tools are loaded
+          const refetchResourcesAndPrompts = async () => {
+            try {
+              console.log('Refetching resources and prompts after tools loaded...');
+              const resourcesResponse = await fetch('/api/resources');
+              if (resourcesResponse.ok) {
+                const resourcesData = await resourcesResponse.json();
+                console.log('Resources refetched:', resourcesData.length, 'items');
+                setResources(resourcesData);
+              }
+
+              const promptsResponse = await fetch('/api/prompts');
+              if (promptsResponse.ok) {
+                const promptsData = await promptsResponse.json();
+                console.log('Prompts refetched:', promptsData.length, 'items');
+                setPrompts(promptsData);
+              }
+            } catch (error) {
+              console.error('Error refetching resources/prompts:', error);
+            }
+          };
+          refetchResourcesAndPrompts();
+          
           // If there's a pending message, create a chat and send it
           if (pendingMessage && !currentChatId) {
             console.log('Tools ready, creating chat for pending message');
@@ -742,8 +775,6 @@ function App() {
           const toolUseText = `${data.data.name}(${JSON.stringify(data.data.args)})`;
           // Add to main chat with special role
           setChatMessages(prev => [...prev, { role: 'tool_use', text: toolUseText, toolData: data.data }]);
-          // Also add to tool activity sidebar
-          setToolActivity(prev => [...prev, { kind: 'tool_use', text: toolUseText }]);
           setToolUses(prev => [...prev, data.data]);
           break;
           
@@ -751,14 +782,11 @@ function App() {
           const toolResultText = `${data.data.result}`;
           // Add to main chat with special role
           setChatMessages(prev => [...prev, { role: 'tool_result', text: toolResultText, toolData: data.data }]);
-          // Also add to tool activity sidebar
-          setToolActivity(prev => [...prev, { kind: 'tool_result', text: `${data.data.name} → ${toolResultText}` }]);
           setToolResults(prev => [...prev, data.data]);
           break;
           
         case 'thought':
           setChatMessages(prev => [...prev, { role: 'thought', text: data.data.text }]);
-          setToolActivity(prev => [...prev, { kind: 'thought', text: data.data.text }]);
           break;
           
         case 'status':
@@ -813,9 +841,11 @@ function App() {
     };
 
     return () => {
-      socket.current.close();
+      if (socket.current) {
+        socket.current.close();
+      }
     };
-  }, []); // Connect once on mount, not when chat changes
+  }, [location.pathname]); // Connect when entering chat route
 
   // Fetch chats on mount
   useEffect(() => {
@@ -855,12 +885,14 @@ function App() {
     
     if (text.startsWith('/')) {
       const query = text.substring(1).toLowerCase();
+      console.log('Prompt autocomplete - query:', query, 'prompts available:', prompts?.length || 0);
       const filtered = (prompts || []).filter(p => 
         p && p.name && (
           p.name.toLowerCase().includes(query) || 
           (p.description && p.description.toLowerCase().includes(query))
         )
       );
+      console.log('Filtered prompts:', filtered.length);
       setAutocompleteType('prompt');
       setAutocompleteItems(filtered);
       setAutocompleteSelectedIndex(0);
@@ -871,12 +903,14 @@ function App() {
     const atIndex = beforeCursor.lastIndexOf('@');
     if (atIndex !== -1) {
       const query = beforeCursor.substring(atIndex + 1).toLowerCase();
+      console.log('Resource autocomplete - query:', query, 'resources available:', resources?.length || 0);
       const filtered = (resources || []).filter(r => 
         r && r.uri && (
           r.uri.toLowerCase().includes(query) || 
           (r.description && r.description.toLowerCase().includes(query))
         )
       );
+      console.log('Filtered resources:', filtered.length);
       setAutocompleteType('resource');
       setAutocompleteItems(filtered);
       setAutocompleteSelectedIndex(0);
@@ -1035,19 +1069,6 @@ function App() {
     // Show typing indicator
     setIsTyping(true);
 
-    if (sessionId) {
-      fetch('/record_tool_usage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: sessionId,
-          tool_name: 'sendMessage',
-          tool_args: { message: messageToSend },
-          result: null,
-        })
-      }).catch((err) => console.error('Error recording tool usage:', err));
-    }
-
     setInputValue('');
     setAutocompleteType(null);
     setAutocompleteItems([]);
@@ -1102,13 +1123,19 @@ function App() {
     }
   };
 
+  // Check if we're on the home page
+  const isHomePage = location.pathname === '/';
+
   return (
-    <>
-      {/* Splash Screen - shown while tools are loading */}
-      {!toolsReady && <SplashScreen toolsLoading={toolsLoading} totalTools={totalTools} />}
-      
-      <Box sx={{ display: 'flex', height: '100vh', bgcolor: 'background.default' }}>
-        {/* Top App Bar */}
+    <React.Fragment>
+      {isHomePage ? (
+        <Home />
+      ) : (
+            <Box sx={{ display: 'flex', height: '100vh', bgcolor: 'background.default' }}>
+            {/* Splash Screen - shown while tools are loading */}
+            {!toolsReady && <SplashScreen toolsLoading={toolsLoading} totalTools={totalTools} />}
+
+            {/* Top App Bar */}
         <AppBar
         position="fixed"
         sx={{
@@ -1176,42 +1203,44 @@ function App() {
           >
             <MenuIcon />
           </IconButton>
-          <Box
-            component="img"
-            src="/robot-logo.svg"
-            alt="Sparky"
-            sx={{
-              height: 32,
-              width: 32,
-              mr: 2,
+          <Box 
+            sx={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              flexGrow: 1,
+              cursor: 'pointer',
+              '&:hover': { opacity: 0.8 },
+              transition: 'opacity 0.2s',
             }}
-          />
-          <Typography 
-            variant={isSmallMobile ? "body1" : "h6"} 
-            noWrap 
-            component="div" 
-            sx={{ flexGrow: 1, fontWeight: 600 }}
+            onClick={() => navigate('/')}
           >
-            {isSmallMobile ? "Sparky" : "Sparky Studio"}
-          </Typography>
-          <Stack direction="row" spacing={isSmallMobile ? 0.5 : 1}>
-            <IconButton
-              onClick={() => setShowHelpModal(true)}
-              title="Help (Ctrl+H)"
-              size="small"
-              sx={{ color: 'text.primary' }}
+            <Box
+              component="img"
+              src="/robot-logo.svg"
+              alt="Sparky"
+              sx={{
+                height: 32,
+                width: 32,
+                mr: 2,
+              }}
+            />
+            <Typography 
+              variant={isSmallMobile ? "body1" : "h6"} 
+              noWrap 
+              component="div" 
+              sx={{ fontWeight: 600 }}
             >
-              <HelpIcon fontSize={isSmallMobile ? "small" : "medium"} />
-            </IconButton>
-            <IconButton
-              onClick={() => setShowToolActivity(!showToolActivity)}
-              title="Toggle Tool Activity"
-              size="small"
-              sx={{ color: 'primary.main' }}
-            >
-              <CodeIcon fontSize={isSmallMobile ? "small" : "medium"} />
-            </IconButton>
-          </Stack>
+              {isSmallMobile ? "Sparky" : "Sparky Studio"}
+            </Typography>
+          </Box>
+          <IconButton
+            onClick={() => setShowHelpModal(true)}
+            title="Help (Ctrl+H)"
+            size="small"
+            sx={{ color: 'text.primary' }}
+          >
+            <HelpIcon fontSize={isSmallMobile ? "small" : "medium"} />
+          </IconButton>
         </Toolbar>
       </AppBar>
 
@@ -1237,32 +1266,7 @@ function App() {
         <Toolbar /> {/* Spacer for AppBar */}
         
         <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-          {/* Top Section - Navigation */}
-          <Box>
-            <List>
-              <ListItem disablePadding>
-                <ListItemButton selected>
-                  <ListItemIcon>
-                    <HomeIcon sx={{ color: 'text.primary' }} />
-                  </ListItemIcon>
-                  <ListItemText primary="Home" />
-                </ListItemButton>
-              </ListItem>
-              
-              <ListItem disablePadding>
-                <ListItemButton>
-                  <ListItemIcon>
-                    <ChatIcon sx={{ color: 'text.primary' }} />
-                  </ListItemIcon>
-                  <ListItemText primary="Chat" />
-                </ListItemButton>
-              </ListItem>
-            </List>
-
-            <Divider sx={{ my: 2 }} />
-          </Box>
-
-          {/* Middle Section - Chat History (Scrollable) */}
+          {/* Chat History (Scrollable) */}
           <Box sx={{ flex: 1, overflowY: 'auto', px: 2, py: 1 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
               <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
@@ -1449,7 +1453,7 @@ function App() {
           <Box sx={{ borderTop: '1px solid', borderColor: 'divider' }}>
             <List>
               <ListItem disablePadding>
-                <ListItemButton>
+                <ListItemButton onClick={() => setShowSettingsModal(true)}>
                   <ListItemIcon>
                     <SettingsIcon sx={{ color: 'text.secondary' }} />
                   </ListItemIcon>
@@ -1458,7 +1462,7 @@ function App() {
               </ListItem>
               
               <ListItem disablePadding>
-                <ListItemButton>
+                <ListItemButton onClick={() => setShowUserModal(true)}>
                   <ListItemIcon>
                     <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main' }}>
                       <PersonIcon fontSize="small" />
@@ -1887,59 +1891,6 @@ function App() {
         </Box>
       </Box>
 
-      {/* Right Sidebar - Tool Activity */}
-      <Drawer
-        anchor="right"
-        open={showToolActivity}
-        onClose={() => setShowToolActivity(false)}
-        variant={isMobile ? "temporary" : "persistent"}
-        ModalProps={{
-          keepMounted: true, // Better open performance on mobile
-        }}
-        sx={{
-          width: showToolActivity ? (isMobile ? '100%' : 400) : 0,
-          flexShrink: 0,
-          '& .MuiDrawer-paper': {
-            width: isMobile ? '100%' : 400,
-            boxSizing: 'border-box',
-            bgcolor: '#0f1419',
-            borderLeft: '1px solid rgba(31, 41, 55, 0.3)',
-          },
-        }}
-      >
-        <Toolbar /> {/* Spacer for AppBar */}
-        
-        <Box sx={{ display: 'flex', flexDirection: 'column', height: 'calc(100% - 64px)' }}>
-          <Box
-            sx={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              p: 2,
-              borderBottom: '1px solid rgba(31, 41, 55, 0.5)',
-            }}
-          >
-            <Typography variant="h6" sx={{ fontWeight: 600 }}>
-              Tool Activity
-            </Typography>
-            <IconButton
-              onClick={() => setShowToolActivity(false)}
-              size="small"
-              sx={{ color: 'text.secondary' }}
-            >
-              <CloseIcon />
-            </IconButton>
-          </Box>
-          <Box sx={{ flex: 1, overflowY: 'auto', p: 3 }}>
-            <Stack spacing={1.5}>
-              {toolActivity.map((activity, index) => (
-                <ToolActivityItem key={index} kind={activity.kind} text={activity.text} />
-              ))}
-            </Stack>
-          </Box>
-        </Box>
-      </Drawer>
-
       {/* Action Menu for Chat Actions */}
       <Menu
         anchorEl={actionMenuAnchor}
@@ -1956,75 +1907,76 @@ function App() {
         }}
       >
         {/* Show different actions based on whether chat is archived */}
-        {archivedChats.some(chat => chat.chat_id === actionMenuChatId) ? (
-          <>
-            <MenuItem 
-              onClick={() => {
-                handleUnarchiveChat(actionMenuChatId);
-                setActionMenuAnchor(null);
-                setActionMenuChatId(null);
-              }}
-              sx={{ gap: 1 }}
-            >
-              <UnarchiveIcon fontSize="small" />
-              Unarchive
-            </MenuItem>
-            <MenuItem 
-              onClick={() => {
-                handleDeleteChat(actionMenuChatId);
-                setActionMenuAnchor(null);
-                setActionMenuChatId(null);
-              }}
-              sx={{ gap: 1, color: 'error.main' }}
-            >
-              <DeleteIcon fontSize="small" />
-              Delete
-            </MenuItem>
-          </>
-        ) : (
-          <>
-            <MenuItem 
-              onClick={() => {
-                const chat = userChats.find(c => c.chat_id === actionMenuChatId);
-                if (chat) {
-                  setRenamingChatId(chat.chat_id);
-                  setRenameValue(chat.chat_name);
-                }
-                setActionMenuAnchor(null);
-                setActionMenuChatId(null);
-              }}
-              sx={{ gap: 1 }}
-            >
-              <EditIcon fontSize="small" />
-              Rename
-            </MenuItem>
-            <MenuItem 
-              onClick={() => {
-                handleArchiveChat(actionMenuChatId);
-                setActionMenuAnchor(null);
-                setActionMenuChatId(null);
-              }}
-              sx={{ gap: 1 }}
-            >
-              <ArchiveIcon fontSize="small" />
-              Archive
-            </MenuItem>
-            <MenuItem 
-              onClick={() => {
-                handleDeleteChat(actionMenuChatId);
-                setActionMenuAnchor(null);
-                setActionMenuChatId(null);
-              }}
-              sx={{ gap: 1, color: 'error.main' }}
-            >
-              <DeleteIcon fontSize="small" />
-              Delete
-            </MenuItem>
-          </>
-        )}
+        {archivedChats.some(chat => chat.chat_id === actionMenuChatId) ? [
+          <MenuItem 
+            key="unarchive"
+            onClick={() => {
+              handleUnarchiveChat(actionMenuChatId);
+              setActionMenuAnchor(null);
+              setActionMenuChatId(null);
+            }}
+            sx={{ gap: 1 }}
+          >
+            <UnarchiveIcon fontSize="small" />
+            Unarchive
+          </MenuItem>,
+          <MenuItem 
+            key="delete"
+            onClick={() => {
+              handleDeleteChat(actionMenuChatId);
+              setActionMenuAnchor(null);
+              setActionMenuChatId(null);
+            }}
+            sx={{ gap: 1, color: 'error.main' }}
+          >
+            <DeleteIcon fontSize="small" />
+            Delete
+          </MenuItem>
+        ] : [
+          <MenuItem 
+            key="rename"
+            onClick={() => {
+              const chat = userChats.find(c => c.chat_id === actionMenuChatId);
+              if (chat) {
+                setRenamingChatId(chat.chat_id);
+                setRenameValue(chat.chat_name);
+              }
+              setActionMenuAnchor(null);
+              setActionMenuChatId(null);
+            }}
+            sx={{ gap: 1 }}
+          >
+            <EditIcon fontSize="small" />
+            Rename
+          </MenuItem>,
+          <MenuItem 
+            key="archive"
+            onClick={() => {
+              handleArchiveChat(actionMenuChatId);
+              setActionMenuAnchor(null);
+              setActionMenuChatId(null);
+            }}
+            sx={{ gap: 1 }}
+          >
+            <ArchiveIcon fontSize="small" />
+            Archive
+          </MenuItem>,
+          <MenuItem 
+            key="delete"
+            onClick={() => {
+              handleDeleteChat(actionMenuChatId);
+              setActionMenuAnchor(null);
+              setActionMenuChatId(null);
+            }}
+            sx={{ gap: 1, color: 'error.main' }}
+          >
+            <DeleteIcon fontSize="small" />
+            Delete
+          </MenuItem>
+        ]}
       </Menu>
 
-      {/* Help Modal */}
+      {/* Modals */}
       <HelpModal
         isOpen={showHelpModal}
         onClose={() => setShowHelpModal(false)}
@@ -2033,8 +1985,19 @@ function App() {
         toolUses={toolUses}
         toolResults={toolResults}
       />
+      
+      <UserModal
+        isOpen={showUserModal}
+        onClose={() => setShowUserModal(false)}
+      />
+      
+      <SettingsModal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+      />
       </Box>
-    </>
+      )}
+    </React.Fragment>
   );
 }
 

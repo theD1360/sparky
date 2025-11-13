@@ -25,12 +25,24 @@ async def list_resources():
     """
     # Import here to avoid circular dependency
     from servers.chat.chat_server import _app_toolchain
+    from sparky.toolchain_cache import get_toolchain_cache
 
-    if _app_toolchain:
-        resources = await _app_toolchain.list_all_resources()
+    # Try cached toolchain first, fall back to _app_toolchain
+    toolchain = None
+    
+    # Check cache first
+    cache = get_toolchain_cache()
+    if cache._toolchain:
+        toolchain = cache._toolchain
+    elif _app_toolchain:
+        toolchain = _app_toolchain
+    
+    if toolchain:
+        resources = await toolchain.list_all_resources()
         return [
             ResourceInfo(uri=str(r.uri), description=r.description)
             for _, r in resources
         ]
     else:
+        # Return empty if no toolchain available yet
         return []

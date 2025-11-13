@@ -25,10 +25,22 @@ async def list_prompts():
     """
     # Import here to avoid circular dependency
     from servers.chat.chat_server import _app_toolchain
+    from sparky.toolchain_cache import get_toolchain_cache
 
-    if _app_toolchain:
-        prompts = await _app_toolchain.list_all_prompts()
+    # Try cached toolchain first, fall back to _app_toolchain
+    toolchain = None
+    
+    # Check cache first
+    cache = get_toolchain_cache()
+    if cache._toolchain:
+        toolchain = cache._toolchain
+    elif _app_toolchain:
+        toolchain = _app_toolchain
+    
+    if toolchain:
+        prompts = await toolchain.list_all_prompts()
         return [PromptInfo(name=p.name, description=p.description) for _, p in prompts]
     else:
+        # Return empty if no toolchain available yet
         return []
 

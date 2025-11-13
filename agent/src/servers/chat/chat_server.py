@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import signal
+import traceback
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -46,8 +47,8 @@ from servers.chat.routes import (
 # Import the necessary components for the agent orchestrator
 from sparky import AgentOrchestrator
 from sparky.constants import SPARKY_CHAT_PID_FILE
-from sparky.initialization import initialize_toolchain_with_knowledge
 from sparky.knowledge import Knowledge
+from sparky.toolchain_cache import get_toolchain_cache
 from sparky.logging_config import setup_logging
 from sparky.middleware import (
     CommandPromptMiddleware,
@@ -138,77 +139,81 @@ class ConnectionManager:
 
     async def initialize_tools_for_session(
         self, session_id: str, websocket: WebSocket
-    ) -> None:
+    ) -> Tuple[Optional[ToolChain], Optional[str]]:
         """Initialize tools for a session and send progress updates via WebSocket.
+
+        This uses the global toolchain cache to lazily load MCP servers on first connection.
+        Subsequent connections will use cached toolchain if still valid.
 
         Args:
             session_id: Session identifier
             websocket: WebSocket connection for sending progress updates
+
+        Returns:
+            Tuple of (toolchain, error_message)
         """
-        if self.tools_initialized.get(session_id, False):
-            logger.info(f"[{session_id}] Tools already initialized")
-            return
+        if self.tools_initialized.get(session_id, False) and self.toolchain:
+            logger.info(f"[{session_id}] Tools already initialized for session, using cached toolchain")
+            return self.toolchain, None
 
-        logger.info(f"[{session_id}] Initializing tools...")
+        logger.info(f"[{session_id}] Initializing tools for first time...")
 
-        # The toolchain is already initialized at server startup
-        # Just report the tools that are available
-        if self.toolchain:
+        # Get toolchain cache
+        cache = get_toolchain_cache()
+
+        # Define progress callback to send updates to client
+        async def progress_callback(server_name: str, status: str, message: str):
+            """Send tool loading progress to WebSocket client."""
             try:
-                tools_loaded = 0
-                # Report tool loading progress for each MCP client
-                for client_index, tool_client in enumerate(self.toolchain.tool_clients):
-                    tool_name = (
-                        tool_client._config.name
-                        if hasattr(tool_client, "_config")
-                        else f"MCP Server {client_index + 1}"
-                    )
-                    try:
-                        await websocket.send_text(
-                            WSMessage(
-                                type=MessageType.tool_loading_progress,
-                                data=ToolLoadingProgressPayload(
-                                    tool_name=tool_name,
-                                    status="loading",
-                                    message=f"Loading {tool_name}...",
-                                ),
-                            ).to_text()
-                        )
-                        # Short delay for visual feedback
-                        await asyncio.sleep(0.1)
-
-                        await websocket.send_text(
-                            WSMessage(
-                                type=MessageType.tool_loading_progress,
-                                data=ToolLoadingProgressPayload(
-                                    tool_name=tool_name,
-                                    status="loaded",
-                                    message=f"{tool_name} loaded successfully",
-                                ),
-                            ).to_text()
-                        )
-                        tools_loaded += 1
-                    except Exception as e:
-                        logger.error(f"Error reporting tool {tool_name}: {e}")
-                        await websocket.send_text(
-                            WSMessage(
-                                type=MessageType.tool_loading_progress,
-                                data=ToolLoadingProgressPayload(
-                                    tool_name=tool_name,
-                                    status="error",
-                                    message=f"Error loading {tool_name}: {e}",
-                                ),
-                            ).to_text()
-                        )
-
-                self.tools_initialized[session_id] = True
-                logger.info(f"[{session_id}] Tools initialized: {tools_loaded} tools")
+                await websocket.send_text(
+                    WSMessage(
+                        type=MessageType.tool_loading_progress,
+                        data=ToolLoadingProgressPayload(
+                            tool_name=server_name,
+                            status=status,
+                            message=message,
+                        ),
+                    ).to_text()
+                )
+                # Small delay for visual feedback
+                if status == "loading":
+                    await asyncio.sleep(0.05)
             except Exception as e:
-                logger.error(f"[{session_id}] Error initializing tools: {e}")
-                raise
-        else:
-            logger.warning(f"[{session_id}] No toolchain available")
-            self.tools_initialized[session_id] = True
+                logger.error(f"[{session_id}] Error sending progress update: {e}")
+
+        try:
+            # Load or get cached toolchain
+            toolchain, error = await cache.get_or_load_toolchain(progress_callback)
+
+            if error:
+                logger.error(f"[{session_id}] Failed to load toolchain: {error}")
+                return None, error
+
+            if toolchain:
+                # Update connection manager's toolchain reference
+                self.toolchain = toolchain
+                self.tools_initialized[session_id] = True
+
+                tools_count = len(toolchain.tool_clients) if toolchain else 0
+                logger.info(
+                    f"[{session_id}] Tools initialized successfully: {tools_count} tool server(s)"
+                )
+
+                # Log cache status
+                cache_status = cache.get_cache_status()
+                logger.debug(f"[{session_id}] Tool cache status: {cache_status}")
+
+                return toolchain, None
+            else:
+                error_msg = "Toolchain loaded but is None"
+                logger.error(f"[{session_id}] {error_msg}")
+                return None, error_msg
+
+        except Exception as e:
+            error_msg = f"Error initializing tools: {e}"
+            logger.error(f"[{session_id}] {error_msg}")
+            logger.error(f"[{session_id}] Traceback: {traceback.format_exc()}")
+            return None, error_msg
 
     async def load_and_cache_identity(
         self,
@@ -702,39 +707,23 @@ async def cleanup_server(app: FastAPI):
         _connection_manager = ConnectionManager(session_timeout_minutes=60)
         logger.info("Connection manager initialized")
 
-        # Use shared initialization logic (only for toolchain, not knowledge)
-        # Knowledge will be created per-session by ConnectionManager
-        _app_toolchain, _app_knowledge, _startup_error = (
-            await initialize_toolchain_with_knowledge(
-                session_id="server",
-                log_prefix="startup",
-            )
-        )
-        await _app_toolchain.initialize()
-        _connection_manager.toolchain = _app_toolchain
-        logger.info("Toolchain set on connection manager")
+        # Note: Toolchain is now loaded lazily on first WebSocket connection
+        # This enables true splash screen progress and per-server caching
+        logger.info("Server ready - toolchain will be initialized on first client connection")
 
         # Start periodic cleanup task
         cleanup_task = asyncio.create_task(_periodic_cleanup())
         logger.info("Periodic session cleanup task started")
 
         # Optionally start agent loop if enabled via environment variable
+        # Note: Agent loop will need to wait for toolchain to be initialized by first client
         enable_agent_loop = (
             os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
         )
         if enable_agent_loop:
-            logger.info("Starting agent loop as background task...")
-            from servers.task import AgentLoop
-
-            poll_interval = int(os.getenv("SPARKY_AGENT_POLL_INTERVAL", "10"))
-            agent_loop_instance = AgentLoop(
-                toolchain=_app_toolchain,
-                poll_interval=poll_interval,
-                enable_scheduled_tasks=True,
-                connection_manager=_connection_manager,
-            )
-            agent_loop_task = agent_loop_instance.start_background()
-            logger.info("Agent loop started in background")
+            logger.info("Agent loop is enabled but will start after toolchain loads")
+            # Agent loop startup moved to post-toolchain-initialization
+            # Will be triggered after first client connects and loads tools
 
         yield
 
@@ -757,6 +746,14 @@ async def cleanup_server(app: FastAPI):
             except asyncio.CancelledError:
                 pass
 
+        # Cleanup toolchain cache
+        try:
+            logger.info("Cleaning up toolchain cache...")
+            cache = get_toolchain_cache()
+            await cache.cleanup()
+        except Exception as e:
+            logger.error(f"Error cleaning up toolchain cache: {e}")
+
         _remove_pid_file()
 
     except Exception as e:
@@ -777,6 +774,28 @@ app.include_router(resources_router)
 app.include_router(prompts_router)
 app.include_router(user_router)
 app.include_router(chats_router)
+
+
+# Tool cache admin endpoint
+@app.get("/api/admin/tool_cache_status")
+async def get_tool_cache_status():
+    """Get status of the tool chain cache.
+
+    Returns:
+        Dictionary with cache status for all tool servers
+    """
+    try:
+        cache = get_toolchain_cache()
+        status = cache.get_cache_status()
+        return {
+            "success": True,
+            "cache_initialized": cache._initialized,
+            "servers": status,
+            "total_servers": len(status),
+        }
+    except Exception as e:
+        logger.error(f"Error getting cache status: {e}")
+        return {"success": False, "error": str(e)}
 
 
 # File analysis function
@@ -1157,8 +1176,9 @@ async def websocket_endpoint(websocket: WebSocket):
     current_bot_task: Optional[asyncio.Task] = None
 
     try:
-        # Check server resources
-        if _app_toolchain is None or _connection_manager is None:
+        # Check server resources - only connection manager is needed at this point
+        # Toolchain will be loaded lazily
+        if _connection_manager is None:
             err = _startup_error or "Server resources not initialized"
             await websocket.send_text(
                 WSMessage(
@@ -1238,13 +1258,29 @@ async def websocket_endpoint(websocket: WebSocket):
             ).to_text()
         )
 
-        # Initialize tools with progress updates
+        # Initialize tools with progress updates (lazy loading on first connection)
         logger.info(f"[{session_id}] Initializing tools...")
-        await _connection_manager.initialize_tools_for_session(session_id, websocket)
+        toolchain, tool_error = await _connection_manager.initialize_tools_for_session(
+            session_id, websocket
+        )
+
+        if tool_error or not toolchain:
+            error_msg = tool_error or "Failed to initialize tools"
+            logger.error(f"[{session_id}] Tool initialization failed: {error_msg}")
+            await websocket.send_text(
+                WSMessage(
+                    type=MessageType.error,
+                    data=ErrorPayload(message=f"Tool initialization failed: {error_msg}"),
+                    session_id=session_id,
+                    user_id=user_id,
+                ).to_text()
+            )
+            await websocket.close()
+            return
 
         # Send ready message
-        tools_loaded = len(_app_toolchain.tool_clients) if _app_toolchain else 0
-        logger.info(f"[{session_id}] Session ready, sending ready message")
+        tools_loaded = len(toolchain.tool_clients) if toolchain else 0
+        logger.info(f"[{session_id}] Session ready with {tools_loaded} tool(s), sending ready message")
         await websocket.send_text(
             WSMessage(
                 type=MessageType.ready,
