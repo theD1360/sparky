@@ -4,10 +4,25 @@ This document provides development best practices for contributors, both human a
 
 ## Development Best Practices
 
+### Documentation
+
+- **Documentation**: Documents must go into their corresponding directory. `docs/` for general project documentation, `agent/docs` backend focused documents, `web_ui/docs` frontend focused documentation, and `agent/src/<toolname>/docs` for MCP tool server documentation.
+- **Plans:**: Plans help us guide the agents development. The pattern applies for plans as Documentation.
+
+
 ### Unit Testing
 
 - All new features, bug fixes, or significant changes should be accompanied by unit tests.
 - Run the test suite to ensure your changes haven't introduced regressions.
+
+### Branching
+
+- Always start with a new feature branch before starting any coding.
+- Atomic commits. Once you are done making changes please commit your work with a descriptive message regarding the work done
+
+### Tidyness:
+
+- Please clean up any transient or single use files before commiting
 
 ### Conventional Commits
 
@@ -34,6 +49,8 @@ Commit messages should follow the Conventional Commits specification. This creat
 
 - **Example**: `feat: add user authentication endpoint`
 
+
+
 ## Environment Setup
 
 ### Poetry
@@ -57,3 +74,4 @@ A Dockerfile is provided for building and running the application in a container
 - **Run tests**: `poetry run pytest`
 - **Lint the code**: `poetry run ruff check .`
 - **Format the code**: `poetry run ruff format .`
+
