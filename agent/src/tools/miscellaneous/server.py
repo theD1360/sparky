@@ -33,7 +33,7 @@ import math
 import subprocess
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Dict, List
 
 from mcp.server.fastmcp import FastMCP
 from models import MCPResponse
@@ -210,7 +210,7 @@ def factorial(number: int) -> dict:
 
 
 @mcp.tool()
-def concatenate_strings(strings: list[str], separator: str = "") -> dict:
+def concatenate_strings(strings: List[str], separator: str = "") -> dict:
     """Join a list of strings into one string."""
     try:
         result = separator.join(strings)
@@ -328,60 +328,63 @@ def json_stringify(data: Any) -> dict:
 # ============================================================================
 # LIST/DICT OPERATIONS
 # ============================================================================
+# NOTE: These tools are temporarily disabled due to JSON schema generation issues
+# with Gemini API. FastMCP's automatic schema generation for List[Any] and Dict[str, Any]
+# doesn't include the required 'items' field that Gemini validates.
+# TODO: Re-enable once we can provide explicit JSON schemas or FastMCP is updated.
+
+# @mcp.tool()
+# def get_list_item(list_obj: List[Any], index: int) -> dict:
+#     """Retrieve an item from a list by index."""
+#     try:
+#         item = list_obj[index]
+#         return MCPResponse.success(result=item).to_dict()
+#     except IndexError:
+#         return MCPResponse.error(f"Index {index} out of range").to_dict()
+#     except Exception as e:
+#         return MCPResponse.error(str(e)).to_dict()
 
 
-@mcp.tool()
-def get_list_item(list_obj: list, index: int) -> dict:
-    """Retrieve an item from a list by index."""
-    try:
-        item = list_obj[index]
-        return MCPResponse.success(result=item).to_dict()
-    except IndexError:
-        return MCPResponse.error(f"Index {index} out of range").to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
+# @mcp.tool()
+# def set_list_item(list_obj: List[Any], index: int, value: Any) -> dict:
+#     """Set a list item at a specific index."""
+#     try:
+#         list_obj[index] = value
+#         return MCPResponse.success(result=list_obj).to_dict()
+#     except IndexError:
+#         return MCPResponse.error(f"Index {index} out of range").to_dict()
+#     except Exception as e:
+#         return MCPResponse.error(str(e)).to_dict()
 
 
-@mcp.tool()
-def set_list_item(list_obj: list, index: int, value: Any) -> dict:
-    """Set a list item at a specific index."""
-    try:
-        list_obj[index] = value
-        return MCPResponse.success(result=list_obj).to_dict()
-    except IndexError:
-        return MCPResponse.error(f"Index {index} out of range").to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
+# @mcp.tool()
+# def append_to_list(list_obj: List[Any], item: Any) -> dict:
+#     """Append an item to a list."""
+#     try:
+#         list_obj.append(item)
+#         return MCPResponse.success(result=list_obj).to_dict()
+#     except Exception as e:
+#         return MCPResponse.error(str(e)).to_dict()
 
 
-@mcp.tool()
-def append_to_list(list_obj: list, item: Any) -> dict:
-    """Append an item to a list."""
-    try:
-        list_obj.append(item)
-        return MCPResponse.success(result=list_obj).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
+# @mcp.tool()
+# def get_dict_value(dict_obj: Dict[str, Any], key: str) -> dict:
+#     """Get a value from a dict by key."""
+#     try:
+#         value = dict_obj.get(key)
+#         return MCPResponse.success(result=value).to_dict()
+#     except Exception as e:
+#         return MCPResponse.error(str(e)).to_dict()
 
 
-@mcp.tool()
-def get_dict_value(dict_obj: dict, key: str) -> dict:
-    """Get a value from a dict by key."""
-    try:
-        value = dict_obj.get(key)
-        return MCPResponse.success(result=value).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
-@mcp.tool()
-def set_dict_value(dict_obj: dict, key: str, value: Any) -> dict:
-    """Set or update a value in a dict by key."""
-    try:
-        dict_obj[key] = value
-        return MCPResponse.success(result=dict_obj).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
+# @mcp.tool()
+# def set_dict_value(dict_obj: Dict[str, Any], key: str, value: Any) -> dict:
+#     """Set or update a value in a dict by key."""
+#     try:
+#         dict_obj[key] = value
+#         return MCPResponse.success(result=dict_obj).to_dict()
+#     except Exception as e:
+#         return MCPResponse.error(str(e)).to_dict()
 
 
 # ============================================================================

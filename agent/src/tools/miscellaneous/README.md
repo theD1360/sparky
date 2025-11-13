@@ -2,7 +2,7 @@
 
 Consolidated utility tools server providing comprehensive general-purpose functionality.
 
-## Available Tools (59 total)
+## Available Tools (54 total)
 
 ### Mathematical Operations (23 tools)
 - **add, subtract, multiply, divide** - Basic arithmetic
@@ -32,12 +32,13 @@ Consolidated utility tools server providing comprehensive general-purpose functi
 - **json_parse** - Parse JSON string to object
 - **json_stringify** - Convert object to JSON string
 
-### List/Dict Operations (5 tools)
-- **get_list_item** - Get item by index
-- **set_list_item** - Set item at index
-- **append_to_list** - Append item
-- **get_dict_value** - Get dict value by key
-- **set_dict_value** - Set dict value by key
+### List/Dict Operations (0 tools - temporarily disabled)
+~~These tools are temporarily disabled due to FastMCP JSON schema generation limitations with Gemini API. FastMCP doesn't generate the required `items` field for `List[Any]` and `Dict[str, Any]` parameters that Gemini validates.~~
+- ~~get_list_item~~ - Get item by index
+- ~~set_list_item~~ - Set item at index
+- ~~append_to_list~~ - Append item
+- ~~get_dict_value~~ - Get dict value by key
+- ~~set_dict_value~~ - Set dict value by key
 
 ### Date & Time Operations (16 tools)
 - **get_current_datetime** - Get current date and time (ISO format)
