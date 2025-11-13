@@ -78,6 +78,30 @@ mcp = FastMCP("knowledge-graph-tools")
 _db_manager: Optional[DatabaseManager] = None
 _kb_repository: Optional[KnowledgeRepository] = None
 
+# Content size limits for tool results to prevent frontend performance issues
+MAX_NODE_CONTENT_SIZE = 5000  # 5KB per node content
+MAX_TOTAL_RESULT_SIZE = 100000  # 100KB total result size
+
+
+def _truncate_node_content(node_dict: dict, max_size: int = MAX_NODE_CONTENT_SIZE) -> dict:
+    """Truncate node content if too large to prevent massive tool results.
+    
+    Args:
+        node_dict: Node dictionary with 'content' field
+        max_size: Maximum content size in bytes
+        
+    Returns:
+        Modified node dict with truncated content if needed
+    """
+    if "content" in node_dict and node_dict["content"]:
+        content = node_dict["content"]
+        if len(content) > max_size:
+            original_size = len(content)
+            node_dict["content"] = content[:max_size] + f"\n[... truncated: {original_size:,} bytes total]"
+            node_dict["_truncated"] = True
+            node_dict["_original_size"] = original_size
+    return node_dict
+
 
 def _load_graph():
     """Load or initialize database using KnowledgeRepository."""
@@ -385,9 +409,9 @@ def get_graph_context(node_id: str, depth: int = 1) -> dict:
 def get_graph_map(
     include_details: bool = False,
     group_by_type: bool = True,
-    nodes_limit: int = 100,
+    nodes_limit: int = 50,  # Reduced from 100 to prevent large results
     nodes_offset: int = 0,
-    edges_limit: int = 100,
+    edges_limit: int = 50,  # Reduced from 100 to prevent large results
     edges_offset: int = 0,
 ) -> dict:
     """Returns a comprehensive map of the entire knowledge graph showing all nodes, relationships, and statistics.
@@ -427,7 +451,10 @@ def get_graph_map(
 
                 for node in nodes:
                     if include_details:
-                        nodes_by_type[node_type].append(node.to_dict())
+                        node_dict = node.to_dict()
+                        # Truncate large content to prevent massive results
+                        node_dict = _truncate_node_content(node_dict)
+                        nodes_by_type[node_type].append(node_dict)
                     else:
                         nodes_by_type[node_type].append(
                             {"id": node.id, "label": node.label or ""}
@@ -437,7 +464,8 @@ def get_graph_map(
             # Apply pagination when not grouping by type
             all_nodes = _kb_repository.get_nodes(limit=nodes_limit, offset=nodes_offset)
             if include_details:
-                graph_map["nodes"] = [node.to_dict() for node in all_nodes]
+                # Truncate large content to prevent massive results
+                graph_map["nodes"] = [_truncate_node_content(node.to_dict()) for node in all_nodes]
             else:
                 graph_map["nodes"] = [
                     {"id": node.id, "label": node.label or ""} for node in all_nodes
@@ -853,7 +881,7 @@ Use the `add_task` tool to create the task, including the purpose and details in
 def search_nodes(
     query: str,
     node_type: str = None,
-    top_k: int = 10,
+    top_k: int = 5,  # Reduced from 10 to prevent large results
     offset: int = 0,
     order_by: str = "relevance",
 ) -> dict:
@@ -1004,6 +1032,8 @@ def search_nodes(
             if key:
                 result_entry["key"] = key
 
+            # Truncate large content to prevent massive results
+            result_entry = _truncate_node_content(result_entry)
             direct_matches.append(result_entry)
 
         # Build structured response
@@ -1372,7 +1402,7 @@ def clear_memories() -> dict:
 # Tool Tracking Tools
 @mcp.tool()
 def get_tool_usage_history(
-    session_id: str = None, tool_name: str = None, limit: int = 50, offset: int = 0
+    session_id: str = None, tool_name: str = None, limit: int = 20, offset: int = 0
 ) -> dict:
     """Get history of tool calls made during sessions with their arguments, results, and success/failure status. Useful for understanding tool usage patterns."""
     if not _kb_repository:
@@ -1409,12 +1439,17 @@ def get_tool_usage_history(
             if tool_name and props.get("tool_name") != tool_name:
                 continue
 
+            # Truncate large tool results to prevent massive responses
+            result = props.get("result")
+            if result and isinstance(result, str) and len(result) > 10000:
+                result = result[:10000] + f"\n[... truncated: {len(result):,} chars total]"
+            
             filtered_calls.append(
                 {
                     "tool_call_id": tc["id"],
                     "tool_name": props.get("tool_name"),
                     "arguments": props.get("arguments"),
-                    "result": props.get("result"),
+                    "result": result,
                     "status": props.get("status"),
                     "timestamp": props.get("timestamp"),
                     "error_type": props.get("error_type"),
