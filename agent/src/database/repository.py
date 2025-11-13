@@ -1772,6 +1772,61 @@ class KnowledgeRepository:
             logger.info(f"Deleted node {node_id}")
             return True
 
+    def bulk_delete_nodes(self, node_ids: List[str]) -> Dict[str, Any]:
+        """Delete multiple nodes and all their edges in a single transaction.
+
+        Args:
+            node_ids: List of node IDs to delete
+
+        Returns:
+            Dictionary with:
+                - deleted: List of node IDs that were deleted
+                - not_found: List of node IDs that were not found
+                - failed: List of dicts with node_id and error message
+                - total: Total number of nodes processed
+        """
+        deleted = []
+        not_found = []
+        failed = []
+
+        with self.db_manager.get_session() as session:
+            for node_id in node_ids:
+                try:
+                    node = session.query(Node).filter(Node.id == node_id).first()
+                    if not node:
+                        not_found.append(node_id)
+                        continue
+
+                    session.delete(node)
+                    deleted.append(node_id)
+                except Exception as e:
+                    logger.error(f"Error deleting node {node_id}: {e}")
+                    failed.append({"node_id": node_id, "error": str(e)})
+                    # Rollback the current node's deletion but continue with others
+                    session.rollback()
+
+            # Commit all successful deletions
+            try:
+                session.commit()
+                logger.info(
+                    f"Bulk deleted {len(deleted)} nodes, "
+                    f"{len(not_found)} not found, {len(failed)} failed"
+                )
+            except Exception as e:
+                logger.error(f"Error committing bulk deletion: {e}")
+                session.rollback()
+                # Move all deleted to failed
+                for node_id in deleted:
+                    failed.append({"node_id": node_id, "error": "Commit failed"})
+                deleted = []
+
+        return {
+            "deleted": deleted,
+            "not_found": not_found,
+            "failed": failed,
+            "total": len(node_ids),
+        }
+
     def delete_edge(self, edge_id: int) -> bool:
         """Delete an edge by its ID.
 

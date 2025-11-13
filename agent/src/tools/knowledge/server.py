@@ -799,6 +799,51 @@ def delete_node(node_id: str) -> dict:
 
 
 @mcp.tool()
+def bulk_delete_nodes(node_ids: list[str]) -> dict:
+    """Delete multiple nodes and all their connected edges from the knowledge graph in a single operation.
+
+    WARNING: This permanently removes all specified nodes and ALL edges connected to them
+    (both incoming and outgoing). This operation cannot be undone. Use with caution.
+
+    This is an optimized version of delete_node for batch operations. All nodes are processed
+    in a single transaction, making it much more efficient when removing many nodes at once.
+    Individual node failures don't affect the processing of other nodes.
+
+    Args:
+        node_ids: List of unique identifiers of nodes to delete
+
+    Returns:
+        Dictionary with summary of the operation:
+            - deleted: List of node IDs that were successfully deleted
+            - not_found: List of node IDs that were not found
+            - failed: List of failures with node_id and error message
+            - total: Total number of nodes processed
+
+    Example:
+        bulk_delete_nodes([
+            "temp:calculation_123",
+            "temp:old_memory_456",
+            "concept:deprecated_789"
+        ])
+    """
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        result = _kb_repository.bulk_delete_nodes(node_ids)
+
+        summary = (
+            f"Bulk deletion completed: {len(result['deleted'])} deleted, "
+            f"{len(result['not_found'])} not found, {len(result['failed'])} failed"
+        )
+
+        return MCPResponse.success(result=result, message=summary).to_dict()
+    except Exception as e:
+        logger.error("Error in bulk_delete_nodes: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to bulk delete nodes: {str(e)}").to_dict()
+
+
+@mcp.tool()
 def get_connected_nodes(node_id: str, limit: int = 50, offset: int = 0) -> dict:
     """Finds all nodes directly connected to a given node.
 
