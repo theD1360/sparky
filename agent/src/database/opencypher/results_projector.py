@@ -25,10 +25,13 @@ class ResultProjector:
                     # Variable.property access
                     var, prop = field.split(".", 1)
                     if var in match:
-                        if prop == "id":
-                            result[alias] = match[var].get("id")
+                        node_data = match[var]
+                        # First check top-level node attributes (id, type, label, content, created_at, updated_at)
+                        if prop in ["id", "type", "label", "content", "created_at", "updated_at"]:
+                            result[alias] = node_data.get(prop)
+                        # Then check in properties dict for custom properties
                         else:
-                            result[alias] = match[var].get("properties", {}).get(prop)
+                            result[alias] = node_data.get("properties", {}).get(prop)
                 else:
                     # Just variable
                     if field in match:
@@ -60,10 +63,11 @@ class ResultProjector:
                     var, prop = order_field.split(".", 1)
                     if var in result_item:
                         node_data = result_item[var]
-                        if prop == "id":
-                            return node_data.get("id", "")
+                        # First check top-level node attributes
+                        if prop in ["id", "type", "label", "content", "created_at", "updated_at"]:
+                            return node_data.get(prop, "")
+                        # Then check in properties dict for custom properties
                         else:
-                            # Access property from node's properties dict
                             return node_data.get("properties", {}).get(prop, "")
                 else:
                     # Direct field access

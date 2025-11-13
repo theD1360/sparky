@@ -769,9 +769,10 @@ class KnowledgeRepository:
                 # PostgreSQL: rowid not needed
                 self._generate_and_store_embedding(session, existing)
 
-            session.commit()
-            # Refresh to load all attributes, then expunge to detach from session
+            # Refresh to load all attributes
+            session.flush()
             session.refresh(existing)
+            # Expunge to detach from session so object can be used after session closes
             session.expunge(existing)
             logger.info(f"Updated node {node_id}")
             return existing

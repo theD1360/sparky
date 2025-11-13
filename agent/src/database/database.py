@@ -1,8 +1,9 @@
 """Database connection and session management for the knowledge base."""
 
 import logging
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Generator, Optional
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
@@ -129,10 +130,16 @@ class DatabaseManager:
         Base.metadata.create_all(bind=self.engine)
         logger.info("Database tables created")
 
-    def get_session(self) -> Session:
-        """Get a new database session.
+    @contextmanager
+    def get_session(self) -> Generator[Session, None, None]:
+        """Get a new database session with proper transaction management.
 
-        Returns:
+        This context manager ensures that:
+        - Transactions are committed on successful completion
+        - Transactions are rolled back on exceptions
+        - Sessions are properly closed after use
+
+        Yields:
             SQLAlchemy session instance
 
         Raises:
@@ -141,7 +148,15 @@ class DatabaseManager:
         if self.SessionLocal is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
-        return self.SessionLocal()
+        session = self.SessionLocal()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def close(self) -> None:
         """Close database connections and cleanup resources."""
