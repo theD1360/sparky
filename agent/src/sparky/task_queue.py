@@ -498,6 +498,82 @@ class TaskQueue:
             logger.error(f"Error updating task status: {e}", exc_info=True)
             return False
 
+    async def update_task(
+        self,
+        task_id: str,
+        status: Optional[str] = None,
+        instruction: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        response: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        """Update any field(s) of a task atomically.
+
+        Args:
+            task_id: ID of the task to update
+            status: Optional new status ('pending', 'in_progress', 'completed', 'failed')
+            instruction: Optional new instruction text
+            metadata: Optional new metadata (will be merged with existing)
+            response: Optional bot response to the instruction
+            error: Optional error message
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            task = await self.get_task(task_id)
+            if not task:
+                logger.warning(f"Task {task_id} not found for update")
+                return False
+
+            # Validate status if provided
+            if status is not None:
+                valid_statuses = ["pending", "in_progress", "completed", "failed"]
+                if status not in valid_statuses:
+                    logger.warning(f"Invalid status '{status}' for task {task_id}")
+                    return False
+                task["status"] = status
+
+            # Update fields if provided
+            if instruction is not None:
+                if not instruction.strip():
+                    logger.warning(f"Cannot set empty instruction for task {task_id}")
+                    return False
+                task["instruction"] = instruction
+
+            if metadata is not None:
+                # Merge metadata with existing
+                current_metadata = task.get("metadata", {})
+                current_metadata.update(metadata)
+                task["metadata"] = current_metadata
+
+            if response is not None:
+                task["response"] = response
+
+            if error is not None:
+                task["error"] = error
+
+            # Update timestamp
+            task["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            await self._save_task(task)
+            logger.info(f"Updated task {task_id}")
+
+            # Emit event if status changed
+            if status is not None:
+                await self.events.async_dispatch(
+                    TaskEvents.TASK_STATUS_CHANGED,
+                    task_id,
+                    status,
+                    response=response,
+                    error=error,
+                )
+
+            return True
+        except Exception as e:
+            logger.error(f"Error updating task: {e}", exc_info=True)
+            return False
+
 
     async def delete_task(self, task_id: str) -> bool:
         """Delete a task from the queue.

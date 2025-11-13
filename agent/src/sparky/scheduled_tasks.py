@@ -218,6 +218,21 @@ class ScheduledTask:
         return prompt
 
 
+def get_config_path(config_path: Optional[Path] = None) -> Path:
+    """Get the path to the scheduled tasks configuration file.
+
+    Args:
+        config_path: Optional explicit path to config file
+
+    Returns:
+        Path to the configuration file
+    """
+    if config_path is None:
+        # Default to project root
+        config_path = Path(__file__).parent.parent.parent / "scheduled_tasks.yaml"
+    return config_path
+
+
 def load_scheduled_tasks(config_path: Optional[Path] = None) -> List[ScheduledTask]:
     """Load scheduled tasks from YAML configuration.
 
@@ -228,9 +243,7 @@ def load_scheduled_tasks(config_path: Optional[Path] = None) -> List[ScheduledTa
     Returns:
         List of ScheduledTask objects
     """
-    if config_path is None:
-        # Default to project root
-        config_path = Path(__file__).parent.parent.parent / "scheduled_tasks.yaml"
+    config_path = get_config_path(config_path)
 
     if not config_path.exists():
         logger.warning("Scheduled tasks config not found: %s", config_path)
@@ -279,3 +292,171 @@ def load_scheduled_tasks(config_path: Optional[Path] = None) -> List[ScheduledTa
     except (OSError, yaml.YAMLError) as e:
         logger.error("Error loading scheduled tasks config: %s", e, exc_info=True)
         return []
+
+
+def save_scheduled_tasks(tasks: List[Dict[str, Any]], config_path: Optional[Path] = None) -> bool:
+    """Save scheduled tasks to YAML configuration.
+
+    Args:
+        tasks: List of task dictionaries to save
+        config_path: Path to the YAML config file
+
+    Returns:
+        True if successful, False otherwise
+    """
+    config_path = get_config_path(config_path)
+
+    try:
+        config = {"scheduled_tasks": tasks}
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+        logger.info("Saved %d scheduled tasks to %s", len(tasks), config_path)
+        return True
+    except (OSError, yaml.YAMLError) as e:
+        logger.error("Error saving scheduled tasks config: %s", e, exc_info=True)
+        return False
+
+
+def load_raw_config(config_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Load raw task configurations from YAML.
+
+    Args:
+        config_path: Path to the YAML config file
+
+    Returns:
+        List of raw task configuration dictionaries
+    """
+    config_path = get_config_path(config_path)
+
+    if not config_path.exists():
+        logger.warning("Scheduled tasks config not found: %s", config_path)
+        return []
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+
+        if not config or "scheduled_tasks" not in config:
+            return []
+
+        return config["scheduled_tasks"]
+    except (OSError, yaml.YAMLError) as e:
+        logger.error("Error loading scheduled tasks config: %s", e, exc_info=True)
+        return []
+
+
+def add_scheduled_task(
+    name: str,
+    interval: str,
+    prompt: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    enabled: bool = True,
+    config_path: Optional[Path] = None,
+) -> bool:
+    """Add a new scheduled task to the configuration.
+
+    Args:
+        name: Unique name for the task
+        interval: Interval specification
+        prompt: Prompt text or file() reference
+        metadata: Optional metadata dictionary
+        enabled: Whether the task is enabled
+        config_path: Path to the YAML config file
+
+    Returns:
+        True if successful, False otherwise
+    """
+    # Validate inputs by creating a ScheduledTask
+    try:
+        ScheduledTask(name, interval, prompt, metadata, enabled)
+    except ValueError as e:
+        logger.error("Invalid task configuration: %s", e)
+        return False
+
+    # Load existing tasks
+    tasks = load_raw_config(config_path)
+
+    # Check for duplicate name
+    if any(t.get("name") == name for t in tasks):
+        logger.error("Task with name '%s' already exists", name)
+        return False
+
+    # Add new task
+    new_task = {
+        "name": name,
+        "interval": interval,
+        "prompt": prompt,
+        "metadata": metadata or {},
+        "enabled": enabled,
+    }
+    tasks.append(new_task)
+
+    return save_scheduled_tasks(tasks, config_path)
+
+
+def update_scheduled_task(
+    name: str,
+    enabled: Optional[bool] = None,
+    interval: Optional[str] = None,
+    prompt: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    config_path: Optional[Path] = None,
+) -> bool:
+    """Update an existing scheduled task.
+
+    Args:
+        name: Name of the task to update
+        enabled: Optional new enabled status
+        interval: Optional new interval
+        prompt: Optional new prompt
+        metadata: Optional new metadata (will replace existing)
+        config_path: Path to the YAML config file
+
+    Returns:
+        True if successful, False otherwise
+    """
+    tasks = load_raw_config(config_path)
+
+    # Find and update the task
+    task_found = False
+    for task in tasks:
+        if task.get("name") == name:
+            task_found = True
+            if enabled is not None:
+                task["enabled"] = enabled
+            if interval is not None:
+                task["interval"] = interval
+            if prompt is not None:
+                task["prompt"] = prompt
+            if metadata is not None:
+                task["metadata"] = metadata
+            break
+
+    if not task_found:
+        logger.error("Task '%s' not found", name)
+        return False
+
+    return save_scheduled_tasks(tasks, config_path)
+
+
+def delete_scheduled_task(name: str, config_path: Optional[Path] = None) -> bool:
+    """Delete a scheduled task from the configuration.
+
+    Args:
+        name: Name of the task to delete
+        config_path: Path to the YAML config file
+
+    Returns:
+        True if successful, False otherwise
+    """
+    tasks = load_raw_config(config_path)
+
+    # Filter out the task to delete
+    original_count = len(tasks)
+    tasks = [t for t in tasks if t.get("name") != name]
+
+    if len(tasks) == original_count:
+        logger.error("Task '%s' not found", name)
+        return False
+
+    return save_scheduled_tasks(tasks, config_path)

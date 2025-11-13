@@ -82,6 +82,87 @@ async def test_update_task_status(task_queue):
     assert completed["response"] == "Task completed successfully"
 
 
+async def test_update_task(task_queue):
+    """Test updating multiple task fields atomically."""
+    # Add a task
+    task = await task_queue.add_task(
+        "Original instruction",
+        metadata={"priority": "low", "source": "test"},
+    )
+
+    # Update status only
+    success = await task_queue.update_task(task["id"], status="in_progress")
+    assert success
+    updated = await task_queue.get_task(task["id"])
+    assert updated["status"] == "in_progress"
+    assert updated["instruction"] == "Original instruction"
+
+    # Update instruction
+    success = await task_queue.update_task(
+        task["id"], instruction="Updated instruction"
+    )
+    assert success
+    updated = await task_queue.get_task(task["id"])
+    assert updated["instruction"] == "Updated instruction"
+    assert updated["status"] == "in_progress"  # Should remain unchanged
+
+    # Update metadata (should merge with existing)
+    success = await task_queue.update_task(
+        task["id"], metadata={"priority": "high", "new_field": "value"}
+    )
+    assert success
+    updated = await task_queue.get_task(task["id"])
+    assert updated["metadata"]["priority"] == "high"
+    assert updated["metadata"]["source"] == "test"  # Should still be present
+    assert updated["metadata"]["new_field"] == "value"
+
+    # Update multiple fields at once
+    success = await task_queue.update_task(
+        task["id"],
+        status="completed",
+        response="Task finished",
+        error=None,
+    )
+    assert success
+    updated = await task_queue.get_task(task["id"])
+    assert updated["status"] == "completed"
+    assert updated["response"] == "Task finished"
+
+
+async def test_update_task_invalid_status(task_queue):
+    """Test updating task with invalid status."""
+    task = await task_queue.add_task("Test task")
+
+    # Try to update with invalid status
+    success = await task_queue.update_task(task["id"], status="invalid_status")
+    assert not success
+
+    # Verify task status unchanged
+    updated = await task_queue.get_task(task["id"])
+    assert updated["status"] == "pending"
+
+
+async def test_update_task_empty_instruction(task_queue):
+    """Test that empty instruction is rejected."""
+    task = await task_queue.add_task("Original instruction")
+
+    # Try to set empty instruction
+    success = await task_queue.update_task(task["id"], instruction="")
+    assert not success
+
+    # Verify instruction unchanged
+    updated = await task_queue.get_task(task["id"])
+    assert updated["instruction"] == "Original instruction"
+
+
+async def test_update_nonexistent_task(task_queue):
+    """Test updating a task that doesn't exist."""
+    success = await task_queue.update_task(
+        "nonexistent-id", status="completed"
+    )
+    assert not success
+
+
 async def test_get_next_pending_task(task_queue):
     """Test getting the next pending task."""
     # Add multiple tasks
