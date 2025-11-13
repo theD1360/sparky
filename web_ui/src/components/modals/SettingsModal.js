@@ -21,31 +21,51 @@ import {
   Close as CloseIcon,
   Notifications as NotificationsIcon,
   Palette as PaletteIcon,
-  Language as LanguageIcon,
+  VolumeUp as VolumeUpIcon,
   Storage as StorageIcon,
   Security as SecurityIcon,
+  Check as CheckIcon,
 } from '@mui/icons-material';
+import { useSettings } from '../../hooks';
+import { getAvailableThemes } from '../../styles/themes';
 
 /**
  * Settings modal - app configuration and preferences
  * @param {boolean} isOpen - Whether modal is open
  * @param {function} onClose - Callback to close modal
+ * @param {function} onThemeChange - Callback when theme changes
  */
-function SettingsModal({ isOpen, onClose }) {
+function SettingsModal({ isOpen, onClose, onThemeChange }) {
   const [currentTab, setCurrentTab] = useState(0);
-  const [settings, setSettings] = useState({
-    notifications: true,
-    soundEffects: false,
-    darkMode: true,
-    autoSave: true,
-    analytics: false,
-  });
+  const { settings, updateSetting } = useSettings();
+  const availableThemes = getAvailableThemes();
 
   const handleSettingChange = (setting) => {
-    setSettings({
-      ...settings,
-      [setting]: !settings[setting],
-    });
+    const newValue = !settings[setting];
+    updateSetting(setting, newValue);
+    
+    // Request notification permission if enabling notifications
+    if (setting === 'notifications' && newValue) {
+      requestNotificationPermission();
+    }
+  };
+
+  const handleThemeChange = (themeName) => {
+    updateSetting('theme', themeName);
+    if (onThemeChange) {
+      onThemeChange(themeName);
+    }
+  };
+
+  const requestNotificationPermission = async () => {
+    if (!('Notification' in window)) {
+      alert('Your browser does not support notifications');
+      return;
+    }
+
+    if (Notification.permission !== 'granted') {
+      await Notification.requestPermission();
+    }
   };
 
   const handleTabChange = (event, newValue) => {
@@ -98,7 +118,35 @@ function SettingsModal({ isOpen, onClose }) {
                 </ListItemIcon>
                 <ListItemText
                   primary="Enable Notifications"
-                  secondary="Receive notifications for new messages and updates"
+                  secondary={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <span>Receive notifications for new messages and updates</span>
+                      {settings.notifications && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if ('Notification' in window) {
+                              Notification.requestPermission().then(permission => {
+                                if (permission === 'granted') {
+                                  new Notification('Sparky Studio', {
+                                    body: 'Notifications are working! 🎉',
+                                    icon: '/robot-logo.svg',
+                                  });
+                                }
+                              });
+                            } else {
+                              alert('Your browser does not support notifications');
+                            }
+                          }}
+                          sx={{ ml: 1, minWidth: 'auto', px: 1, py: 0.5, fontSize: '0.75rem' }}
+                        >
+                          Test
+                        </Button>
+                      )}
+                    </Box>
+                  }
                 />
                 <Switch
                   checked={settings.notifications}
@@ -126,11 +174,43 @@ function SettingsModal({ isOpen, onClose }) {
 
               <ListItem>
                 <ListItemIcon>
-                  <LanguageIcon sx={{ color: 'primary.main' }} />
+                  <VolumeUpIcon sx={{ color: 'primary.main' }} />
                 </ListItemIcon>
                 <ListItemText
                   primary="Sound Effects"
-                  secondary="Play sounds for messages and notifications"
+                  secondary={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <span>Play sounds for messages and notifications</span>
+                      {settings.soundEffects && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Test sound using Web Audio API directly
+                            try {
+                              const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                              const oscillator = audioContext.createOscillator();
+                              const gainNode = audioContext.createGain();
+                              oscillator.connect(gainNode);
+                              gainNode.connect(audioContext.destination);
+                              oscillator.frequency.value = 440;
+                              oscillator.type = 'sine';
+                              gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+                              gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+                              oscillator.start(audioContext.currentTime);
+                              oscillator.stop(audioContext.currentTime + 0.2);
+                            } catch (error) {
+                              console.error('Error playing test sound:', error);
+                            }
+                          }}
+                          sx={{ ml: 1, minWidth: 'auto', px: 1, py: 0.5, fontSize: '0.75rem' }}
+                        >
+                          Test Sound
+                        </Button>
+                      )}
+                    </Box>
+                  }
                 />
                 <Switch
                   checked={settings.soundEffects}
@@ -148,55 +228,58 @@ function SettingsModal({ isOpen, onClose }) {
               Appearance
             </Typography>
 
-            <List>
-              <ListItem>
-                <ListItemIcon>
-                  <PaletteIcon sx={{ color: 'primary.main' }} />
-                </ListItemIcon>
-                <ListItemText
-                  primary="Dark Mode"
-                  secondary="Use dark theme throughout the app"
-                />
-                <Switch
-                  checked={settings.darkMode}
-                  onChange={() => handleSettingChange('darkMode')}
-                  disabled
-                />
-              </ListItem>
-
-              <Divider />
-
-              <Box sx={{ p: 2 }}>
-                <Typography variant="body2" sx={{ color: 'text.secondary', mb: 2 }}>
-                  🎨 More theme customization options coming soon!
-                </Typography>
-                <Box
-                  sx={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
-                    gap: 1,
-                  }}
-                >
-                  {['Blue', 'Purple', 'Green', 'Orange'].map((color) => (
-                    <Box
-                      key={color}
-                      sx={{
-                        height: 60,
-                        borderRadius: 2,
-                        bgcolor: `${color.toLowerCase()}.500`,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        opacity: 0.5,
-                        cursor: 'not-allowed',
-                      }}
-                    >
-                      <Typography variant="caption">{color}</Typography>
-                    </Box>
-                  ))}
-                </Box>
+            <Box sx={{ p: 2 }}>
+              <Typography variant="body2" sx={{ color: 'text.secondary', mb: 2 }}>
+                🎨 Choose your theme color
+              </Typography>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  gap: 2,
+                }}
+              >
+                {availableThemes.map((theme) => (
+                  <Box
+                    key={theme.name}
+                    onClick={() => handleThemeChange(theme.name)}
+                    sx={{
+                      position: 'relative',
+                      height: 80,
+                      borderRadius: 2,
+                      background: `linear-gradient(135deg, ${theme.color} 0%, ${theme.color}dd 100%)`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                      border: settings.theme === theme.name ? `3px solid ${theme.color}` : '1px solid rgba(255, 255, 255, 0.1)',
+                      transition: 'all 0.2s',
+                      '&:hover': {
+                        transform: 'translateY(-2px)',
+                        boxShadow: `0 8px 16px ${theme.color}40`,
+                      },
+                    }}
+                  >
+                    {settings.theme === theme.name && (
+                      <CheckIcon 
+                        sx={{ 
+                          position: 'absolute',
+                          top: 8,
+                          right: 8,
+                          color: 'white',
+                          bgcolor: 'rgba(0, 0, 0, 0.3)',
+                          borderRadius: '50%',
+                          p: 0.5,
+                        }} 
+                      />
+                    )}
+                    <Typography variant="body1" sx={{ fontWeight: 600, color: 'white' }}>
+                      {theme.label}
+                    </Typography>
+                  </Box>
+                ))}
               </Box>
-            </List>
+            </Box>
           </Box>
         )}
 
@@ -242,12 +325,32 @@ function SettingsModal({ isOpen, onClose }) {
         )}
       </DialogContent>
 
-      <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>
-        <Button onClick={onClose} variant="outlined" sx={{ flex: 1 }}>
-          Cancel
-        </Button>
-        <Button onClick={onClose} variant="contained" sx={{ flex: 1 }}>
-          Save Changes
+      <DialogActions sx={{ px: 3, pb: 3 }}>
+        <Box sx={{ flex: 1 }}>
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+            Settings are saved automatically
+          </Typography>
+          <Typography 
+            variant="caption" 
+            sx={{ 
+              color: 'text.secondary',
+              opacity: 0.5,
+              fontSize: '0.7rem',
+              fontFamily: 'monospace',
+              cursor: 'pointer',
+              '&:hover': { opacity: 1 },
+            }}
+            onClick={() => {
+              if (window.location.pathname !== '/admin') {
+                window.location.href = '/admin';
+              }
+            }}
+          >
+            Ctrl+Shift+A
+          </Typography>
+        </Box>
+        <Button onClick={onClose} variant="contained">
+          Done
         </Button>
       </DialogActions>
     </Dialog>

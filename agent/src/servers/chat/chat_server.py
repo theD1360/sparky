@@ -37,6 +37,7 @@ from pydantic import BaseModel
 
 # Import routers
 from servers.chat.routes import (
+    admin_router,
     chats_router,
     health_router,
     prompts_router,
@@ -75,6 +76,8 @@ _app_toolchain: ToolChain | None = None
 _app_knowledge: Knowledge | None = None
 _startup_error: str | None = None
 _connection_manager: "ConnectionManager | None" = None
+_agent_loop_instance = None
+_agent_loop_task = None
 
 logger = getLogger(__name__)
 
@@ -203,6 +206,9 @@ class ConnectionManager:
                 cache_status = cache.get_cache_status()
                 logger.debug(f"[{session_id}] Tool cache status: {cache_status}")
 
+                # Start agent loop on first toolchain initialization if enabled
+                await self._maybe_start_agent_loop(toolchain)
+
                 return toolchain, None
             else:
                 error_msg = "Toolchain loaded but is None"
@@ -214,6 +220,42 @@ class ConnectionManager:
             logger.error(f"[{session_id}] {error_msg}")
             logger.error(f"[{session_id}] Traceback: {traceback.format_exc()}")
             return None, error_msg
+
+    async def _maybe_start_agent_loop(self, toolchain: ToolChain):
+        """Start agent loop if enabled and not already running.
+        
+        Args:
+            toolchain: Initialized toolchain to use
+        """
+        global _agent_loop_instance, _agent_loop_task
+        
+        # Check if already running
+        if _agent_loop_instance is not None:
+            logger.info("Agent loop already running, skipping startup")
+            return
+        
+        # Check if enabled
+        enable_agent_loop = os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
+        if not enable_agent_loop:
+            logger.debug("Agent loop not enabled (SPARKY_ENABLE_AGENT_LOOP=false)")
+            return
+        
+        try:
+            logger.info("Starting agent loop after toolchain initialization...")
+            from servers.task import AgentLoop
+
+            poll_interval = int(os.getenv("SPARKY_AGENT_POLL_INTERVAL", "10"))
+            _agent_loop_instance = AgentLoop(
+                toolchain=toolchain,
+                poll_interval=poll_interval,
+                enable_scheduled_tasks=True,
+                connection_manager=self,
+            )
+            _agent_loop_task = _agent_loop_instance.start_background()
+            logger.info(f"Agent loop started in background (poll interval: {poll_interval}s)")
+        except Exception as e:
+            logger.error(f"Failed to start agent loop: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
     async def load_and_cache_identity(
         self,
@@ -694,10 +736,9 @@ def _setup_signal_handlers():
 async def cleanup_server(app: FastAPI):
     """Cleanup the server process when the app is shut down."""
     cleanup_task = None
-    agent_loop_task = None
-    agent_loop_instance = None
     try:
         global _app_toolchain, _app_knowledge, _startup_error, _connection_manager
+        global _agent_loop_instance, _agent_loop_task
 
         # Create PID file and setup signal handlers
         _create_pid_file()
@@ -707,35 +748,60 @@ async def cleanup_server(app: FastAPI):
         _connection_manager = ConnectionManager(session_timeout_minutes=60)
         logger.info("Connection manager initialized")
 
-        # Note: Toolchain is now loaded lazily on first WebSocket connection
-        # This enables true splash screen progress and per-server caching
-        logger.info("Server ready - toolchain will be initialized on first client connection")
+        # Check if agent loop is enabled
+        enable_agent_loop = os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
+        
+        if enable_agent_loop:
+            # If agent loop is enabled, load toolchain at startup
+            logger.info("Agent loop is enabled - loading toolchain at startup")
+            from sparky.toolchain_cache import get_toolchain_cache
+            
+            cache = get_toolchain_cache()
+            toolchain, error = await cache.get_or_load_toolchain()
+            
+            if error:
+                logger.error(f"Failed to load toolchain at startup: {error}")
+                _startup_error = error
+            elif toolchain:
+                _connection_manager.toolchain = toolchain
+                logger.info(f"Toolchain loaded at startup: {len(toolchain.tool_clients)} tool server(s)")
+                
+                # Start agent loop immediately
+                try:
+                    from servers.task import AgentLoop
+                    
+                    poll_interval = int(os.getenv("SPARKY_AGENT_POLL_INTERVAL", "10"))
+                    _agent_loop_instance = AgentLoop(
+                        toolchain=toolchain,
+                        poll_interval=poll_interval,
+                        enable_scheduled_tasks=True,
+                        connection_manager=_connection_manager,
+                    )
+                    _agent_loop_task = _agent_loop_instance.start_background()
+                    logger.info(f"Agent loop started at startup (poll interval: {poll_interval}s)")
+                except Exception as e:
+                    logger.error(f"Failed to start agent loop: {e}")
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+        else:
+            logger.info("Agent loop is disabled - toolchain will be loaded on first client connection")
+            logger.info("Set SPARKY_ENABLE_AGENT_LOOP=true to enable agent loop")
 
         # Start periodic cleanup task
         cleanup_task = asyncio.create_task(_periodic_cleanup())
         logger.info("Periodic session cleanup task started")
-
-        # Optionally start agent loop if enabled via environment variable
-        # Note: Agent loop will need to wait for toolchain to be initialized by first client
-        enable_agent_loop = (
-            os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
-        )
-        if enable_agent_loop:
-            logger.info("Agent loop is enabled but will start after toolchain loads")
-            # Agent loop startup moved to post-toolchain-initialization
-            # Will be triggered after first client connects and loads tools
+        logger.info("Server ready")
 
         yield
 
         # Cleanup on shutdown
-        if agent_loop_instance:
+        if _agent_loop_instance:
             logger.info("Stopping agent loop...")
-            await agent_loop_instance.stop()
+            await _agent_loop_instance.stop()
 
-        if agent_loop_task:
-            agent_loop_task.cancel()
+        if _agent_loop_task:
+            _agent_loop_task.cancel()
             try:
-                await agent_loop_task
+                await _agent_loop_task
             except asyncio.CancelledError:
                 pass
 
@@ -774,28 +840,7 @@ app.include_router(resources_router)
 app.include_router(prompts_router)
 app.include_router(user_router)
 app.include_router(chats_router)
-
-
-# Tool cache admin endpoint
-@app.get("/api/admin/tool_cache_status")
-async def get_tool_cache_status():
-    """Get status of the tool chain cache.
-
-    Returns:
-        Dictionary with cache status for all tool servers
-    """
-    try:
-        cache = get_toolchain_cache()
-        status = cache.get_cache_status()
-        return {
-            "success": True,
-            "cache_initialized": cache._initialized,
-            "servers": status,
-            "total_servers": len(status),
-        }
-    except Exception as e:
-        logger.error(f"Error getting cache status: {e}")
-        return {"success": False, "error": str(e)}
+app.include_router(admin_router)
 
 
 # File analysis function
@@ -1671,9 +1716,15 @@ if BUILD_DIR:
 
     # Catch-all route for SPA - must be LAST
     # This handles all paths not matched above (like /chat/:chatId)
+    # BUT exclude API routes to avoid intercepting backend endpoints
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         """Serve index.html for all unmatched routes (SPA routing)."""
+        # Don't serve SPA for API routes - let them 404 naturally
+        if full_path.startswith("api/"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail=f"API endpoint not found: /{full_path}")
+        
         index_path = os.path.join(BUILD_DIR, "index.html")
         if not os.path.exists(index_path):
             logger.error(f"index.html not found at {index_path}")

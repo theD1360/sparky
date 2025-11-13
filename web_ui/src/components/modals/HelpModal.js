@@ -22,7 +22,8 @@ function HelpModal({ isOpen, onClose, resources, prompts, toolUses, toolResults 
             <h3>Keyboard Shortcuts</h3>
             <ul>
               <li><kbd>Ctrl+S</kbd> or <kbd>Enter</kbd> - Send message</li>
-              <li><kbd>Ctrl+H</kbd> or <kbd>?</kbd> - Show this help</li>
+              <li><kbd>Ctrl+H</kbd> - Show this help</li>
+              <li><kbd>Ctrl+Shift+A</kbd> - Admin dashboard</li>
               <li><kbd>Escape</kbd> - Close modal/dropdown</li>
               <li><kbd>↑/↓</kbd> - Navigate autocomplete</li>
             </ul>

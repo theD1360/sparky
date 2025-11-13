@@ -50,14 +50,18 @@ import AutocompleteDropdown from './components/chat/AutocompleteDropdown';
 import { HelpModal, UserModal, SettingsModal } from './components/modals';
 import SplashScreen from './components/common/SplashScreen';
 import Home from './pages/Home';
+import { useSettings } from './hooks';
 
 const SIDEBAR_WIDTH = 280;
 
-function App() {
+function App({ onThemeChange }) {
   // Router hooks
   const navigate = useNavigate();
   const location = useLocation();
   const { chatId: urlChatId } = useParams();
+  
+  // Settings hook
+  const { settings, showNotification, playSound } = useSettings();
   
   // Responsive design
   const theme = useTheme();
@@ -560,6 +564,7 @@ function App() {
         console.log('Fetching resources and prompts...');
         const resourcesResponse = await fetch('/api/resources');
         console.log('Resources response status:', resourcesResponse.status);
+        console.log('Resources content-type:', resourcesResponse.headers.get('content-type'));
         if (!resourcesResponse.ok) {
           console.error('Resources API failed:', resourcesResponse.status);
           return;
@@ -769,6 +774,18 @@ function App() {
         case 'message':
           setIsTyping(false); // Stop typing on actual message
           setChatMessages(prev => [...prev, { role: 'bot', text: data.data.text }]);
+          
+          // Always play sound when message arrives
+          playSound('message');
+          
+          // Show notification if window is not focused
+          if (!document.hasFocus()) {
+            showNotification('Sparky responded', {
+              body: data.data.text.substring(0, 100) + (data.data.text.length > 100 ? '...' : ''),
+              tag: 'sparky-message',
+              requireInteraction: false,
+            });
+          }
           break;
           
         case 'tool_use':
@@ -797,6 +814,7 @@ function App() {
         case 'error':
           setIsTyping(false); // Stop typing on error
           setChatMessages(prev => [...prev, { role: 'error', text: data.data.message }]);
+          playSound('error');
           break;
         
         case 'token_usage':
@@ -1066,6 +1084,9 @@ function App() {
     
     socket.current.send(JSON.stringify({ type: 'message', data: messageData }));
     
+    // Play send sound
+    playSound('notification');
+    
     // Show typing indicator
     setIsTyping(true);
 
@@ -1119,6 +1140,12 @@ function App() {
     if (event.key === 'h' && event.ctrlKey) {
       event.preventDefault();
       setShowHelpModal(true);
+      return;
+    }
+
+    if (event.key === 'A' && event.ctrlKey && event.shiftKey) {
+      event.preventDefault();
+      navigate('/admin');
       return;
     }
   };
@@ -1994,6 +2021,7 @@ function App() {
       <SettingsModal
         isOpen={showSettingsModal}
         onClose={() => setShowSettingsModal(false)}
+        onThemeChange={onThemeChange}
       />
       </Box>
       )}
