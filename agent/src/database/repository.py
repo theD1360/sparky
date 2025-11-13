@@ -1133,7 +1133,7 @@ class KnowledgeRepository:
             # Get embedding for reference node
             if is_postgres:
                 # PostgreSQL: embedding is in the node table
-                if not ref_node.embedding:
+                if not hasattr(ref_node, "embedding") or ref_node.embedding is None:
                     raise ValueError(f"Node {node_id} has no embedding")
 
                 # Use the embedding column directly

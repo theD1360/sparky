@@ -16,6 +16,12 @@ from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
+try:
+    from pgvector.sqlalchemy import Vector
+    PGVECTOR_AVAILABLE = True
+except ImportError:
+    PGVECTOR_AVAILABLE = False
+
 Base = declarative_base()
 
 
@@ -42,6 +48,11 @@ class Node(Base):
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
+
+    # Embedding (for PostgreSQL with pgvector)
+    # Note: For SQLite, embeddings are stored in the nodes_vec virtual table
+    if PGVECTOR_AVAILABLE:
+        embedding = Column(Vector(768), nullable=True)
 
     # Relationships
     outgoing_edges = relationship(

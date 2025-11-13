@@ -2087,9 +2087,10 @@ async def symbol_search(
             from database.models import Node
             from sqlalchemy import select
 
-            stmt = select(Node).where(Node.node_type == "Symbol")
-            result = _kb_repository.session.execute(stmt)
-            nodes = [row[0] for row in result.fetchall()][: limit * 2]
+            with _kb_repository.db_manager.get_session() as session:
+                stmt = select(Node).where(Node.node_type == "Symbol")
+                result = session.execute(stmt)
+                nodes = [row[0] for row in result.fetchall()][: limit * 2]
 
         # Filter and format results
         for node in nodes:

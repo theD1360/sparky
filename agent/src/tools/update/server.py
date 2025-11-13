@@ -66,7 +66,7 @@ async def stop_server() -> dict:
 
 
 def main():
-    """Run the MCP server."""
+    """Runs the MCP server."""
     mcp.run()
 
 
