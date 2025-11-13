@@ -110,6 +110,13 @@ async def get_chat_messages(chat_id: str, limit: int = 100, offset: int = 0):
             # Get tool data directly from properties (no parsing needed!)
             tool_name = properties.get("tool_name")
             tool_args = properties.get("tool_args")
+            
+            # OPTIMIZATION: Truncate large tool results to improve frontend performance
+            # Large tool results (>50KB) can cause slow rendering and high memory usage
+            MAX_TOOL_RESULT_SIZE = 50000  # 50KB limit for tool results
+            if message_type == "tool_result" and len(text) > MAX_TOOL_RESULT_SIZE:
+                truncated_size = len(text)
+                text = text[:MAX_TOOL_RESULT_SIZE] + f"\n\n... [Output truncated: {truncated_size:,} bytes total, showing first {MAX_TOOL_RESULT_SIZE:,} bytes]"
 
             # Get file attachments for this message from our pre-loaded lookup
             attachments = []

@@ -2712,10 +2712,20 @@ class KnowledgeRepository:
             # If we have messages or fallback is disabled, use what we found
             if chat_messages or not use_session_fallback:
                 # Apply ordering, offset, and limit
-                chat_messages.sort(
-                    key=lambda m: m.created_at
-                    or datetime.min.replace(tzinfo=timezone.utc)
-                )
+                # Sort by message number extracted from node ID (chat:session_id:message_num)
+                # This ensures correct order even if timestamps are out of order
+                def get_message_num(node):
+                    try:
+                        # Extract message number from node ID: chat:session_id:message_num
+                        parts = node.id.split(":")
+                        return int(parts[-1]) if parts else 0
+                    except (ValueError, IndexError):
+                        # Fallback to timestamp if ID format is unexpected
+                        return (
+                            node.created_at or datetime.min.replace(tzinfo=timezone.utc)
+                        ).timestamp()
+
+                chat_messages.sort(key=get_message_num)
 
                 if offset:
                     chat_messages = chat_messages[offset:]
@@ -2782,10 +2792,20 @@ class KnowledgeRepository:
                     seen_ids.add(msg.id)
                     unique_messages.append(msg)
 
-            # Sort by creation time
-            unique_messages.sort(
-                key=lambda m: m.created_at or datetime.min.replace(tzinfo=timezone.utc)
-            )
+            # Sort by message number extracted from node ID (chat:session_id:message_num)
+            # This ensures correct order even if timestamps are out of order
+            def get_message_num(node):
+                try:
+                    # Extract message number from node ID: chat:session_id:message_num
+                    parts = node.id.split(":")
+                    return int(parts[-1]) if parts else 0
+                except (ValueError, IndexError):
+                    # Fallback to timestamp if ID format is unexpected
+                    return (
+                        node.created_at or datetime.min.replace(tzinfo=timezone.utc)
+                    ).timestamp()
+
+            unique_messages.sort(key=get_message_num)
 
             # Apply offset and limit
             if offset:
