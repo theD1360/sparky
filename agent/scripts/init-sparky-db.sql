@@ -15,6 +15,9 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'sparky_db')\gexec
 -- The database user (metamcp_user by default) already has access via the shared PostgreSQL instance
 -- No additional grants needed since the user is already created by the main POSTGRES_DB
 
--- Note: The pgvector extension will be created by Alembic migrations
--- when we run `alembic upgrade head`
+-- Connect to sparky_db and enable pgvector extension
+\c sparky_db
+
+-- Enable pgvector extension for vector similarity search
+CREATE EXTENSION IF NOT EXISTS vector;
 

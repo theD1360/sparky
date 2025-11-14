@@ -113,6 +113,19 @@ class DatabaseManager:
                 pool_size=5,
                 max_overflow=10,
             )
+
+            # Enable pgvector extension for PostgreSQL
+            @event.listens_for(self.engine, "connect")
+            def enable_pgvector(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                    logger.debug("pgvector extension enabled")
+                except Exception as e:
+                    logger.warning(f"Failed to enable pgvector extension: {e}")
+                finally:
+                    cursor.close()
+
             logger.debug(f"Database connected: {self.db_url}")
 
         # Create session factory (for both SQLite and PostgreSQL)
@@ -126,9 +139,13 @@ class DatabaseManager:
             logger.debug("EmbeddingManager initialized")
         except Exception as e:
             logger.warning(f"Failed to initialize EmbeddingManager: {e}")
-        
-        Base.metadata.create_all(bind=self.engine)
-        logger.info("Database tables created")
+
+        # Note: Table creation is handled by Alembic migrations
+        # Run migrations with: sparky db migrate
+        # Base.metadata.create_all(bind=self.engine) is not needed when using Alembic
+        logger.debug(
+            "Database connection established (tables managed by Alembic migrations)"
+        )
 
     @contextmanager
     def get_session(self) -> Generator[Session, None, None]:
@@ -194,11 +211,13 @@ def get_database_manager(
         # Check for database URL from environment variable first
         if db_url is None:
             import os
+
             db_url = os.getenv("SPARKY_DB_URL")
-        
+
         if db_url is None and db_path is None:
             # Check for DATABASE_PATH environment variable
             import os
+
             db_path_env = os.getenv("DATABASE_PATH")
             if db_path_env:
                 db_path = Path(db_path_env)
@@ -233,7 +252,10 @@ def initialize_database(
     db_path: Optional[Path] = None,
     echo: bool = False,
 ) -> DatabaseManager:
-    """Initialize database with connection and table creation.
+    """Initialize database with connection.
+
+    Note: Table creation is handled by Alembic migrations.
+    Run migrations with: sparky db migrate
 
     Args:
         db_url: Database URL (for PostgreSQL or other databases)
@@ -246,7 +268,7 @@ def initialize_database(
     manager = get_database_manager(db_url=db_url, db_path=db_path)
     manager.echo = echo
     manager.connect()
-    manager.create_tables()
+    # Tables are created via Alembic migrations, not create_all()
     return manager
 
 

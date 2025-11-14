@@ -9,11 +9,17 @@ from pathlib import Path
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-# Add the database directory to the Python path
-database_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(database_dir))
+# Import Base directly using importlib to avoid circular imports
+import importlib.util
 
-from models import Base
+database_dir = Path(__file__).parent.parent
+models_path = database_dir / "models.py"
+
+spec = importlib.util.spec_from_file_location("db_models", models_path)
+db_models = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(db_models)
+
+Base = db_models.Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
