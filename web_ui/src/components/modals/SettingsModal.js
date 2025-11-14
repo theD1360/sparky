@@ -16,6 +16,9 @@ import {
   Divider,
   Tabs,
   Tab,
+  Select,
+  MenuItem,
+  FormControl,
 } from '@mui/material';
 import {
   Close as CloseIcon,
@@ -25,6 +28,8 @@ import {
   Storage as StorageIcon,
   Security as SecurityIcon,
   Check as CheckIcon,
+  Mic as MicIcon,
+  RecordVoiceOver as RecordVoiceOverIcon,
 } from '@mui/icons-material';
 import { useSettings } from '../../hooks';
 import { getAvailableThemes } from '../../styles/themes';
@@ -87,9 +92,9 @@ function SettingsModal({ isOpen, onClose, onThemeChange }) {
       }}
     >
       <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography variant="h6" sx={{ fontWeight: 600 }}>
+        <Box component="span" sx={{ fontWeight: 600, fontSize: '1.25rem' }}>
           Settings
-        </Typography>
+        </Box>
         <IconButton onClick={onClose} size="small" sx={{ color: 'text.secondary' }}>
           <CloseIcon />
         </IconButton>
@@ -118,36 +123,33 @@ function SettingsModal({ isOpen, onClose, onThemeChange }) {
                 </ListItemIcon>
                 <ListItemText
                   primary="Enable Notifications"
-                  secondary={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <span>Receive notifications for new messages and updates</span>
-                      {settings.notifications && (
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if ('Notification' in window) {
-                              Notification.requestPermission().then(permission => {
-                                if (permission === 'granted') {
-                                  new Notification('Sparky Studio', {
-                                    body: 'Notifications are working! 🎉',
-                                    icon: '/robot-logo.svg',
-                                  });
-                                }
-                              });
-                            } else {
-                              alert('Your browser does not support notifications');
-                            }
-                          }}
-                          sx={{ ml: 1, minWidth: 'auto', px: 1, py: 0.5, fontSize: '0.75rem' }}
-                        >
-                          Test
-                        </Button>
-                      )}
-                    </Box>
-                  }
+                  secondary="Receive notifications for new messages and updates"
+                  secondaryTypographyProps={{ component: 'div' }}
                 />
+                {settings.notifications && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if ('Notification' in window) {
+                        Notification.requestPermission().then(permission => {
+                          if (permission === 'granted') {
+                            new Notification('Sparky Studio', {
+                              body: 'Notifications are working! 🎉',
+                              icon: '/robot-logo.svg',
+                            });
+                          }
+                        });
+                      } else {
+                        alert('Your browser does not support notifications');
+                      }
+                    }}
+                    sx={{ minWidth: 'auto', px: 1, py: 0.5, fontSize: '0.75rem', mr: 1 }}
+                  >
+                    Test
+                  </Button>
+                )}
                 <Switch
                   checked={settings.notifications}
                   onChange={() => handleSettingChange('notifications')}
@@ -178,45 +180,124 @@ function SettingsModal({ isOpen, onClose, onThemeChange }) {
                 </ListItemIcon>
                 <ListItemText
                   primary="Sound Effects"
-                  secondary={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <span>Play sounds for messages and notifications</span>
-                      {settings.soundEffects && (
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            // Test sound using Web Audio API directly
-                            try {
-                              const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                              const oscillator = audioContext.createOscillator();
-                              const gainNode = audioContext.createGain();
-                              oscillator.connect(gainNode);
-                              gainNode.connect(audioContext.destination);
-                              oscillator.frequency.value = 440;
-                              oscillator.type = 'sine';
-                              gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
-                              gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
-                              oscillator.start(audioContext.currentTime);
-                              oscillator.stop(audioContext.currentTime + 0.2);
-                            } catch (error) {
-                              console.error('Error playing test sound:', error);
-                            }
-                          }}
-                          sx={{ ml: 1, minWidth: 'auto', px: 1, py: 0.5, fontSize: '0.75rem' }}
-                        >
-                          Test Sound
-                        </Button>
-                      )}
-                    </Box>
-                  }
+                  secondary="Play sounds for messages and notifications"
+                  secondaryTypographyProps={{ component: 'div' }}
                 />
+                {settings.soundEffects && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // Test sound using Web Audio API directly
+                      try {
+                        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                        const oscillator = audioContext.createOscillator();
+                        const gainNode = audioContext.createGain();
+                        oscillator.connect(gainNode);
+                        gainNode.connect(audioContext.destination);
+                        oscillator.frequency.value = 440;
+                        oscillator.type = 'sine';
+                        gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+                        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+                        oscillator.start(audioContext.currentTime);
+                        oscillator.stop(audioContext.currentTime + 0.2);
+                      } catch (error) {
+                        console.error('Error playing test sound:', error);
+                      }
+                    }}
+                    sx={{ minWidth: 'auto', px: 1, py: 0.5, fontSize: '0.75rem', mr: 1 }}
+                  >
+                    Test
+                  </Button>
+                )}
                 <Switch
                   checked={settings.soundEffects}
                   onChange={() => handleSettingChange('soundEffects')}
                 />
               </ListItem>
+            </List>
+
+            <Divider sx={{ my: 2 }} />
+
+            <Typography variant="h6" sx={{ mb: 2, mt: 2, fontWeight: 600 }}>
+              Voice & Speech
+            </Typography>
+
+            <List>
+              <ListItem>
+                <ListItemIcon>
+                  <RecordVoiceOverIcon sx={{ color: 'primary.main' }} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Auto-speak Responses"
+                  secondary="Automatically read assistant responses aloud"
+                />
+                <Switch
+                  checked={settings.speechEnabled}
+                  onChange={() => handleSettingChange('speechEnabled')}
+                />
+              </ListItem>
+
+              <Divider />
+
+              <ListItem>
+                <ListItemIcon>
+                  <MicIcon sx={{ color: 'primary.main' }} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Speech Language"
+                  secondary={
+                    <Box sx={{ mt: 1 }}>
+                      <FormControl size="small" sx={{ minWidth: 200 }}>
+                        <Select
+                          value={settings.speechLanguage}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            updateSetting('speechLanguage', e.target.value);
+                          }}
+                          sx={{
+                            bgcolor: 'rgba(255, 255, 255, 0.05)',
+                            '& .MuiOutlinedInput-notchedOutline': {
+                              borderColor: 'rgba(255, 255, 255, 0.1)',
+                            },
+                          }}
+                        >
+                          <MenuItem value="en-US">English (US)</MenuItem>
+                          <MenuItem value="en-GB">English (UK)</MenuItem>
+                          <MenuItem value="es-ES">Spanish</MenuItem>
+                          <MenuItem value="fr-FR">French</MenuItem>
+                          <MenuItem value="de-DE">German</MenuItem>
+                          <MenuItem value="it-IT">Italian</MenuItem>
+                          <MenuItem value="pt-BR">Portuguese (Brazil)</MenuItem>
+                          <MenuItem value="ja-JP">Japanese</MenuItem>
+                          <MenuItem value="ko-KR">Korean</MenuItem>
+                          <MenuItem value="zh-CN">Chinese (Simplified)</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </Box>
+                  }
+                  secondaryTypographyProps={{ component: 'div' }}
+                />
+              </ListItem>
+
+              {settings.speechEnabled && (
+                <>
+                  <Divider />
+                  <Box sx={{ p: 2, bgcolor: 'rgba(59, 130, 246, 0.1)', borderRadius: 2, m: 2 }}>
+                    <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1 }}>
+                      🎤 Voice conversation enabled!
+                    </Typography>
+                    <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.85rem' }}>
+                      • Click the microphone icon to speak your message
+                      <br />
+                      • Assistant responses will be read aloud automatically
+                      <br />
+                      • Works best in Chrome, Edge, and Safari
+                    </Typography>
+                  </Box>
+                </>
+              )}
             </List>
           </Box>
         )}

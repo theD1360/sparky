@@ -47,10 +47,13 @@ import {
 } from '@mui/icons-material';
 import ChatMessage from './components/chat/ChatMessage';
 import AutocompleteDropdown from './components/chat/AutocompleteDropdown';
+import SpeechInput from './components/chat/SpeechInput';
+import SpeechOutput from './components/chat/SpeechOutput';
 import { HelpModal, UserModal, SettingsModal } from './components/modals';
 import SplashScreen from './components/common/SplashScreen';
 import Home from './pages/Home';
 import { useSettings } from './hooks';
+import { stripMarkdown } from './utils/textUtils';
 
 const SIDEBAR_WIDTH = 280;
 
@@ -87,6 +90,10 @@ function App({ onThemeChange }) {
   // Input state
   const [inputValue, setInputValue] = useState('');
   const [cursorPosition, setCursorPosition] = useState(0);
+  
+  // Speech state
+  const [lastBotMessage, setLastBotMessage] = useState('');
+  const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
   
   // Data from server
   const [resources, setResources] = useState([]);
@@ -775,6 +782,11 @@ function App({ onThemeChange }) {
           setIsTyping(false); // Stop typing on actual message
           setChatMessages(prev => [...prev, { role: 'bot', text: data.data.text }]);
           
+          // Set last bot message for speech synthesis (strip markdown for better TTS)
+          const textForSpeech = stripMarkdown(data.data.text);
+          console.log('Preparing text for speech:', textForSpeech.substring(0, 100));
+          setLastBotMessage(textForSpeech);
+          
           // Always play sound when message arrives
           playSound('message');
           
@@ -997,7 +1009,7 @@ function App({ onThemeChange }) {
     }
   };
 
-  const sendMessage = async () => {
+  const sendMessage = useCallback(async () => {
     const messageToSend = inputValue.trim();
     
     // Get successfully uploaded files
@@ -1094,7 +1106,63 @@ function App({ onThemeChange }) {
     setAutocompleteType(null);
     setAutocompleteItems([]);
     setAttachedFiles([]);  // Clear attachments after sending
-  };
+  }, [inputValue, attachedFiles, currentChatId, chatReady, messageQueue, tokenUsage, toolsReady, socket, playSound]);
+
+  // Handle speech transcript (sends directly via WebSocket)
+  const handleSpeechTranscript = useCallback((transcript) => {
+    console.log('[App] ===== handleSpeechTranscript CALLED =====');
+    console.log('[App] Speech transcript received:', transcript);
+    console.log('[App] Socket state:', socket.current?.readyState);
+    console.log('[App] Current chat ID:', currentChatId);
+    console.log('[App] Chat ready:', chatReady);
+    console.log('[App] Tools ready:', toolsReady);
+    
+    if (!transcript || !transcript.trim()) {
+      console.log('[App] Empty transcript, skipping');
+      return;
+    }
+    
+    // Send directly to WebSocket without touching input field
+    if (!socket.current) {
+      console.error('[App] Socket is null!');
+      return;
+    }
+    
+    if (socket.current.readyState !== WebSocket.OPEN) {
+      console.error('[App] Socket not open, state:', socket.current.readyState);
+      return;
+    }
+    
+    const messageData = { text: transcript.trim() };
+    const userMessage = { role: 'user', text: transcript.trim() };
+    
+    // If no chat is selected, create a new chat first
+    if (!currentChatId) {
+      console.log('[App] No chat, creating one for speech message');
+      setPendingMessage(transcript.trim());
+      if (toolsReady) {
+        handleNewChat();
+      }
+      return;
+    }
+    
+    // Check if chat is ready
+    if (!chatReady) {
+      console.log('[App] Chat not ready, queuing speech message');
+      setMessageQueue(prev => [...prev, { text: transcript.trim(), data: messageData, attachments: [] }]);
+      setChatMessages(prev => [...prev, userMessage]);
+      return;
+    }
+    
+    // Send the message directly
+    console.log('[App] ✅ Sending speech message via WebSocket:', messageData);
+    setChatMessages(prev => [...prev, userMessage]);
+    setEstimatedTokens(tokenUsage.total_tokens);
+    socket.current.send(JSON.stringify({ type: 'message', data: messageData }));
+    playSound('notification');
+    setIsTyping(true);
+    console.log('[App] ===== Message sent successfully =====');
+  }, [socket, currentChatId, chatReady, toolsReady, tokenUsage, playSound, handleNewChat, setChatMessages, setMessageQueue, setEstimatedTokens, setIsTyping, setPendingMessage]);
 
   const handleKeyDown = (event) => {
     if (autocompleteType && autocompleteItems.length > 0) {
@@ -1239,7 +1307,7 @@ function App({ onThemeChange }) {
               '&:hover': { opacity: 0.8 },
               transition: 'opacity 0.2s',
             }}
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/chat')}
           >
             <Box
               component="img"
@@ -1676,6 +1744,19 @@ function App({ onThemeChange }) {
           </Stack>
         </Box>
 
+        {/* Speech Output - Hidden but active for TTS */}
+        <SpeechOutput
+          enabled={settings.speechEnabled}
+          textToSpeak={lastBotMessage}
+          language={settings.speechLanguage}
+          onSpeechEnd={() => {
+            setLastBotMessage('');
+            setIsAssistantSpeaking(false);
+          }}
+          onSpeechStart={() => setIsAssistantSpeaking(true)}
+          showControls={false}
+        />
+
         {/* Input Area - Sleeker design */}
         <Box
           sx={{
@@ -1848,6 +1929,14 @@ function App({ onThemeChange }) {
                         <AttachFileIcon fontSize="small" />
                       </IconButton>
                     )}
+                    {/* Speech Input */}
+                    <SpeechInput
+                      onTranscript={handleSpeechTranscript}
+                      disabled={connectionStatus !== 'Connected'}
+                      language={settings.speechLanguage}
+                      pauseWhileAssistantSpeaks={isAssistantSpeaking}
+                      sx={{ mr: 0.5 }}
+                    />
                     <IconButton
                       onClick={sendMessage}
                       disabled={(!inputValue.trim() && attachedFiles.filter(f => f.file_id).length === 0) || connectionStatus !== 'Connected'}

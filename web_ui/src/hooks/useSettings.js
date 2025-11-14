@@ -14,6 +14,10 @@ const DEFAULT_SETTINGS = {
   soundEffects: false,
   autoSave: true,
   analytics: false,
+  // Speech settings
+  speechEnabled: false,
+  speechLanguage: 'en-US',
+  speechAutoSend: false,
 };
 
 /**
