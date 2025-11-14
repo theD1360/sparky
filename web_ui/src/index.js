@@ -7,6 +7,14 @@ import App from './App';
 import { Admin } from './pages';
 import { createAppTheme } from './styles/themes';
 import reportWebVitals from './reportWebVitals';
+import { configureTransformers } from './utils/transformersConfig';
+import './utils/clearModelCache'; // Import to expose cache utilities globally
+
+// Configure transformers.js early, before any components load
+configureTransformers();
+
+// Log cache utilities availability
+console.log('🧹 Cache utilities loaded. Use window.clearModelCaches() if models fail to load.');
 
 /**
  * Root component with theme switching support

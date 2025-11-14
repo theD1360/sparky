@@ -5,13 +5,15 @@ import {
   Box,
   Snackbar,
   Alert,
+  CircularProgress,
 } from '@mui/material';
 import {
   VolumeUp as VolumeUpIcon,
   VolumeOff as VolumeOffIcon,
   Stop as StopIcon,
 } from '@mui/icons-material';
-import { useSpeechSynthesis } from '../../hooks/useSpeechSynthesis';
+import { useVitsTTS } from '../../hooks/useVitsTTS';
+import { useSettings } from '../../hooks';
 
 /**
  * SpeechOutput Component
@@ -44,16 +46,20 @@ function SpeechOutput({
   const lastSpokenTextRef = useRef(''); // Track what we've already spoken
   const isInitialMountRef = useRef(true); // Track initial mount
 
+  // Get voice settings
+  const { settings } = useSettings();
+  const voiceId = settings.ttsVoiceId || 'en_US-hfc_female-medium';
+
   const {
     isSpeaking,
     isSupported,
+    isDownloading,
+    isModelReady,
     error,
     speak,
     cancel,
-  } = useSpeechSynthesis({
-    lang: language,
-    rate,
-    volume,
+  } = useVitsTTS({
+    voiceId,
     onEnd: () => {
       if (onSpeechEnd) {
         onSpeechEnd();
@@ -83,8 +89,8 @@ function SpeechOutput({
         onSpeechStart();
       }
       
-      // Use slightly faster rate for more natural speech
-      speak(textToSpeak, { rate: 1.1 });
+      // Speak with VITS (no rate control needed)
+      speak(textToSpeak);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [textToSpeak, enabled, onSpeechStart]); // Intentionally omit 'speak' to prevent re-runs on re-render
@@ -119,16 +125,18 @@ function SpeechOutput({
       {/* Speaker Button */}
       <Tooltip
         title={
-          isSpeaking
-            ? 'Stop speaking'
-            : 'Speak text'
+          isDownloading
+            ? 'Downloading voice model...'
+            : isSpeaking
+              ? 'Stop speaking'
+              : 'Speak text'
         }
       >
         <span>
           <IconButton
             onClick={handleToggle}
             size="small"
-            disabled={!textToSpeak && !isSpeaking}
+            disabled={(!textToSpeak && !isSpeaking) || isDownloading}
             sx={{
               color: isSpeaking ? 'primary.main' : 'inherit',
               animation: isSpeaking ? 'speaking 0.5s ease-in-out infinite' : 'none',
@@ -142,7 +150,13 @@ function SpeechOutput({
               },
             }}
           >
-            {isSpeaking ? <StopIcon fontSize="small" /> : <VolumeUpIcon fontSize="small" />}
+            {isDownloading ? (
+              <CircularProgress size={16} />
+            ) : isSpeaking ? (
+              <StopIcon fontSize="small" />
+            ) : (
+              <VolumeUpIcon fontSize="small" />
+            )}
           </IconButton>
         </span>
       </Tooltip>

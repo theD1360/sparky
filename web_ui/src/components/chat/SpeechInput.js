@@ -7,6 +7,7 @@ import {
   Collapse,
   Alert,
   Snackbar,
+  CircularProgress,
 } from '@mui/material';
 import {
   Mic as MicIcon,
@@ -14,7 +15,8 @@ import {
   Stop as StopIcon,
   VolumeOff as VolumeOffIcon,
 } from '@mui/icons-material';
-import { useSpeechRecognition } from '../../hooks/useSpeechRecognition';
+import { useWhisperSTT } from '../../hooks/useWhisperSTT';
+import { useSettings } from '../../hooks';
 
 /**
  * SpeechInput Component
@@ -39,11 +41,18 @@ function SpeechInput({
   const [showError, setShowError] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
+  // Get STT settings
+  const { settings } = useSettings();
+  const sttModel = settings.sttModel || 'Xenova/whisper-base';
+
+  // Convert language code (e.g., 'en-US' to 'en')
+  const whisperLanguage = language.split('-')[0];
+
   // Memoize callbacks to prevent unnecessary re-initialization
   const speechOptions = useMemo(() => ({
-    language,
+    model: sttModel,
+    language: whisperLanguage,
     continuous: false, // Use manual mode - we control restarts ourselves
-    interimResults: true,
     onFinalTranscript: (finalText) => {
       // Don't trigger onTranscript here - we handle it in auto-submit
       // This prevents duplicate submissions
@@ -61,18 +70,23 @@ function SpeechInput({
         setShowError(true);
       }
     },
-  }), [language, onTranscript, onInterimTranscript]);
+    onModelLoading: (status) => {
+      console.log('[SpeechInput] Model loading:', status);
+    },
+  }), [sttModel, whisperLanguage, onInterimTranscript]);
 
   const {
     isListening,
     transcript,
     interimTranscript,
     isSupported,
+    isModelLoaded,
+    isModelLoading,
     error,
     startListening,
     stopListening,
     resetTranscript,
-  } = useSpeechRecognition(speechOptions);
+  } = useWhisperSTT(speechOptions);
 
   // Show error notification (but ignore aborted errors)
   useEffect(() => {
@@ -245,22 +259,37 @@ function SpeechInput({
     );
   }
 
+  // Show loading while model loads
+  if (isModelLoading) {
+    return (
+      <Tooltip title="Loading Whisper model...">
+        <span>
+          <IconButton disabled sx={sx}>
+            <CircularProgress size={20} />
+          </IconButton>
+        </span>
+      </Tooltip>
+    );
+  }
+
   return (
     <Box sx={{ position: 'relative', ...sx }}>
       {/* Microphone Button */}
       <Tooltip
         title={
-          pauseWhileAssistantSpeaks
-            ? 'Waiting for Sparky to finish...'
-            : isListening
-              ? 'Stop listening'
-              : 'Start voice input'
+          !isModelLoaded
+            ? 'Whisper model not loaded'
+            : pauseWhileAssistantSpeaks
+              ? 'Waiting for Sparky to finish...'
+              : isListening
+                ? 'Stop listening'
+                : 'Start voice input (Whisper STT)'
         }
       >
         <span>
           <IconButton
             onClick={handleToggle}
-            disabled={disabled || pauseWhileAssistantSpeaks}
+            disabled={disabled || pauseWhileAssistantSpeaks || !isModelLoaded}
             sx={{
               color: pauseWhileAssistantSpeaks
                 ? 'warning.main'  // Orange when assistant is speaking
@@ -315,8 +344,8 @@ function SpeechInput({
             {pauseWhileAssistantSpeaks 
               ? '⏸️ Paused - Waiting for Sparky to finish...' 
               : isListening && !transcript
-                ? '🎤 Ready - Start speaking...'
-                : '🎤 Listening... (auto-submit after 2s pause)'}
+                ? '🎤 Whisper listening - Start speaking...'
+                : '🎤 Listening with Whisper... (auto-submit after 2s pause)'}
           </Typography>
           <Typography 
             variant="body2" 

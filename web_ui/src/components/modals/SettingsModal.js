@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -19,6 +19,9 @@ import {
   Select,
   MenuItem,
   FormControl,
+  LinearProgress,
+  Chip,
+  CircularProgress,
 } from '@mui/material';
 import {
   Close as CloseIcon,
@@ -30,9 +33,13 @@ import {
   Check as CheckIcon,
   Mic as MicIcon,
   RecordVoiceOver as RecordVoiceOverIcon,
+  Download as DownloadIcon,
+  Delete as DeleteIcon,
+  CheckCircle as CheckCircleIcon,
 } from '@mui/icons-material';
 import { useSettings } from '../../hooks';
 import { getAvailableThemes } from '../../styles/themes';
+import * as tts from '@diffusionstudio/vits-web';
 
 /**
  * Settings modal - app configuration and preferences
@@ -42,8 +49,15 @@ import { getAvailableThemes } from '../../styles/themes';
  */
 function SettingsModal({ isOpen, onClose, onThemeChange }) {
   const [currentTab, setCurrentTab] = useState(0);
-  const { settings, updateSetting } = useSettings();
+  const { settings, updateSetting, updateSettings } = useSettings();
   const availableThemes = getAvailableThemes();
+  
+  // Voice management state
+  const [availableVoices, setAvailableVoices] = useState({});
+  const [storedVoices, setStoredVoices] = useState([]);
+  const [downloadingVoice, setDownloadingVoice] = useState(null);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [voicesLoading, setVoicesLoading] = useState(true);
 
   const handleSettingChange = (setting) => {
     const newValue = !settings[setting];
@@ -75,6 +89,184 @@ function SettingsModal({ isOpen, onClose, onThemeChange }) {
 
   const handleTabChange = (event, newValue) => {
     setCurrentTab(newValue);
+  };
+
+  // Download a voice
+  const handleDownloadVoice = useCallback(async (voiceId) => {
+    try {
+      setDownloadingVoice(voiceId);
+      setDownloadProgress(0);
+
+      console.log(`Starting download of voice: ${voiceId}`);
+      
+      await tts.download(voiceId, (progress) => {
+        const percent = Math.round((progress.loaded * 100) / progress.total);
+        setDownloadProgress(percent);
+        console.log(`Downloading ${voiceId}: ${percent}%`);
+      });
+
+      console.log(`Voice ${voiceId} downloaded successfully`);
+
+      // Update stored voices
+      const stored = await tts.stored();
+      setStoredVoices(stored);
+      updateSetting('ttsDownloadedVoices', stored);
+      
+      // Set as default voice if this is the first voice
+      if (stored.length === 1) {
+        updateSetting('ttsVoiceId', voiceId);
+      }
+
+      setDownloadingVoice(null);
+      setDownloadProgress(0);
+    } catch (error) {
+      console.error('Error downloading voice:', error);
+      console.error('Error details:', error.message, error.stack);
+      setDownloadingVoice(null);
+      alert(`Failed to download voice: ${error.message}`);
+    }
+  }, [updateSetting]);
+
+  // Load available and stored voices
+  useEffect(() => {
+    const loadVoices = async () => {
+      try {
+        setVoicesLoading(true);
+        
+        // Get available voices - returns an array of voice objects
+        const voicesArray = await tts.voices();
+        console.log('Available voices:', voicesArray);
+        
+        // Convert array to object for easier lookup: { voiceId: voiceMetadata }
+        const voicesObj = {};
+        if (Array.isArray(voicesArray)) {
+          voicesArray.forEach(voice => {
+            if (voice && voice.key) {
+              voicesObj[voice.key] = voice;
+            }
+          });
+        }
+        
+        console.log('Converted voices object:', voicesObj);
+        setAvailableVoices(voicesObj);
+        
+        // Get stored (downloaded) voices
+        const stored = await tts.stored();
+        console.log('Stored voices:', stored);
+        setStoredVoices(stored);
+        
+        // If no voices are downloaded, download the default voice automatically
+        if (stored.length === 0) {
+          console.log('No voices downloaded, downloading default voice...');
+          const defaultVoiceId = settings.ttsVoiceId || 'en_US-hfc_female-medium';
+          
+          // Check if default voice exists in available voices
+          if (voicesObj[defaultVoiceId]) {
+            try {
+              await handleDownloadVoice(defaultVoiceId);
+            } catch (error) {
+              console.error('Error auto-downloading default voice:', error);
+            }
+          } else {
+            console.warn(`Default voice ${defaultVoiceId} not found in available voices`);
+          }
+        }
+        
+        // Update settings with stored voices
+        updateSetting('ttsDownloadedVoices', stored);
+        
+        setVoicesLoading(false);
+      } catch (error) {
+        console.error('Error loading voices:', error);
+        console.error('Error details:', error.message, error.stack);
+        setVoicesLoading(false);
+      }
+    };
+
+    if (isOpen) {
+      loadVoices();
+    }
+  }, [isOpen, handleDownloadVoice, settings.ttsVoiceId, updateSetting]);
+
+  // Remove a voice
+  const handleRemoveVoice = async (voiceId) => {
+    if (!window.confirm(`Remove voice "${voiceId}"? You can re-download it later.`)) {
+      return;
+    }
+
+    try {
+      await tts.remove(voiceId);
+      
+      // Update stored voices
+      const stored = await tts.stored();
+      setStoredVoices(stored);
+      updateSetting('ttsDownloadedVoices', stored);
+
+      // If this was the selected voice, switch to default
+      if (settings.ttsVoiceId === voiceId && stored.length > 0) {
+        updateSetting('ttsVoiceId', stored[0]);
+      }
+    } catch (error) {
+      console.error('Error removing voice:', error);
+      alert(`Failed to remove voice: ${error.message}`);
+    }
+  };
+
+  // Get voice display name
+  const getVoiceDisplayName = (voiceId) => {
+    // Try to get name from voice metadata first
+    if (availableVoices[voiceId] && availableVoices[voiceId].name) {
+      return availableVoices[voiceId].name;
+    }
+    
+    // Fallback: Format: en_US-hfc_female-medium -> English (US) - Female - Medium
+    const parts = voiceId.split('-');
+    if (parts.length < 2) return voiceId;
+
+    const [locale, ...rest] = parts;
+    const [lang, country] = locale.split('_');
+    const quality = rest[rest.length - 1];
+    const voiceType = rest.slice(0, -1).join(' ');
+
+    const langNames = {
+      en: 'English',
+      es: 'Spanish',
+      fr: 'French',
+      de: 'German',
+      it: 'Italian',
+      pt: 'Portuguese',
+      ja: 'Japanese',
+      ko: 'Korean',
+      zh: 'Chinese',
+      ru: 'Russian',
+      nl: 'Dutch',
+      pl: 'Polish',
+      tr: 'Turkish',
+      sv: 'Swedish',
+      da: 'Danish',
+      no: 'Norwegian',
+      fi: 'Finnish',
+    };
+
+    const langName = langNames[lang] || lang.toUpperCase();
+    const countryName = country ? ` (${country})` : '';
+    
+    return `${langName}${countryName} - ${voiceType.charAt(0).toUpperCase() + voiceType.slice(1)} - ${quality.charAt(0).toUpperCase() + quality.slice(1)}`;
+  };
+
+  // Group voices by language
+  const getVoicesByLanguage = () => {
+    const grouped = {};
+    
+    Object.keys(availableVoices).forEach(voiceId => {
+      const lang = voiceId.split('_')[0] || 'other';
+      if (!grouped[lang]) {
+        grouped[lang] = [];
+      }
+      grouped[lang].push(voiceId);
+    });
+    
+    return grouped;
   };
 
   return (
@@ -231,7 +423,7 @@ function SettingsModal({ isOpen, onClose, onThemeChange }) {
                 </ListItemIcon>
                 <ListItemText
                   primary="Auto-speak Responses"
-                  secondary="Automatically read assistant responses aloud"
+                  secondary="Automatically read assistant responses aloud using VITS TTS"
                 />
                 <Switch
                   checked={settings.speechEnabled}
@@ -281,19 +473,193 @@ function SettingsModal({ isOpen, onClose, onThemeChange }) {
                 />
               </ListItem>
 
+              <Divider />
+
+              {/* TTS Voice Selection */}
+              <ListItem sx={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', width: '100%', mb: 1 }}>
+                  <ListItemIcon>
+                    <VolumeUpIcon sx={{ color: 'primary.main' }} />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary="TTS Voice"
+                    secondary="Select and download voices for text-to-speech"
+                  />
+                </Box>
+
+                {voicesLoading ? (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, pl: 7 }}>
+                    <CircularProgress size={16} />
+                    <Typography variant="caption" color="text.secondary">
+                      Loading available voices...
+                    </Typography>
+                  </Box>
+                ) : (
+                  <Box sx={{ width: '100%', pl: 7 }}>
+                    {/* Current Voice Selection */}
+                    {storedVoices.length > 0 ? (
+                      <FormControl size="small" fullWidth sx={{ mb: 2 }}>
+                        <Select
+                          value={settings.ttsVoiceId || storedVoices[0] || 'en_US-hfc_female-medium'}
+                          onChange={(e) => {
+                            updateSetting('ttsVoiceId', e.target.value);
+                          }}
+                          sx={{
+                            bgcolor: 'rgba(255, 255, 255, 0.05)',
+                            '& .MuiOutlinedInput-notchedOutline': {
+                              borderColor: 'rgba(255, 255, 255, 0.1)',
+                            },
+                          }}
+                        >
+                          {storedVoices.map((voiceId) => (
+                            <MenuItem key={voiceId} value={voiceId}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <CheckCircleIcon fontSize="small" sx={{ color: 'success.main' }} />
+                                {getVoiceDisplayName(voiceId)}
+                              </Box>
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    ) : (
+                      <Box sx={{ 
+                        mb: 2, 
+                        p: 2, 
+                        bgcolor: 'rgba(59, 130, 246, 0.1)', 
+                        borderRadius: 2,
+                        border: '1px solid rgba(59, 130, 246, 0.3)',
+                      }}>
+                        <Typography variant="body2" sx={{ color: 'primary.main' }}>
+                          No voices downloaded yet. Download a voice below to enable TTS.
+                        </Typography>
+                      </Box>
+                    )}
+
+                    {/* Download More Voices */}
+                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1 }}>
+                      {Object.keys(availableVoices).length > 0 
+                        ? `Available voices (${storedVoices.length}/${Object.keys(availableVoices).length} downloaded):`
+                        : 'Loading available voices...'
+                      }
+                    </Typography>
+
+                    <Box sx={{ maxHeight: 200, overflowY: 'auto', pr: 1 }}>
+                      {Object.keys(availableVoices).length > 0 ? (
+                        // Show first 30 voices, prioritizing English voices
+                        Object.keys(availableVoices)
+                          .sort((a, b) => {
+                            // Prioritize English voices
+                            const aIsEn = a.startsWith('en_');
+                            const bIsEn = b.startsWith('en_');
+                            if (aIsEn && !bIsEn) return -1;
+                            if (!aIsEn && bIsEn) return 1;
+                            return a.localeCompare(b);
+                          })
+                          .slice(0, 30)
+                          .map((voiceId) => {
+                            const isDownloaded = storedVoices.includes(voiceId);
+                            const isDownloading = downloadingVoice === voiceId;
+                            const voiceData = availableVoices[voiceId];
+
+                            return (
+                              <Box
+                                key={voiceId}
+                                sx={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  py: 0.5,
+                                  borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+                                }}
+                              >
+                                <Box sx={{ flex: 1 }}>
+                                  <Typography variant="caption" sx={{ fontSize: '0.75rem', display: 'block' }}>
+                                    {getVoiceDisplayName(voiceId)}
+                                  </Typography>
+                                  {voiceData && (
+                                    <Typography variant="caption" sx={{ fontSize: '0.65rem', color: 'text.secondary' }}>
+                                      {voiceId}
+                                    </Typography>
+                                  )}
+                                </Box>
+                                
+                                {isDownloading ? (
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 100 }}>
+                                    <LinearProgress 
+                                      variant="determinate" 
+                                      value={downloadProgress} 
+                                      sx={{ flex: 1, height: 4, borderRadius: 2 }}
+                                    />
+                                    <Typography variant="caption" sx={{ fontSize: '0.7rem' }}>
+                                      {downloadProgress}%
+                                    </Typography>
+                                  </Box>
+                                ) : isDownloaded ? (
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                    <Chip 
+                                      label="Downloaded" 
+                                      size="small" 
+                                      color="success"
+                                      sx={{ fontSize: '0.7rem', height: 20 }}
+                                    />
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => handleRemoveVoice(voiceId)}
+                                      sx={{ p: 0.5 }}
+                                    >
+                                      <DeleteIcon fontSize="small" />
+                                    </IconButton>
+                                  </Box>
+                                ) : (
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => handleDownloadVoice(voiceId)}
+                                    sx={{ p: 0.5 }}
+                                    title="Download voice"
+                                  >
+                                    <DownloadIcon fontSize="small" />
+                                  </IconButton>
+                                )}
+                              </Box>
+                            );
+                          })
+                      ) : (
+                        <Box sx={{ 
+                          p: 2, 
+                          textAlign: 'center',
+                          color: 'text.secondary',
+                        }}>
+                          <Typography variant="caption">
+                            No voices available. Please check your internet connection.
+                          </Typography>
+                        </Box>
+                      )}
+                    </Box>
+
+                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 1 }}>
+                      Voice models are ~10-50MB each and stored locally in your browser
+                    </Typography>
+                  </Box>
+                )}
+              </ListItem>
+
               {settings.speechEnabled && (
                 <>
                   <Divider />
                   <Box sx={{ p: 2, bgcolor: 'rgba(59, 130, 246, 0.1)', borderRadius: 2, m: 2 }}>
                     <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1 }}>
-                      🎤 Voice conversation enabled!
+                      🎤 Advanced voice features enabled!
                     </Typography>
                     <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.85rem' }}>
-                      • Click the microphone icon to speak your message
+                      • High-quality VITS TTS (offline capable)
                       <br />
-                      • Assistant responses will be read aloud automatically
+                      • Whisper STT for accurate transcription
                       <br />
-                      • Works best in Chrome, Edge, and Safari
+                      • Click microphone icon to speak your message
+                      <br />
+                      • Responses will be read aloud automatically
+                      <br />
+                      • Works in all modern browsers
                     </Typography>
                   </Box>
                 </>

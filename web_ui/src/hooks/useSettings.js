@@ -18,6 +18,11 @@ const DEFAULT_SETTINGS = {
   speechEnabled: false,
   speechLanguage: 'en-US',
   speechAutoSend: false,
+  // VITS TTS settings
+  ttsVoiceId: 'en_US-hfc_female-medium',
+  ttsDownloadedVoices: [],
+  // Whisper STT settings
+  sttModel: 'Xenova/whisper-base',
 };
 
 /**
