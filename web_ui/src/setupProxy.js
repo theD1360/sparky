@@ -3,11 +3,10 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 module.exports = function(app) {
   // Add CORS headers middleware for all responses
   app.use((req, res, next) => {
-    // NOTE: COEP/COOP headers disabled for now to allow model loading
-    // SharedArrayBuffer won't be available, but models will still work (slower)
-    // Uncomment these when you can properly configure CORS for HuggingFace CDN:
-    // res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
-    // res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    // Enable cross-origin isolation for SharedArrayBuffer support (required for multi-threaded WASM)
+    // Using 'credentialless' mode to allow external CDN access while enabling SharedArrayBuffer
+    res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     
     // Allow cross-origin requests for our own resources
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');

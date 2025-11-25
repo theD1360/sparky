@@ -33,6 +33,10 @@
     "extends": [
       "react-app",
       "react-app/jest"
+    ],
+    "ignorePatterns": [
+      "src/workers/**",
+      "public/**"
     ]
   },
   "browserslist": {

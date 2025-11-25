@@ -10,7 +10,9 @@ import reportWebVitals from './reportWebVitals';
 import { configureTransformers } from './utils/transformersConfig';
 import './utils/clearModelCache'; // Import to expose cache utilities globally
 
-// Configure transformers.js early, before any components load
+// Note: Transformers configuration is now handled in the worker (speechWorker.js)
+// This main-thread configuration is kept as a fallback for any other potential uses
+// The worker loads and configures transformers independently from CDN
 configureTransformers();
 
 // Log cache utilities availability

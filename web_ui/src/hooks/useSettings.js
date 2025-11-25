@@ -22,7 +22,7 @@ const DEFAULT_SETTINGS = {
   ttsVoiceId: 'en_US-hfc_female-medium',
   ttsDownloadedVoices: [],
   // Whisper STT settings
-  sttModel: 'Xenova/whisper-base',
+  sttModel: 'Xenova/whisper-tiny',
 };
 
 /**
@@ -48,7 +48,7 @@ export const useSettings = () => {
   useEffect(() => {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-      console.log('Settings saved:', settings);
+      // Removed console.log to reduce overhead during frequent updates
     } catch (error) {
       console.error('Error saving settings:', error);
     }

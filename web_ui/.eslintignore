@@ -1,0 +1,9 @@
+# Ignore workers directory (if it exists)
+src/workers/
+src/workers/**/*
+**/workers/*.js
+
+# Ignore public folder (not part of src)
+public/
+public/**/*
+
