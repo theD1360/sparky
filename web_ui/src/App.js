@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, startTransition } from 'react';
 import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom';
 import ReconnectingWebSocket from 'reconnecting-websocket';
 import {
@@ -304,48 +304,52 @@ function App({ onThemeChange }) {
         console.log('Loaded chat history:', data);
         
         // Transform backend messages to UI format
-        const loadedMessages = [];
-        
-        data.messages.forEach(msg => {
-          const message_type = msg.message_type || 'message';
+        // Use startTransition to prevent blocking the UI when loading many messages
+        const messageCount = data.messages.length;
+        startTransition(() => {
+          const loadedMessages = [];
           
-          // Handle different message types
-          if (message_type === 'tool_use') {
-            // Format tool use text consistently
-            const toolUseText = msg.tool_name && msg.tool_args 
-              ? `${msg.tool_name}(${JSON.stringify(msg.tool_args)})`
-              : msg.text;
-            // Add to chat messages with special role
-            loadedMessages.push({
-              role: 'tool_use',
-              text: toolUseText,
-              toolData: { name: msg.tool_name, args: msg.tool_args }
-            });
-          } else if (message_type === 'tool_result') {
-            // Add to chat messages with special role
-            loadedMessages.push({
-              role: 'tool_result',
-              text: msg.text,
-              toolData: { result: msg.text }
-            });
-          } else if (message_type === 'thought') {
-            // Thoughts get special role for styling
-            loadedMessages.push({
-              role: 'thought',
-              text: msg.text
-            });
-          } else {
-            // Regular messages (user or model)
-            loadedMessages.push({
-              role: msg.role,
-              text: msg.text,
-              attachments: msg.attachments || null
-            });
-          }
+          data.messages.forEach(msg => {
+            const message_type = msg.message_type || 'message';
+            
+            // Handle different message types
+            if (message_type === 'tool_use') {
+              // Format tool use text consistently
+              const toolUseText = msg.tool_name && msg.tool_args 
+                ? `${msg.tool_name}(${JSON.stringify(msg.tool_args)})`
+                : msg.text;
+              // Add to chat messages with special role
+              loadedMessages.push({
+                role: 'tool_use',
+                text: toolUseText,
+                toolData: { name: msg.tool_name, args: msg.tool_args }
+              });
+            } else if (message_type === 'tool_result') {
+              // Add to chat messages with special role
+              loadedMessages.push({
+                role: 'tool_result',
+                text: msg.text,
+                toolData: { result: msg.text }
+              });
+            } else if (message_type === 'thought') {
+              // Thoughts get special role for styling
+              loadedMessages.push({
+                role: 'thought',
+                text: msg.text
+              });
+            } else {
+              // Regular messages (user or model)
+              loadedMessages.push({
+                role: msg.role,
+                text: msg.text,
+                attachments: msg.attachments || null
+              });
+            }
+          });
+          
+          setChatMessages(loadedMessages);
+          console.log(`Loaded ${loadedMessages.length} messages`);
         });
-        
-        setChatMessages(loadedMessages);
-        console.log(`Loaded ${loadedMessages.length} messages`);
       } else {
         console.log('No history found for chat, starting fresh');
         setChatMessages([]);
@@ -783,9 +787,12 @@ function App({ onThemeChange }) {
           setChatMessages(prev => [...prev, { role: 'bot', text: data.data.text }]);
           
           // Set last bot message for speech synthesis (strip markdown for better TTS)
-          const textForSpeech = stripMarkdown(data.data.text);
-          console.log('Preparing text for speech:', textForSpeech.substring(0, 100));
-          setLastBotMessage(textForSpeech);
+          // Use startTransition to prevent blocking the UI for long messages
+          startTransition(() => {
+            const textForSpeech = stripMarkdown(data.data.text);
+            console.log('Preparing text for speech:', textForSpeech.substring(0, 100));
+            setLastBotMessage(textForSpeech);
+          });
           
           // Always play sound when message arrives
           playSound('message');
@@ -922,7 +929,6 @@ function App({ onThemeChange }) {
           (p.description && p.description.toLowerCase().includes(query))
         )
       );
-      console.log('Filtered prompts:', filtered.length);
       setAutocompleteType('prompt');
       setAutocompleteItems(filtered);
       setAutocompleteSelectedIndex(0);
@@ -933,14 +939,12 @@ function App({ onThemeChange }) {
     const atIndex = beforeCursor.lastIndexOf('@');
     if (atIndex !== -1) {
       const query = beforeCursor.substring(atIndex + 1).toLowerCase();
-      console.log('Resource autocomplete - query:', query, 'resources available:', resources?.length || 0);
       const filtered = (resources || []).filter(r => 
         r && r.uri && (
           r.uri.toLowerCase().includes(query) || 
           (r.description && r.description.toLowerCase().includes(query))
         )
       );
-      console.log('Filtered resources:', filtered.length);
       setAutocompleteType('resource');
       setAutocompleteItems(filtered);
       setAutocompleteSelectedIndex(0);
@@ -1744,18 +1748,20 @@ function App({ onThemeChange }) {
           </Stack>
         </Box>
 
-        {/* Speech Output - Hidden but active for TTS */}
-        <SpeechOutput
-          enabled={settings.speechEnabled}
-          textToSpeak={lastBotMessage}
-          language={settings.speechLanguage}
-          onSpeechEnd={() => {
-            setLastBotMessage('');
-            setIsAssistantSpeaking(false);
-          }}
-          onSpeechStart={() => setIsAssistantSpeaking(true)}
-          showControls={false}
-        />
+        {/* Speech Output - Only render when TTS is enabled to prevent loading VITS module */}
+        {settings.speechEnabled && (
+          <SpeechOutput
+            enabled={settings.speechEnabled}
+            textToSpeak={lastBotMessage}
+            language={settings.speechLanguage}
+            onSpeechEnd={() => {
+              setLastBotMessage('');
+              setIsAssistantSpeaking(false);
+            }}
+            onSpeechStart={() => setIsAssistantSpeaking(true)}
+            showControls={false}
+          />
+        )}
 
         {/* Input Area - Sleeker design */}
         <Box
