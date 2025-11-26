@@ -227,7 +227,13 @@ function App({ onThemeChange }) {
 
   const fetchUserChats = useCallback(async (userId) => {
     try {
-      const response = await fetch(`/api/user/${userId}/chats?include_archived=false`);
+      // Get auth token from localStorage
+      const token = localStorage.getItem('access_token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      
+      const response = await fetch(`/api/user/${userId}/chats?include_archived=false`, {
+        headers
+      });
       const data = await response.json();
       // Filter out any archived chats on client side as extra safety
       const activeChats = (data.chats || []).filter(chat => !chat.archived);
@@ -240,7 +246,13 @@ function App({ onThemeChange }) {
 
   const fetchArchivedChats = useCallback(async (userId) => {
     try {
-      const response = await fetch(`/api/user/${userId}/chats?include_archived=true`);
+      // Get auth token from localStorage
+      const token = localStorage.getItem('access_token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      
+      const response = await fetch(`/api/user/${userId}/chats?include_archived=true`, {
+        headers
+      });
       const data = await response.json();
       // Filter to only get archived chats
       const archived = (data.chats || []).filter(chat => chat.archived);
@@ -454,7 +466,8 @@ function App({ onThemeChange }) {
     
     try {
       const response = await fetch(`/api/user/${userId}/chats/${chatId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: getAuthHeaders()
       });
       
       if (response.ok) {
@@ -483,7 +496,8 @@ function App({ onThemeChange }) {
     
     try {
       const response = await fetch(`/api/user/${userId}/chats/${chatId}/archive`, {
-        method: 'POST'
+        method: 'POST',
+        headers: getAuthHeaders()
       });
       
       if (response.ok) {
@@ -512,7 +526,8 @@ function App({ onThemeChange }) {
     
     try {
       const response = await fetch(`/api/user/${userId}/chats/${chatId}/unarchive`, {
-        method: 'POST'
+        method: 'POST',
+        headers: getAuthHeaders()
       });
       
       if (response.ok) {

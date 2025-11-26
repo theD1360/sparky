@@ -2,11 +2,11 @@
 
 from typing import List
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-
 from database.database import get_database_manager
 from database.repository import KnowledgeRepository
+from fastapi import APIRouter, Depends, HTTPException, status
+from middleware.auth_middleware import get_current_user
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/user", tags=["user"])
 
@@ -36,7 +36,13 @@ class UpdateChatNameRequest(BaseModel):
 
 
 @router.get("/{user_id}/chats", response_model=UserChatsResponse)
-async def get_user_chats(user_id: str, limit: int = 100, offset: int = 0, include_archived: bool = False):
+async def get_user_chats(
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    include_archived: bool = False,
+    current_user=Depends(get_current_user),
+):
     """
     Retrieves all chats for a specific user across all their sessions.
 
@@ -45,13 +51,21 @@ async def get_user_chats(user_id: str, limit: int = 100, offset: int = 0, includ
         limit: Maximum number of chats to return (default: 100)
         offset: Number of chats to skip for pagination (default: 0)
         include_archived: Whether to include archived chats (default: False)
+        current_user: Authenticated user from JWT token
 
     Returns:
         UserChatsResponse with list of user's chats
 
     Raises:
-        HTTPException: 404 if user not found, 500 on database error
+        HTTPException: 403 if user tries to access another user's chats, 404 if user not found, 500 on database error
     """
+    # Verify that the authenticated user matches the requested user_id
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only access your own chats",
+        )
+
     try:
         # Get database manager and connect
         db_manager = get_database_manager()
@@ -61,7 +75,12 @@ async def get_user_chats(user_id: str, limit: int = 100, offset: int = 0, includ
         repository = KnowledgeRepository(db_manager)
 
         # Use the repository method to get user chats
-        chats = repository.get_user_chats(user_id=user_id, limit=limit, offset=offset, include_archived=include_archived)
+        chats = repository.get_user_chats(
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+            include_archived=include_archived,
+        )
 
         if not chats and offset == 0:
             # Check if user exists
@@ -94,7 +113,10 @@ async def get_user_chats(user_id: str, limit: int = 100, offset: int = 0, includ
 
 @router.put("/{user_id}/chats/{chat_id}")
 async def update_chat_name(
-    user_id: str, chat_id: str, request: UpdateChatNameRequest
+    user_id: str,
+    chat_id: str,
+    request: UpdateChatNameRequest,
+    current_user=Depends(get_current_user),
 ):
     """
     Updates the name of a specific chat.
@@ -103,13 +125,21 @@ async def update_chat_name(
         user_id: The user ID (for validation)
         chat_id: The chat ID to update
         request: Request body containing the new chat name
+        current_user: Authenticated user from JWT token
 
     Returns:
         Updated chat information
 
     Raises:
-        HTTPException: 404 if chat not found, 500 on database error
+        HTTPException: 403 if user tries to access another user's chat, 404 if chat not found, 500 on database error
     """
+    # Verify that the authenticated user matches the requested user_id
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only update your own chats",
+        )
+
     try:
         # Get database manager and connect
         db_manager = get_database_manager()
@@ -122,16 +152,14 @@ async def update_chat_name(
         updated_chat = repository.update_chat_name(chat_id, request.chat_name)
 
         if not updated_chat:
-            raise HTTPException(
-                status_code=404, detail=f"Chat '{chat_id}' not found"
-            )
+            raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
 
         return {
             "chat_id": chat_id,
             "chat_name": request.chat_name,
-            "updated_at": updated_chat.updated_at.isoformat()
-            if updated_chat.updated_at
-            else None,
+            "updated_at": (
+                updated_chat.updated_at.isoformat() if updated_chat.updated_at else None
+            ),
         }
 
     except HTTPException:
@@ -141,20 +169,30 @@ async def update_chat_name(
 
 
 @router.delete("/{user_id}/chats/{chat_id}")
-async def delete_chat(user_id: str, chat_id: str):
+async def delete_chat(
+    user_id: str, chat_id: str, current_user=Depends(get_current_user)
+):
     """
     Permanently deletes a chat and all its messages.
 
     Args:
         user_id: The user ID (for validation)
         chat_id: The chat ID to delete
+        current_user: Authenticated user from JWT token
 
     Returns:
         Success message
 
     Raises:
-        HTTPException: 404 if chat not found, 500 on database error
+        HTTPException: 403 if user tries to delete another user's chat, 404 if chat not found, 500 on database error
     """
+    # Verify that the authenticated user matches the requested user_id
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only delete your own chats",
+        )
+
     try:
         # Get database manager and connect
         db_manager = get_database_manager()
@@ -167,9 +205,7 @@ async def delete_chat(user_id: str, chat_id: str):
         result = repository.delete_chat(chat_id)
 
         if not result:
-            raise HTTPException(
-                status_code=404, detail=f"Chat '{chat_id}' not found"
-            )
+            raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
 
         return {"message": "Chat deleted successfully", "chat_id": chat_id}
 
@@ -180,20 +216,30 @@ async def delete_chat(user_id: str, chat_id: str):
 
 
 @router.post("/{user_id}/chats/{chat_id}/archive")
-async def archive_chat(user_id: str, chat_id: str):
+async def archive_chat(
+    user_id: str, chat_id: str, current_user=Depends(get_current_user)
+):
     """
     Archives a chat (soft delete - hides from main list but preserves data).
 
     Args:
         user_id: The user ID (for validation)
         chat_id: The chat ID to archive
+        current_user: Authenticated user from JWT token
 
     Returns:
         Updated chat information
 
     Raises:
-        HTTPException: 404 if chat not found, 500 on database error
+        HTTPException: 403 if user tries to archive another user's chat, 404 if chat not found, 500 on database error
     """
+    # Verify that the authenticated user matches the requested user_id
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only archive your own chats",
+        )
+
     try:
         # Get database manager and connect
         db_manager = get_database_manager()
@@ -206,16 +252,16 @@ async def archive_chat(user_id: str, chat_id: str):
         archived_chat = repository.archive_chat(chat_id)
 
         if not archived_chat:
-            raise HTTPException(
-                status_code=404, detail=f"Chat '{chat_id}' not found"
-            )
+            raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
 
         return {
             "message": "Chat archived successfully",
             "chat_id": chat_id,
-            "archived_at": archived_chat.properties.get("archived_at")
-            if archived_chat.properties
-            else None,
+            "archived_at": (
+                archived_chat.properties.get("archived_at")
+                if archived_chat.properties
+                else None
+            ),
         }
 
     except HTTPException:
@@ -225,20 +271,30 @@ async def archive_chat(user_id: str, chat_id: str):
 
 
 @router.post("/{user_id}/chats/{chat_id}/unarchive")
-async def unarchive_chat(user_id: str, chat_id: str):
+async def unarchive_chat(
+    user_id: str, chat_id: str, current_user=Depends(get_current_user)
+):
     """
     Unarchives a chat (restores from archived state).
 
     Args:
         user_id: The user ID (for validation)
         chat_id: The chat ID to unarchive
+        current_user: Authenticated user from JWT token
 
     Returns:
         Updated chat information
 
     Raises:
-        HTTPException: 404 if chat not found, 500 on database error
+        HTTPException: 403 if user tries to unarchive another user's chat, 404 if chat not found, 500 on database error
     """
+    # Verify that the authenticated user matches the requested user_id
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only unarchive your own chats",
+        )
+
     try:
         # Get database manager and connect
         db_manager = get_database_manager()
@@ -251,22 +307,19 @@ async def unarchive_chat(user_id: str, chat_id: str):
         unarchived_chat = repository.unarchive_chat(chat_id)
 
         if not unarchived_chat:
-            raise HTTPException(
-                status_code=404, detail=f"Chat '{chat_id}' not found"
-            )
+            raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
 
         return {
             "message": "Chat unarchived successfully",
             "chat_id": chat_id,
-            "updated_at": unarchived_chat.updated_at.isoformat()
-            if unarchived_chat.updated_at
-            else None,
+            "updated_at": (
+                unarchived_chat.updated_at.isoformat()
+                if unarchived_chat.updated_at
+                else None
+            ),
         }
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
-
-
