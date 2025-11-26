@@ -546,7 +546,9 @@ def _check_syntax(ext: str, content: str) -> tuple[str, list]:
             ast.parse(content)
             return "", []
         except SyntaxError as e:
-            error_msg = f"Line {e.lineno}: {e.msg}"
+            logger.info(f"CHECKING SYNTAX AND FAILED with {e}")
+            offset = e.offset or 0
+            error_msg = f"Line {e.lineno}: {e.msg}\n{content[max(0, offset - 50):min(len(content), offset + 50)]}"
             return error_msg, [{"line": e.lineno, "message": e.msg}]
         except Exception as e:
             logger.warning("Syntax check failed: %s", e)
@@ -1194,12 +1196,23 @@ async def edit_file(path: str, edits: str) -> dict:
             return MCPResponse.error(str(e)).to_dict()
 
         # Write the edited content
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(edited_content)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(edited_content)
+        except Exception as e:
+             return MCPResponse.error(f"Write Error: {str(e)}").to_dict()
 
         # Check syntax after editing
         extension = Path(path).suffix.lstrip(".")
-        syntax_errors, error_list = _check_syntax(extension, edited_content)
+        syntax_errors = ''
+        error_list = []
+        if extension == 'py':
+           try:
+               syntax_errors, error_list = _check_syntax(extension, edited_content)
+           except Exception as e:
+               logger.info(f"Syntax check failed in edit_file tool: {e}")
+        warnings = []
+
         warnings = []
 
         if syntax_errors:

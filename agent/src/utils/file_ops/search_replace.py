@@ -15,9 +15,9 @@ from typing import Callable, Optional
 from .diff_edit import FileEditInput, FileEditOutput, SearchReplaceMatchError
 
 # Global regex patterns
-SEARCH_MARKER = re.compile(r"^<<<<<<+\s*SEARCH>?\s*$")
-DIVIDER_MARKER = re.compile(r"^======*\s*$")
-REPLACE_MARKER = re.compile(r"^>>>>>>+\s*REPLACE\s*$")
+SEARCH_MARKER = re.compile(r"^\s*<<<<<<+\s*SEARCH>?\s*\s*$")
+DIVIDER_MARKER = re.compile(r"^\s*======*\s*\s*$")
+REPLACE_MARKER = re.compile(r"^\s*>>>>>>+\s*REPLACE\s*\s*$")
 
 
 class SearchReplaceSyntaxError(Exception):
@@ -187,7 +187,10 @@ def edit_with_individual_fallback(
     If all blocks together fail to match uniquely, try applying them one at a time.
     This provides better error recovery for complex multi-block edits.
     """
-    outputs = FileEditInput(original_lines, 0, search_replace_blocks, 0).edit_file()
+    try:
+        outputs = FileEditInput(original_lines, 0, search_replace_blocks, 0).edit_file()
+    except Exception as e:
+        raise SearchReplaceSyntaxError(f"Error during FileEditInput.edit_file(): {e}") from e
     best_matches = FileEditOutput.get_best_match(outputs)
 
     try:

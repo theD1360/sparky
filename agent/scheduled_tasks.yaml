@@ -1,71 +1,7 @@
-# Scheduled Tasks Configuration
-#
-# This file defines periodic tasks that are automatically added to the task queue
-# by the agent loop at specified intervals.
-#
-# Interval formats:
-#   - Plain number: 50 (every 50 cycles)
-#   - Time-based: every(1 minute), every(2 hours), every(30 seconds)
-#   - Cron expression: cron(0 */2 * * *) (standard cron format)
-#
-# Prompt formats:
-#   - File reference: file(prompts/curiosity_prompt.md)
-#   - Inline string: "Your prompt text here"
-
 scheduled_tasks:
-  - name: smart_maintenance
-    interval: every(30 minutes)
-    prompt: file(prompts/smart_maintenance_prompt.md)
-    metadata:
-      source: smart_maintenance
-    enabled: true
-  # - name: reflection
-  #   interval: every(6 hour)
-  #   prompt: file(prompts/reflection_prompt.md)
-  #   metadata:
-  #     source: self_reflection
-  #   enabled: true
-
-  # - name: curiosity
-  #   interval: every(1 hour) # cycles
-  #   prompt: file(prompts/curiosity_prompt.md)
-  #   metadata:
-  #     scheduled_task_name: curiosity
-  #     source: auto_curiosity
-  #   enabled: true
-    
-  # - name: curation
-  #   interval: every(1 hour) # cycles
-  #   prompt: file(prompts/curation_prompt.md)
-  #   metadata:
-  #     source: auto_curation
-  #   enabled: true
-
-
-  # - name: gardener
-  #   interval: every(1 hour) # cycles
-  #   prompt: file(prompts/gardener_prompt.md)
-  #   metadata:
-  #     source: auto_gardener
-  #   enabled: true
-
-  # - name: alignment
-  #   interval: every(1 day)
-  #   prompt: file(prompts/alignment_prompt.md)
-  #   metadata:
-  #     source: auto_alignment
-  #   enabled: true
-
-  # - name: metacognition
-  #   interval: every(1 day)
-  #   prompt: file(prompts/metacognition_prompt.md)
-  #   metadata:
-  #     source: auto_metacognition
-  #   enabled: true
-
-  # - name: workflow_discovery
-  #   interval: every(1 day)
-  #   prompt: file(prompts/workflow_discovery_prompt.md)
-  #   metadata:
-  #     source: auto_workflow_discovery
-  #   enabled: true
+- name: smart_maintenance
+  interval: every(30 minutes)
+  prompt: file(prompts/smart_maintenance_prompt.md)
+  metadata:
+    source: smart_maintenance
+  enabled: true

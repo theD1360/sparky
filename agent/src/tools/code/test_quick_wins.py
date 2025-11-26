@@ -169,6 +169,11 @@ async def run_all_tests():
     except Exception as e:
         print(f"Error in batch_read test: {e}")
 
+    try:
+        await test_edit_file_syntax_error()
+    except Exception as e:
+        print(f"Error in edit file syntax error test: {e}")
+
     print("\n" + "=" * 70)
     print("TESTS COMPLETE")
     print("=" * 70)
@@ -176,6 +181,35 @@ async def run_all_tests():
     print("This is expected behavior. The graph-powered tools require SPARKY_DB_URL to be set.")
 
 
+async def test_edit_file_syntax_error():
+    """Test edit_file syntax error reporting."""
+    print("\n" + "=" * 70)
+    print("TEST 5: Edit File Syntax Error")
+    print("=" * 70)
+
+    # Test 1: Introduce a syntax error
+    print("\n1. Testing syntax error reporting:")
+    file_path = "/tmp/test_edit_file.py"
+    error_code = "def test():\n  print(\"hello\") # Intentional syntax error"
+
+    create_file_result = await default_api.write_file(path=file_path, content=error_code)
+    print(f"Status of test file creation {create_file_result.get('status')}")
+    if create_file_result.get('status') != 'success':
+        return
+
+    edits = "    \n<<<<<<< SEARCH\ndef test():\n  print(\"hello\") # Intentional syntax error\n=======\nprint(\"fixed\")\n>>>>>>> REPLACE\n    "
+
+    result = await edit_file(path=file_path, edits=edits)
+
+    print(f"Status: {result.get('is_error', False) == False}")
+    if result.get('is_error'):
+        print(f"Error Message: {result.get('message')}")
+    else:
+        print("Edit was unexpectedly successful")
+
+
 if __name__ == "__main__":
     asyncio.run(run_all_tests())
+
+
 

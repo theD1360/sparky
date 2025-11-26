@@ -48,6 +48,10 @@ Based on your analysis, determine which maintenance category needs the most atte
 
 ## Step 3: Select and Execute
 
+**Consider recent tasks:**
+- If the most recent maintenance task was 'Curation', select a different task.
+- Prioritize tasks in the order: Gardening, Curiosity, Reflection.
+
 **Make a clear decision:**
 1. State which maintenance task is most urgent and why
 2. Load the selected prompt from `prompts/` directory
