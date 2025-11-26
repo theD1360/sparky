@@ -1195,12 +1195,20 @@ async def edit_file(path: str, edits: str) -> dict:
         except SearchReplaceMatchError as e:
             return MCPResponse.error(str(e)).to_dict()
 
+        # Format the code using AST
+        try:
+            tree = ast.parse(edited_content)
+            edited_content = ast.unparse(tree)
+        except Exception as e:
+            logger.warning(f"AST formatting failed: {e}")
+            return MCPResponse.error(f"AST formatting failed: {e}").to_dict()
+
         # Write the edited content
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(edited_content)
         except Exception as e:
-             return MCPResponse.error(f"Write Error: {str(e)}").to_dict()
+            return MCPResponse.error(f"Write Error: {str(e)}").to_dict()
 
         # Check syntax after editing
         extension = Path(path).suffix.lstrip(".")
