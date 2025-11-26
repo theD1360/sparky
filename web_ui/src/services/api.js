@@ -4,12 +4,28 @@
  */
 
 /**
+ * Get auth headers from localStorage token
+ * @returns {Object} Headers object with Authorization if token exists
+ */
+const getAuthHeaders = () => {
+  const token = localStorage.getItem('access_token');
+  if (token) {
+    return {
+      'Authorization': `Bearer ${token}`,
+    };
+  }
+  return {};
+};
+
+/**
  * Fetch available resources from the server
  * @returns {Promise<Array>} List of resources
  */
 export const fetchResources = async () => {
   try {
-    const response = await fetch('/api/resources');
+    const response = await fetch('/api/resources', {
+      headers: getAuthHeaders(),
+    });
     return await response.json();
   } catch (error) {
     console.error('Error fetching resources:', error);
@@ -23,7 +39,9 @@ export const fetchResources = async () => {
  */
 export const fetchPrompts = async () => {
   try {
-    const response = await fetch('/api/prompts');
+    const response = await fetch('/api/prompts', {
+      headers: getAuthHeaders(),
+    });
     return await response.json();
   } catch (error) {
     console.error('Error fetching prompts:', error);
@@ -39,7 +57,9 @@ export const fetchPrompts = async () => {
  */
 export const fetchUserChats = async (userId, includeArchived = false) => {
   try {
-    const response = await fetch(`/api/user/${userId}/chats?include_archived=${includeArchived}`);
+    const response = await fetch(`/api/user/${userId}/chats?include_archived=${includeArchived}`, {
+      headers: getAuthHeaders(),
+    });
     const data = await response.json();
     return data;
   } catch (error) {
@@ -56,7 +76,10 @@ export const fetchUserChats = async (userId, includeArchived = false) => {
  */
 export const loadChatHistory = async (chatId, signal = null) => {
   try {
-    const options = signal ? { signal } : {};
+    const options = {
+      headers: getAuthHeaders(),
+      ...(signal ? { signal } : {}),
+    };
     const response = await fetch(`/api/chats/${chatId}/messages`, options);
     
     if (response.ok) {
@@ -86,7 +109,10 @@ export const updateChatName = async (userId, chatId, newName) => {
   try {
     await fetch(`/api/user/${userId}/chats/${chatId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
       body: JSON.stringify({ chat_name: newName })
     });
   } catch (error) {
@@ -104,7 +130,8 @@ export const updateChatName = async (userId, chatId, newName) => {
 export const deleteChat = async (userId, chatId) => {
   try {
     const response = await fetch(`/api/user/${userId}/chats/${chatId}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: getAuthHeaders(),
     });
     return response.ok;
   } catch (error) {
@@ -122,7 +149,8 @@ export const deleteChat = async (userId, chatId) => {
 export const archiveChat = async (userId, chatId) => {
   try {
     const response = await fetch(`/api/user/${userId}/chats/${chatId}/archive`, {
-      method: 'POST'
+      method: 'POST',
+      headers: getAuthHeaders(),
     });
     return response.ok;
   } catch (error) {
@@ -140,7 +168,8 @@ export const archiveChat = async (userId, chatId) => {
 export const unarchiveChat = async (userId, chatId) => {
   try {
     const response = await fetch(`/api/user/${userId}/chats/${chatId}/unarchive`, {
-      method: 'POST'
+      method: 'POST',
+      headers: getAuthHeaders(),
     });
     return response.ok;
   } catch (error) {
@@ -167,6 +196,7 @@ export const uploadFile = async (file, sessionId, chatId, userId) => {
     
     const response = await fetch(uploadUrl, {
       method: 'POST',
+      headers: getAuthHeaders(),
       body: formData
     });
     
@@ -194,7 +224,10 @@ export const recordToolUsage = async (sessionId, toolName, toolArgs, result) => 
   try {
     await fetch('/record_tool_usage', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
       body: JSON.stringify({
         session_id: sessionId,
         tool_name: toolName,

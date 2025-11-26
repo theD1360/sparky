@@ -1,13 +1,16 @@
 """User service for handling user-related operations.
 
 Handles user CRUD operations, preferences management, and user-session relationships.
+Integrates with the new user management system for authentication.
 """
 
 import logging
 from typing import Any, Dict, Optional
 
+from database.auth_models import User
 from database.models import Node
 from database.repository import KnowledgeRepository
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +20,18 @@ class UserService:
 
     Provides methods for creating, retrieving, and updating users,
     as well as managing user preferences and session relationships.
+    Integrates with the new user management system for authentication.
     """
 
-    def __init__(self, repository: KnowledgeRepository):
+    def __init__(self, repository: KnowledgeRepository, db_session: Optional[Session] = None):
         """Initialize the user service.
 
         Args:
             repository: Knowledge graph repository instance
+            db_session: Optional database session for user management integration
         """
         self.repository = repository
+        self.db_session = db_session
 
     def create_user(
         self, user_id: str, **properties: Any
@@ -33,7 +39,7 @@ class UserService:
         """Create a new user node in the knowledge graph.
 
         Args:
-            user_id: Unique user identifier
+            user_id: Unique user identifier (can be UUID from user table or legacy ID)
             **properties: Additional properties to store with the user
 
         Returns:
@@ -48,6 +54,24 @@ class UserService:
                 logger.info(f"User {user_node_id} already exists, skipping creation")
                 return user_node_id
 
+            # If we have a db_session, try to get user info from user table
+            username = user_id
+            email = None
+            if self.db_session:
+                try:
+                    from services.user_management_service import UserManagementService
+                    user_service = UserManagementService(self.db_session)
+                    db_user = user_service.get_user_by_id(user_id)
+                    if db_user:
+                        username = db_user.username
+                        email = db_user.email
+                        # Link knowledge graph node to user table
+                        properties["external_id"] = user_id
+                        properties["username"] = username
+                        properties["email"] = email
+                except Exception as e:
+                    logger.debug(f"Could not fetch user from user table: {e}")
+
             # Build properties
             user_properties = {"user_id": user_id}
             user_properties.update(properties)
@@ -56,8 +80,8 @@ class UserService:
             self.repository.add_node(
                 node_id=user_node_id,
                 node_type="User",
-                label=f"User {user_id}",
-                content=f"User with ID {user_id}",
+                label=f"User {username}",
+                content=f"User with ID {user_id}" + (f" ({email})" if email else ""),
                 properties=user_properties,
             )
 

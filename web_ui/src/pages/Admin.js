@@ -37,6 +37,7 @@ import {
   Refresh as RefreshIcon,
   Edit as EditIcon,
   Add as AddIcon,
+  Delete as DeleteIcon,
   Check as CheckIcon,
   Close as CloseIcon,
   Memory as MemoryIcon,
@@ -45,9 +46,11 @@ import {
   Settings as SettingsIcon,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../components/auth/AuthProvider';
 
 function Admin() {
   const navigate = useNavigate();
+  const { getAuthHeaders } = useAuth();
   const [currentTab, setCurrentTab] = useState(0);
   const [mcpServers, setMcpServers] = useState([]);
   const [envVars, setEnvVars] = useState([]);
@@ -61,13 +64,173 @@ function Admin() {
   const [showAddVar, setShowAddVar] = useState(false);
   const [newVarKey, setNewVarKey] = useState('');
   const [newVarValue, setNewVarValue] = useState('');
+  
+  // User management state
+  const [users, setUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [showUserDialog, setShowUserDialog] = useState(false);
+  const [editingUser, setEditingUser] = useState(null);
+  const [userForm, setUserForm] = useState({
+    username: '',
+    email: '',
+    password: '',
+    is_active: true,
+    is_verified: false,
+    roles: ['user'],
+  });
 
   // Load data on mount
   useEffect(() => {
     loadToolCacheStatus();
     loadEnvVars();
     loadSystemInfo();
-  }, []);
+    if (currentTab === 4) {
+      loadUsers();
+    }
+  }, [currentTab]);
+  
+  // Load users when tab is selected
+  const loadUsers = async () => {
+    try {
+      setUsersLoading(true);
+      const response = await fetch('/api/admin/users', {
+        headers: getAuthHeaders(),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setUsers(data);
+      }
+    } catch (error) {
+      console.error('Error loading users:', error);
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+  
+  const handleCreateUser = () => {
+    setEditingUser(null);
+    setUserForm({
+      username: '',
+      email: '',
+      password: '',
+      is_active: true,
+      is_verified: false,
+      roles: ['user'],
+    });
+    setShowUserDialog(true);
+  };
+  
+  const handleEditUser = (user) => {
+    setEditingUser(user);
+    setUserForm({
+      username: user.username,
+      email: user.email,
+      password: '',
+      is_active: user.is_active,
+      is_verified: user.is_verified,
+      roles: user.roles || [],
+    });
+    setShowUserDialog(true);
+  };
+  
+  const handleSaveUser = async () => {
+    try {
+      const url = editingUser 
+        ? `/api/admin/users/${editingUser.id}`
+        : '/api/admin/users';
+      const method = editingUser ? 'PUT' : 'POST';
+      
+      const body = { ...userForm };
+      if (!body.password && editingUser) {
+        delete body.password; // Don't update password if empty
+      }
+      
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify(body),
+      });
+      
+      if (response.ok) {
+        setShowUserDialog(false);
+        loadUsers();
+      } else {
+        const error = await response.json();
+        alert(`Error: ${error.detail || 'Failed to save user'}`);
+      }
+    } catch (error) {
+      console.error('Error saving user:', error);
+      alert('Failed to save user');
+    }
+  };
+  
+  const handleDeleteUser = async (userId) => {
+    if (!window.confirm('Are you sure you want to delete this user?')) {
+      return;
+    }
+    
+    try {
+      const response = await fetch(`/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+      
+      if (response.ok) {
+        loadUsers();
+      } else {
+        const error = await response.json();
+        alert(`Error: ${error.detail || 'Failed to delete user'}`);
+      }
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      alert('Failed to delete user');
+    }
+  };
+  
+  const handleAssignRole = async (userId, role) => {
+    try {
+      const response = await fetch(`/api/admin/users/${userId}/roles`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify({ role }),
+      });
+      
+      if (response.ok) {
+        loadUsers();
+      } else {
+        const error = await response.json();
+        alert(`Error: ${error.detail || 'Failed to assign role'}`);
+      }
+    } catch (error) {
+      console.error('Error assigning role:', error);
+      alert('Failed to assign role');
+    }
+  };
+  
+  const handleRemoveRole = async (userId, role) => {
+    try {
+      const response = await fetch(`/api/admin/users/${userId}/roles/${role}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+      
+      if (response.ok) {
+        loadUsers();
+      } else {
+        const error = await response.json();
+        alert(`Error: ${error.detail || 'Failed to remove role'}`);
+      }
+    } catch (error) {
+      console.error('Error removing role:', error);
+      alert('Failed to remove role');
+    }
+  };
 
   const loadToolCacheStatus = async () => {
     try {
@@ -231,6 +394,7 @@ function Admin() {
             <Tab label="Environment Variables" />
             <Tab label="System Info" />
             <Tab label="Cache Management" />
+            <Tab label="Users" />
           </Tabs>
         </Paper>
 
@@ -723,6 +887,171 @@ function Admin() {
                 Connect to chat to initialize the tool cache.
               </Alert>
             )}
+          </Box>
+        )}
+
+        {/* Users Tab */}
+        {currentTab === 4 && (
+          <Box>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                User Management
+              </Typography>
+              <Button
+                startIcon={<AddIcon />}
+                variant="contained"
+                onClick={handleCreateUser}
+              >
+                Create User
+              </Button>
+            </Box>
+
+            {usersLoading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                <CircularProgress />
+              </Box>
+            ) : (
+              <TableContainer component={Paper}>
+                <Table>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell><strong>Username</strong></TableCell>
+                      <TableCell><strong>Email</strong></TableCell>
+                      <TableCell><strong>Roles</strong></TableCell>
+                      <TableCell><strong>Status</strong></TableCell>
+                      <TableCell><strong>Created</strong></TableCell>
+                      <TableCell align="right"><strong>Actions</strong></TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {users.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} align="center">
+                          <Typography variant="body2" sx={{ color: 'text.secondary', py: 2 }}>
+                            No users found.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      users.map((user) => (
+                        <TableRow key={user.id}>
+                          <TableCell>{user.username}</TableCell>
+                          <TableCell>{user.email}</TableCell>
+                          <TableCell>
+                            <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                              {user.roles.map((role) => (
+                                <Chip
+                                  key={role}
+                                  label={role}
+                                  size="small"
+                                  color={role === 'admin' ? 'primary' : 'default'}
+                                  onDelete={() => handleRemoveRole(user.id, role)}
+                                />
+                              ))}
+                              <Chip
+                                label="+"
+                                size="small"
+                                onClick={() => {
+                                  const role = prompt('Enter role name:');
+                                  if (role) handleAssignRole(user.id, role);
+                                }}
+                              />
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            <Chip
+                              label={user.is_active ? 'Active' : 'Inactive'}
+                              size="small"
+                              color={user.is_active ? 'success' : 'default'}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            {new Date(user.created_at).toLocaleDateString()}
+                          </TableCell>
+                          <TableCell align="right">
+                            <IconButton
+                              size="small"
+                              onClick={() => handleEditUser(user)}
+                            >
+                              <EditIcon />
+                            </IconButton>
+                            <IconButton
+                              size="small"
+                              onClick={() => handleDeleteUser(user.id)}
+                              color="error"
+                            >
+                              <DeleteIcon />
+                            </IconButton>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+
+            {/* User Dialog */}
+            <Dialog
+              open={showUserDialog}
+              onClose={() => setShowUserDialog(false)}
+              maxWidth="sm"
+              fullWidth
+            >
+              <DialogTitle>
+                {editingUser ? 'Edit User' : 'Create User'}
+              </DialogTitle>
+              <DialogContent>
+                <TextField
+                  fullWidth
+                  label="Username"
+                  margin="normal"
+                  value={userForm.username}
+                  onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
+                  required
+                />
+                <TextField
+                  fullWidth
+                  label="Email"
+                  type="email"
+                  margin="normal"
+                  value={userForm.email}
+                  onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
+                  required
+                />
+                <TextField
+                  fullWidth
+                  label={editingUser ? 'New Password (leave empty to keep current)' : 'Password'}
+                  type="password"
+                  margin="normal"
+                  value={userForm.password}
+                  onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
+                  required={!editingUser}
+                />
+                <Box sx={{ mt: 2, display: 'flex', gap: 2 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                    <Switch
+                      checked={userForm.is_active}
+                      onChange={(e) => setUserForm({ ...userForm, is_active: e.target.checked })}
+                    />
+                    <Typography>Active</Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                    <Switch
+                      checked={userForm.is_verified}
+                      onChange={(e) => setUserForm({ ...userForm, is_verified: e.target.checked })}
+                    />
+                    <Typography>Verified</Typography>
+                  </Box>
+                </Box>
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={() => setShowUserDialog(false)}>Cancel</Button>
+                <Button onClick={handleSaveUser} variant="contained">
+                  {editingUser ? 'Update' : 'Create'}
+                </Button>
+              </DialogActions>
+            </Dialog>
           </Box>
         )}
       </Container>

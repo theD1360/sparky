@@ -56,7 +56,12 @@ services:
       - POSTGRES_PASSWORD=m3t4mcp
       - SPARKY_DB=sparky_db
       - SPARKY_DB_URL=postgresql://${POSTGRES_USER:-metamcp_user}:${POSTGRES_PASSWORD:-m3t4mcp}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${SPARKY_DB:-sparky_db}
-      - SPARKY_ENABLE_AGENT_LOOP=${SPARKY_ENABLE_AGENT_LOOP:-false}
+      # SPARKY_ENABLE_AGENT_LOOP is loaded from .env file via env_file directive
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-secret-key-in-production}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      - JWT_REFRESH_TOKEN_EXPIRE_DAYS=${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      - BCRYPT_ROUNDS=${BCRYPT_ROUNDS:-12}
     volumes:
       # Mount source code for live reload
       - ./:/app:delegated

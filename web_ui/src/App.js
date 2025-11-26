@@ -53,6 +53,7 @@ import { HelpModal, UserModal, SettingsModal } from './components/modals';
 import SplashScreen from './components/common/SplashScreen';
 import Home from './pages/Home';
 import { useSettings } from './hooks';
+import { useAuth } from './components/auth/AuthProvider';
 import { stripMarkdown } from './utils/textUtils';
 
 const SIDEBAR_WIDTH = 280;
@@ -65,6 +66,9 @@ function App({ onThemeChange }) {
   
   // Settings hook
   const { settings, showNotification, playSound } = useSettings();
+  
+  // Auth hook
+  const { user, token, logout, getAuthHeaders } = useAuth();
   
   // Responsive design
   const theme = useTheme();
@@ -143,6 +147,10 @@ function App({ onThemeChange }) {
       formData.append('file', file);
       
       const userId = getUserId();
+      if (!userId) {
+        console.error('Cannot upload file: user not authenticated');
+        return;
+      }
       const uploadUrl = `/upload_file?session_id=${sessionId}&chat_id=${currentChatId}&user_id=${userId}`;
       console.log('Upload URL:', uploadUrl);
       
@@ -409,10 +417,17 @@ function App({ onThemeChange }) {
 
   const handleRenameChat = async (chatId, newName) => {
     const userId = getUserId();
+    if (!userId) {
+      console.error('Cannot rename chat: user not authenticated');
+      return;
+    }
     try {
       await fetch(`/api/user/${userId}/chats/${chatId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({ chat_name: newName })
       });
       
@@ -549,22 +564,14 @@ function App({ onThemeChange }) {
     return () => clearTimeout(scrollTimer);
   }, [chatMessages.length, scrollToBottom]); // Only re-run when message count changes
 
-  // Get or generate user ID stored in localStorage
+  // Get user ID from authenticated user
   const getUserId = () => {
-    let userId = localStorage.getItem('user_id');
-    if (!userId) {
-      // Generate a UUID v4
-      userId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        const r = Math.random() * 16 | 0;
-        const v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-      });
-      localStorage.setItem('user_id', userId);
-      console.log('Generated new user ID:', userId);
-    } else {
-      console.log('Retrieved existing user ID:', userId);
+    if (user && user.id) {
+      return user.id;
     }
-    return userId;
+    // Fallback (should not happen if auth is working)
+    console.warn('No authenticated user, cannot get user ID');
+    return null;
   };
 
   // Fetch resources and prompts early (not just on chat route)
@@ -615,7 +622,9 @@ function App({ onThemeChange }) {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = process.env.REACT_APP_WS_HOST || window.location.hostname;
     const wsPort = process.env.REACT_APP_WS_PORT || window.location.port || '8000';
-    const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws/chat`;
+    // Include JWT token in query string
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+    const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws/chat${tokenParam}`;
     
     console.log('Connecting to WebSocket for chat route:', wsUrl);
     socket.current = new ReconnectingWebSocket(wsUrl, null, {reconnectInterval: 3000});
@@ -626,16 +635,15 @@ function App({ onThemeChange }) {
       setReconnectionAttempts(0);
       setReconnectionError(null);
 
-      const userId = getUserId();
-      // Send connect with user_id and session_id (if resuming a session)
+      // Send connect with token and session_id (if resuming a session)
       const connectMessage = {
         type: 'connect',
         data: {
           session_id: sessionId, // Will be null for new sessions, or existing ID for reconnects
-          user_id: userId,
+          token: token, // JWT token for authentication
         },
       };
-      console.log('Sending connect message with user_id:', userId, 'session_id:', sessionId);
+      console.log('Sending connect message with token, session_id:', sessionId);
       socket.current.send(JSON.stringify(connectMessage));
       
       // If we have a current chat ID when reconnecting, we need to re-establish it
@@ -1563,13 +1571,13 @@ function App({ onThemeChange }) {
               <ListItem disablePadding>
                 <ListItemButton onClick={() => setShowUserModal(true)}>
                   <ListItemIcon>
-                    <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main' }}>
-                      <PersonIcon fontSize="small" />
+                    <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main', fontSize: '0.875rem' }}>
+                      {user ? (user.username ? user.username.substring(0, 2).toUpperCase() : 'U') : <PersonIcon fontSize="small" />}
                     </Avatar>
                   </ListItemIcon>
                   <ListItemText 
-                    primary="User Profile" 
-                    secondary="sparky.user"
+                    primary={user ? user.username : "User Profile"} 
+                    secondary={user ? user.email : "Not logged in"}
                     primaryTypographyProps={{ variant: 'body2' }}
                     secondaryTypographyProps={{ variant: 'caption' }}
                   />

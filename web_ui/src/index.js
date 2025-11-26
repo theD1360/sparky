@@ -5,6 +5,10 @@ import { ThemeProvider } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import App from './App';
 import { Admin } from './pages';
+import { AuthProvider } from './components/auth/AuthProvider';
+import Login from './components/auth/Login';
+import Register from './components/auth/Register';
+import ProtectedRoute from './components/auth/ProtectedRoute';
 import { createAppTheme } from './styles/themes';
 import reportWebVitals from './reportWebVitals';
 import { configureTransformers } from './utils/transformersConfig';
@@ -62,12 +66,51 @@ function Root() {
   return (
     <ThemeProvider theme={currentTheme}>
       <CssBaseline />
-      <Routes>
-        <Route path="/" element={<App onThemeChange={handleThemeChange} />} />
-        <Route path="/chat" element={<App onThemeChange={handleThemeChange} />} />
-        <Route path="/chat/:chatId" element={<App onThemeChange={handleThemeChange} />} />
-        <Route path="/admin" element={<Admin />} />
-      </Routes>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          {/* Home page is public - no authentication required */}
+          <Route
+            path="/"
+            element={<App onThemeChange={handleThemeChange} />}
+          />
+          {/* Chat routes require authentication */}
+          <Route
+            path="/chat"
+            element={
+              <ProtectedRoute>
+                <App onThemeChange={handleThemeChange} />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/chat/:chatId"
+            element={
+              <ProtectedRoute>
+                <App onThemeChange={handleThemeChange} />
+              </ProtectedRoute>
+            }
+          />
+          {/* Admin routes require authentication and admin role */}
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute requireAdmin>
+                <Admin />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/*"
+            element={
+              <ProtectedRoute requireAdmin>
+                <Admin />
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+      </AuthProvider>
     </ThemeProvider>
   );
 }

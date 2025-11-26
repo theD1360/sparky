@@ -14,12 +14,27 @@ import importlib.util
 
 database_dir = Path(__file__).parent.parent
 models_path = database_dir / "models.py"
+auth_models_path = database_dir / "auth_models.py"
 
+# Load models first
 spec = importlib.util.spec_from_file_location("db_models", models_path)
 db_models = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(db_models)
 
 Base = db_models.Base
+
+# Import auth_models to register the tables with Base.metadata
+# Inject Base into the module globals before loading to avoid relative import issues
+spec_auth = importlib.util.spec_from_file_location("auth_models", auth_models_path)
+auth_models = importlib.util.module_from_spec(spec_auth)
+# Pre-populate the module with Base so relative import can work
+auth_models.__dict__['Base'] = Base
+# Create a mock models module for the relative import
+import types
+mock_models = types.ModuleType('models')
+mock_models.Base = Base
+auth_models.__dict__['models'] = mock_models
+spec_auth.loader.exec_module(auth_models)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

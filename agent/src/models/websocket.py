@@ -53,7 +53,8 @@ class ConnectPayload(BaseModel):
     )
     personality: Optional[str] = Field(None, description="Personality prompt")
     history: Optional[list] = Field(None, description="History of messages")
-    user_id: Optional[str] = Field(None, description="User identifier")
+    user_id: Optional[str] = Field(None, description="User identifier (deprecated, use token)")
+    token: Optional[str] = Field(None, description="JWT authentication token")
     chat_id: Optional[str] = Field(None, description="Chat identifier for grouping messages")
     chat_name: Optional[str] = Field(None, description="Display name for the chat")
 

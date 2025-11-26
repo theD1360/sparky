@@ -110,8 +110,13 @@ class DatabaseManager:
                 self.db_url,
                 echo=self.echo,
                 poolclass=QueuePool,
-                pool_size=5,
-                max_overflow=10,
+                pool_size=10,  # Increased pool size for better performance
+                max_overflow=20,  # Increased overflow
+                pool_pre_ping=True,  # Verify connections before using
+                pool_recycle=3600,  # Recycle connections after 1 hour
+                connect_args={
+                    "connect_timeout": 10,  # 10 second connection timeout
+                } if "postgresql" in self.db_url else {},
             )
 
             # Enable pgvector extension for PostgreSQL

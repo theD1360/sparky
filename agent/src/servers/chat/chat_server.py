@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 import aiofiles
 from badmcp.tool_chain import ToolChain
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from models import (
@@ -38,11 +38,13 @@ from pydantic import BaseModel
 # Import routers
 from servers.chat.routes import (
     admin_router,
+    auth_router,
     chats_router,
     health_router,
     prompts_router,
     resources_router,
     user_router,
+    user_management_router,
 )
 
 # Import the necessary components for the agent orchestrator
@@ -836,11 +838,13 @@ app = FastAPI(
 
 # Register routers
 app.include_router(health_router)
+app.include_router(auth_router)
 app.include_router(resources_router)
 app.include_router(prompts_router)
 app.include_router(user_router)
 app.include_router(chats_router)
 app.include_router(admin_router)
+app.include_router(user_management_router)
 
 
 # File analysis function
@@ -1205,7 +1209,9 @@ async def upload_file(
 
 
 @app.websocket("/ws/chat")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(
+    websocket: WebSocket, token: Optional[str] = Query(None, description="JWT authentication token")
+):
     """WebSocket endpoint with two-phase architecture:
 
     Phase 1: Initial connection and tool initialization
@@ -1267,18 +1273,42 @@ async def websocket_endpoint(websocket: WebSocket):
         connect_payload = ws_msg.data
         assert isinstance(connect_payload, ConnectPayload)
 
-        # user_id is now required for initial connection
-        if not connect_payload.user_id:
+        # Get JWT token from query param or connect payload
+        jwt_token = token or connect_payload.token
+
+        # Authenticate user via JWT token
+        from middleware.auth_middleware import get_user_from_websocket_token
+
+        authenticated_user = None
+        user_id = None
+
+        if jwt_token:
+            authenticated_user = get_user_from_websocket_token(jwt_token)
+            if authenticated_user:
+                user_id = authenticated_user.id
+                logger.info(f"Authenticated user via JWT: {user_id} ({authenticated_user.username})")
+            else:
+                await websocket.send_text(
+                    WSMessage(
+                        type=MessageType.error,
+                        data=ErrorPayload(message="Invalid or expired authentication token"),
+                    ).to_text()
+                )
+                await websocket.close()
+                return
+        elif connect_payload.user_id:
+            # Fallback to user_id for backward compatibility (deprecated)
+            user_id = connect_payload.user_id
+            logger.warning(f"Using deprecated user_id parameter: {user_id}")
+        else:
             await websocket.send_text(
                 WSMessage(
                     type=MessageType.error,
-                    data=ErrorPayload(message="user_id is required in connect message"),
+                    data=ErrorPayload(message="Authentication token is required"),
                 ).to_text()
             )
             await websocket.close()
             return
-
-        user_id = connect_payload.user_id
 
         session_id, is_new = await _connection_manager.create_or_get_session(
             connect_payload.session_id

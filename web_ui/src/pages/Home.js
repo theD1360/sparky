@@ -19,12 +19,16 @@ import {
   Memory as MemoryIcon,
   Psychology as PsychologyIcon,
   AutoAwesome as AutoAwesomeIcon,
+  Login as LoginIcon,
+  PersonAdd as PersonAddIcon,
 } from '@mui/icons-material';
+import { useAuth } from '../components/auth/AuthProvider';
 
 function Home() {
   const navigate = useNavigate();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const { isAuthenticated } = useAuth();
 
   const features = [
     {
@@ -119,31 +123,82 @@ function Home() {
             </Typography>
           </Box>
 
-          {/* CTA Button */}
-          <Button
-            variant="contained"
-            size="large"
-            startIcon={<ChatIcon />}
-            onClick={() => navigate('/chat')}
-            sx={{
-              px: 6,
-              py: 2,
-              fontSize: '1.125rem',
-              fontWeight: 600,
-              borderRadius: 3,
-              bgcolor: 'primary.main',
-              background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-              boxShadow: '0 8px 24px rgba(59, 130, 246, 0.4)',
-              transition: 'all 0.3s ease',
-              '&:hover': {
-                boxShadow: '0 12px 32px rgba(59, 130, 246, 0.6)',
-                transform: 'translateY(-2px)',
-                background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
-              },
-            }}
-          >
-            Start Chatting
-          </Button>
+          {/* CTA Buttons */}
+          <Stack direction={isMobile ? 'column' : 'row'} spacing={2} sx={{ mt: 2 }}>
+            {isAuthenticated ? (
+              <Button
+                variant="contained"
+                size="large"
+                startIcon={<ChatIcon />}
+                onClick={() => navigate('/chat')}
+                sx={{
+                  px: 6,
+                  py: 2,
+                  fontSize: '1.125rem',
+                  fontWeight: 600,
+                  borderRadius: 3,
+                  bgcolor: 'primary.main',
+                  background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                  boxShadow: '0 8px 24px rgba(59, 130, 246, 0.4)',
+                  transition: 'all 0.3s ease',
+                  '&:hover': {
+                    boxShadow: '0 12px 32px rgba(59, 130, 246, 0.6)',
+                    transform: 'translateY(-2px)',
+                    background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+                  },
+                }}
+              >
+                Start Chatting
+              </Button>
+            ) : (
+              <>
+                <Button
+                  variant="contained"
+                  size="large"
+                  startIcon={<LoginIcon />}
+                  onClick={() => navigate('/login')}
+                  sx={{
+                    px: 6,
+                    py: 2,
+                    fontSize: '1.125rem',
+                    fontWeight: 600,
+                    borderRadius: 3,
+                    bgcolor: 'primary.main',
+                    background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                    boxShadow: '0 8px 24px rgba(59, 130, 246, 0.4)',
+                    transition: 'all 0.3s ease',
+                    '&:hover': {
+                      boxShadow: '0 12px 32px rgba(59, 130, 246, 0.6)',
+                      transform: 'translateY(-2px)',
+                      background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+                    },
+                  }}
+                >
+                  Login
+                </Button>
+                <Button
+                  variant="outlined"
+                  size="large"
+                  startIcon={<PersonAddIcon />}
+                  onClick={() => navigate('/register')}
+                  sx={{
+                    px: 6,
+                    py: 2,
+                    fontSize: '1.125rem',
+                    fontWeight: 600,
+                    borderRadius: 3,
+                    borderWidth: 2,
+                    '&:hover': {
+                      borderWidth: 2,
+                      transform: 'translateY(-2px)',
+                    },
+                  }}
+                >
+                  Register
+                </Button>
+              </>
+            )}
+          </Stack>
 
           {/* Features Grid */}
           <Box sx={{ width: '100%', mt: 8 }}>
