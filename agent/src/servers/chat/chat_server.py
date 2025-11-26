@@ -22,7 +22,6 @@ from models import (
     ErrorPayload,
     MessageType,
     ReadyPayload,
-    SessionInfoPayload,
     StartChatPayload,
     StatusPayload,
     SwitchChatPayload,
@@ -63,7 +62,8 @@ from sparky.providers import GeminiProvider, ProviderConfig
 
 
 class ToolUsageData(BaseModel):
-    session_id: str
+    user_id: str
+    chat_id: Optional[str] = None
     tool_name: str
     tool_args: dict
     result: Optional[str] = None
@@ -85,7 +85,7 @@ logger = getLogger(__name__)
 
 
 class ConnectionManager:
-    """Manages agent orchestrator instances and websocket connections per session."""
+    """Manages agent orchestrator instances and websocket connections per user."""
 
     def __init__(
         self, session_timeout_minutes: int = 60, toolchain: Optional[ToolChain] = None
@@ -93,75 +93,46 @@ class ConnectionManager:
         """Initialize the connection manager.
 
         Args:
-            session_timeout_minutes: Timeout for inactive sessions in minutes
-            toolchain: Optional toolchain for creating session nodes
+            session_timeout_minutes: Timeout for inactive connections in minutes
+            toolchain: Optional toolchain for tool loading
         """
-        # session_id -> chat_id -> agent orchestrator instance
+        # user_id -> chat_id -> agent orchestrator instance
         self.bot_sessions: Dict[str, Dict[str, AgentOrchestrator]] = {}
-        # session_id -> chat_id -> Knowledge instance (isolated per chat)
+        # user_id -> chat_id -> Knowledge instance (isolated per chat)
         self.knowledge_instances: Dict[str, Dict[str, Knowledge]] = {}
-        # session_id -> current active chat_id
+        # user_id -> current active chat_id
         self.current_chat: Dict[str, str] = {}
-        # session_id -> last activity timestamp
+        # user_id -> last activity timestamp
         self.last_activity: Dict[str, datetime] = {}
-        # session_id -> current websocket (if connected)
+        # user_id -> current websocket (if connected)
         self.active_connections: Dict[str, WebSocket] = {}
-        # session_id -> user_id mapping
-        self.session_to_user: Dict[str, str] = {}
-        # session_id -> tools initialized flag
+        # user_id -> tools initialized flag
         self.tools_initialized: Dict[str, bool] = {}
-        # session_id -> (identity_memory, identity_summary) cached at session level
-        self.session_identity_cache: Dict[str, Tuple[str, str]] = {}
+        # user_id -> (identity_memory, identity_summary) cached at user level
+        self.user_identity_cache: Dict[str, Tuple[str, str]] = {}
         self.session_timeout = timedelta(minutes=session_timeout_minutes)
         self.toolchain = toolchain
 
-    async def create_or_get_session(
-        self, session_id: Optional[str] = None
-    ) -> Tuple[str, bool]:
-        """Get existing session or create new one.
-
-        Args:
-            session_id: Optional existing session ID
-
-        Returns:
-            Tuple of (session_id, is_new)
-        """
-        if session_id and session_id in self.bot_sessions:
-            # Existing session
-            self.last_activity[session_id] = datetime.utcnow()
-            logger.info(f"Resuming existing session: {session_id}")
-            return session_id, False
-        else:
-            # New session
-            new_session_id = session_id or str(uuid.uuid4())
-            self.last_activity[new_session_id] = datetime.utcnow()
-            # Initialize session-level structures
-            self.bot_sessions[new_session_id] = {}
-            self.knowledge_instances[new_session_id] = {}
-            logger.info(f"Creating new session: {new_session_id}")
-
-            return new_session_id, True
-
-    async def initialize_tools_for_session(
-        self, session_id: str, websocket: WebSocket
+    async def initialize_tools_for_user(
+        self, user_id: str, websocket: WebSocket
     ) -> Tuple[Optional[ToolChain], Optional[str]]:
-        """Initialize tools for a session and send progress updates via WebSocket.
+        """Initialize tools for a user and send progress updates via WebSocket.
 
         This uses the global toolchain cache to lazily load MCP servers on first connection.
         Subsequent connections will use cached toolchain if still valid.
 
         Args:
-            session_id: Session identifier
+            user_id: User identifier
             websocket: WebSocket connection for sending progress updates
 
         Returns:
             Tuple of (toolchain, error_message)
         """
-        if self.tools_initialized.get(session_id, False) and self.toolchain:
-            logger.info(f"[{session_id}] Tools already initialized for session, using cached toolchain")
+        if self.tools_initialized.get(user_id, False) and self.toolchain:
+            logger.info(f"[{user_id}] Tools already initialized for user, using cached toolchain")
             return self.toolchain, None
 
-        logger.info(f"[{session_id}] Initializing tools for first time...")
+        logger.info(f"[{user_id}] Initializing tools for first time...")
 
         # Get toolchain cache
         cache = get_toolchain_cache()
@@ -184,29 +155,29 @@ class ConnectionManager:
                 if status == "loading":
                     await asyncio.sleep(0.05)
             except Exception as e:
-                logger.error(f"[{session_id}] Error sending progress update: {e}")
+                logger.error(f"[{user_id}] Error sending progress update: {e}")
 
         try:
             # Load or get cached toolchain
             toolchain, error = await cache.get_or_load_toolchain(progress_callback)
 
             if error:
-                logger.error(f"[{session_id}] Failed to load toolchain: {error}")
+                logger.error(f"[{user_id}] Failed to load toolchain: {error}")
                 return None, error
 
             if toolchain:
                 # Update connection manager's toolchain reference
                 self.toolchain = toolchain
-                self.tools_initialized[session_id] = True
+                self.tools_initialized[user_id] = True
 
                 tools_count = len(toolchain.tool_clients) if toolchain else 0
                 logger.info(
-                    f"[{session_id}] Tools initialized successfully: {tools_count} tool server(s)"
+                    f"[{user_id}] Tools initialized successfully: {tools_count} tool server(s)"
                 )
 
                 # Log cache status
                 cache_status = cache.get_cache_status()
-                logger.debug(f"[{session_id}] Tool cache status: {cache_status}")
+                logger.debug(f"[{user_id}] Tool cache status: {cache_status}")
 
                 # Start agent loop on first toolchain initialization if enabled
                 await self._maybe_start_agent_loop(toolchain)
@@ -214,13 +185,13 @@ class ConnectionManager:
                 return toolchain, None
             else:
                 error_msg = "Toolchain loaded but is None"
-                logger.error(f"[{session_id}] {error_msg}")
+                logger.error(f"[{user_id}] {error_msg}")
                 return None, error_msg
 
         except Exception as e:
             error_msg = f"Error initializing tools: {e}"
-            logger.error(f"[{session_id}] {error_msg}")
-            logger.error(f"[{session_id}] Traceback: {traceback.format_exc()}")
+            logger.error(f"[{user_id}] {error_msg}")
+            logger.error(f"[{user_id}] Traceback: {traceback.format_exc()}")
             return None, error_msg
 
     async def _maybe_start_agent_loop(self, toolchain: ToolChain):
@@ -261,26 +232,26 @@ class ConnectionManager:
 
     async def load_and_cache_identity(
         self,
-        session_id: str,
+        user_id: str,
         knowledge: Knowledge,
         generate_fn: Any,
     ) -> Tuple[str, str]:
-        """Load identity and cache it at session level.
+        """Load identity and cache it at user level.
 
         Args:
-            session_id: Session identifier
+            user_id: User identifier
             knowledge: Knowledge instance to load identity from
             generate_fn: LLM generate function for identity summarization
 
         Returns:
             Tuple of (identity_memory, identity_summary)
         """
-        # Check if identity is already cached for this session
-        if session_id in self.session_identity_cache:
-            logger.info(f"[{session_id}] Using cached identity from session")
-            return self.session_identity_cache[session_id]
+        # Check if identity is already cached for this user
+        if user_id in self.user_identity_cache:
+            logger.info(f"[{user_id}] Using cached identity from user")
+            return self.user_identity_cache[user_id]
 
-        logger.info(f"[{session_id}] Loading identity for session (first time)")
+        logger.info(f"[{user_id}] Loading identity for user (first time)")
 
         # Load identity using the identity service
         from services import IdentityService
@@ -306,57 +277,56 @@ class ConnectionManager:
             identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
             identity_summary = await generate_fn(identity_summary_prompt)
 
-        # Cache for this session
-        self.session_identity_cache[session_id] = (identity_memory, identity_summary)
-        logger.info(f"[{session_id}] Identity loaded and cached for session")
+        # Cache for this user
+        self.user_identity_cache[user_id] = (identity_memory, identity_summary)
+        logger.info(f"[{user_id}] Identity loaded and cached for user")
 
         return identity_memory, identity_summary
 
     async def create_bot_for_chat(
         self,
-        session_id: str,
-        chat_id: str,
         user_id: str,
+        chat_id: str,
         chat_name: Optional[str] = None,
     ) -> AgentOrchestrator:
         """Create or retrieve agent orchestrator for a specific chat.
 
         Args:
-            session_id: Session identifier
-            chat_id: Chat identifier
             user_id: User identifier
+            chat_id: Chat identifier
             chat_name: Optional display name for the chat
 
         Returns:
             AgentOrchestrator instance for the chat
         """
         # Check if bot already exists for this chat
-        if session_id in self.bot_sessions and chat_id in self.bot_sessions[session_id]:
-            bot = self.bot_sessions[session_id][chat_id]
-            logger.info(f"[{session_id}:{chat_id}] Reusing existing bot instance")
+        if user_id in self.bot_sessions and chat_id in self.bot_sessions[user_id]:
+            bot = self.bot_sessions[user_id][chat_id]
+            logger.info(f"[{user_id}:{chat_id}] Reusing existing bot instance")
             return bot
 
         # Create new bot instance for this chat
-        logger.info(f"[{session_id}:{chat_id}] Creating new bot instance")
+        logger.info(f"[{user_id}:{chat_id}] Creating new bot instance")
 
-        # Ensure session exists in our data structures
-        if session_id not in self.bot_sessions:
-            self.bot_sessions[session_id] = {}
-            self.knowledge_instances[session_id] = {}
+        # Ensure user exists in our data structures
+        if user_id not in self.bot_sessions:
+            self.bot_sessions[user_id] = {}
+            self.knowledge_instances[user_id] = {}
 
         # Create isolated Knowledge instance for this chat
-        logger.info(f"[{session_id}:{chat_id}] Creating isolated Knowledge instance")
+        logger.info(f"[{user_id}:{chat_id}] Creating isolated Knowledge instance")
+        # Use chat_id as the session identifier for Knowledge (each chat has its own memory context)
         knowledge = Knowledge(
-            session_id=session_id,
+            session_id=chat_id,
             model=None,
         )
-        self.knowledge_instances[session_id][chat_id] = knowledge
+        self.knowledge_instances[user_id][chat_id] = knowledge
 
-        # Create bot with session-specific callbacks
-        logger.info(f"[{session_id}:{chat_id}] Creating bot instance with callbacks")
+        # Create bot with user-specific callbacks
+        logger.info(f"[{user_id}:{chat_id}] Creating bot instance with callbacks")
 
         async def send_tool_use_notification(tool_name, tool_args):
-            ws = self.active_connections.get(session_id)
+            ws = self.active_connections.get(user_id)
             if ws:
                 try:
                     # Ensure args are JSON-serializable (best effort)
@@ -390,7 +360,6 @@ class ConnectionManager:
                     msg = WSMessage(
                         type=MessageType.tool_use,
                         data=payload,
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=chat_id,
                     )
@@ -400,14 +369,13 @@ class ConnectionManager:
                     fallback = WSMessage(
                         type=MessageType.status,
                         data=StatusPayload(message=f"Using tool {tool_name}"),
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=chat_id,
                     )
                     await ws.send_text(fallback.to_text())
 
         async def send_tool_result_notification(tool_name, result_text):
-            ws = self.active_connections.get(session_id)
+            ws = self.active_connections.get(user_id)
             if ws:
                 try:
                     # Ensure result is a string
@@ -417,7 +385,6 @@ class ConnectionManager:
                     msg = WSMessage(
                         type=MessageType.tool_result,
                         data=payload,
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=chat_id,
                     )
@@ -427,14 +394,13 @@ class ConnectionManager:
                     fallback = WSMessage(
                         type=MessageType.status,
                         data=StatusPayload(message=f"Tool {tool_name} finished."),
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=chat_id,
                     )
                     await ws.send_text(fallback.to_text())
 
         async def send_thought_notification(thought_text):
-            ws = self.active_connections.get(session_id)
+            ws = self.active_connections.get(user_id)
             if ws:
                 try:
                     # Ensure thought is a string
@@ -444,7 +410,6 @@ class ConnectionManager:
                     msg = WSMessage(
                         type=MessageType.thought,
                         data=payload,
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=chat_id,
                     )
@@ -454,14 +419,13 @@ class ConnectionManager:
                     fallback = WSMessage(
                         type=MessageType.status,
                         data=StatusPayload(message="Thinking..."),
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=chat_id,
                     )
                     await ws.send_text(fallback.to_text())
 
         async def send_token_usage_notification(usage_dict):
-            ws = self.active_connections.get(session_id)
+            ws = self.active_connections.get(user_id)
             if ws:
                 try:
                     # Validate and extract token counts from the usage dict
@@ -481,7 +445,6 @@ class ConnectionManager:
                     msg = WSMessage(
                         type=MessageType.token_usage,
                         data=payload,
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=chat_id,
                     )
@@ -490,7 +453,7 @@ class ConnectionManager:
                     logger.warning(f"Failed to send token usage: {e}")
 
         async def send_token_estimate_notification(estimated_tokens, source):
-            ws = self.active_connections.get(session_id)
+            ws = self.active_connections.get(user_id)
             if ws:
                 try:
                     from models import TokenEstimatePayload
@@ -502,7 +465,6 @@ class ConnectionManager:
                     msg = WSMessage(
                         type=MessageType.token_estimate,
                         data=payload,
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=chat_id,
                     )
@@ -542,18 +504,17 @@ class ConnectionManager:
         # subscriptions are needed here to avoid duplicate saves.
 
         # Store bot instance for this chat
-        self.bot_sessions[session_id][chat_id] = bot
+        self.bot_sessions[user_id][chat_id] = bot
 
-        # Load and cache identity at session level (only loads once per session)
+        # Load and cache identity at user level (only loads once per user)
         identity_memory, identity_summary = await self.load_and_cache_identity(
-            session_id=session_id,
+            user_id=user_id,
             knowledge=knowledge,
             generate_fn=bot.generate,
         )
 
         # Start the chat for this bot with pre-loaded identity
         await bot.start_chat(
-            session_id=session_id,
             user_id=user_id,
             chat_id=chat_id,
             chat_name=chat_name or f"Chat {chat_id[:8]}",
@@ -562,93 +523,89 @@ class ConnectionManager:
         )
 
         # Update current chat tracking
-        self.current_chat[session_id] = chat_id
+        self.current_chat[user_id] = chat_id
 
-        logger.info(f"[{session_id}:{chat_id}] Bot instance created and chat started")
+        logger.info(f"[{user_id}:{chat_id}] Bot instance created and chat started")
         return bot
 
     async def switch_chat(
-        self, session_id: str, chat_id: str, user_id: str
+        self, user_id: str, chat_id: str
     ) -> AgentOrchestrator:
-        """Switch to a different chat within the same session.
+        """Switch to a different chat for a user.
 
         Args:
-            session_id: Session identifier
-            chat_id: Chat identifier to switch to
             user_id: User identifier
+            chat_id: Chat identifier to switch to
 
         Returns:
             AgentOrchestrator instance for the chat
         """
-        logger.info(f"[{session_id}] Switching to chat {chat_id}")
+        logger.info(f"[{user_id}] Switching to chat {chat_id}")
 
         # Update current chat tracking
-        self.current_chat[session_id] = chat_id
-        self.last_activity[session_id] = datetime.utcnow()
+        self.current_chat[user_id] = chat_id
+        self.last_activity[user_id] = datetime.utcnow()
 
         # Get or create bot for this chat
-        if session_id in self.bot_sessions and chat_id in self.bot_sessions[session_id]:
-            bot = self.bot_sessions[session_id][chat_id]
-            logger.info(f"[{session_id}:{chat_id}] Reusing existing bot for chat")
+        if user_id in self.bot_sessions and chat_id in self.bot_sessions[user_id]:
+            bot = self.bot_sessions[user_id][chat_id]
+            # Check if chat is initialized - if not, initialize it
+            if not bot.chat:
+                logger.info(f"[{user_id}:{chat_id}] Bot exists but chat not initialized, initializing...")
+                await bot.start_chat(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    chat_name=None,  # Will use existing chat name
+                )
+            logger.info(f"[{user_id}:{chat_id}] Reusing existing bot for chat")
             return bot
         else:
             # Create new bot for this chat
-            logger.info(f"[{session_id}:{chat_id}] Creating new bot for chat")
-            return await self.create_bot_for_chat(session_id, chat_id, user_id)
+            logger.info(f"[{user_id}:{chat_id}] Creating new bot for chat")
+            return await self.create_bot_for_chat(user_id, chat_id)
 
     def connect(
-        self, session_id: str, websocket: WebSocket, user_id: Optional[str] = None
+        self, user_id: str, websocket: WebSocket
     ):
-        """Register active websocket connection for a session.
+        """Register active websocket connection for a user.
 
         Args:
-            session_id: Session identifier
+            user_id: User identifier
             websocket: WebSocket connection
-            user_id: Optional user identifier to associate with this session
         """
-        self.active_connections[session_id] = websocket
-        if user_id:
-            self.session_to_user[session_id] = user_id
-        self.last_activity[session_id] = datetime.utcnow()
-        logger.info(
-            f"[{session_id}] WebSocket connected"
-            + (f" (user: {user_id})" if user_id else "")
-        )
+        self.active_connections[user_id] = websocket
+        self.last_activity[user_id] = datetime.utcnow()
+        logger.info(f"[{user_id}] WebSocket connected")
 
-    def disconnect(self, session_id: str):
-        """Remove websocket connection but keep bot session.
+    def disconnect(self, user_id: str):
+        """Remove websocket connection but keep bot instances.
 
         Args:
-            session_id: Session identifier
+            user_id: User identifier
         """
-        if session_id in self.active_connections:
-            del self.active_connections[session_id]
-            self.last_activity[session_id] = datetime.utcnow()
-            user_id = self.session_to_user.get(session_id)
-            logger.info(
-                f"[{session_id}] WebSocket disconnected (session preserved)"
-                + (f", user={user_id}" if user_id else "")
-            )
+        if user_id in self.active_connections:
+            del self.active_connections[user_id]
+            self.last_activity[user_id] = datetime.utcnow()
+            logger.info(f"[{user_id}] WebSocket disconnected (bot instances preserved)")
 
     def get_active_connection_by_user(
         self, user_id: str
-    ) -> Optional[Tuple[str, WebSocket, Optional[str]]]:
+    ) -> Optional[Tuple[WebSocket, Optional[str]]]:
         """Get active WebSocket connection for a user.
 
         Args:
             user_id: User identifier to lookup
 
         Returns:
-            Tuple of (session_id, websocket, current_chat_id) if user has active connection, None otherwise
+            Tuple of (websocket, current_chat_id) if user has active connection, None otherwise
         """
-        for session_id, ws_user_id in self.session_to_user.items():
-            if ws_user_id == user_id and session_id in self.active_connections:
-                websocket = self.active_connections[session_id]
-                current_chat_id = self.current_chat.get(session_id)
-                logger.debug(
-                    f"Found active connection for user {user_id}: session={session_id}, chat={current_chat_id}"
-                )
-                return session_id, websocket, current_chat_id
+        if user_id in self.active_connections:
+            websocket = self.active_connections[user_id]
+            current_chat_id = self.current_chat.get(user_id)
+            logger.debug(
+                f"Found active connection for user {user_id}, chat={current_chat_id}"
+            )
+            return websocket, current_chat_id
         logger.debug(f"No active connection found for user {user_id}")
         return None
 
@@ -1008,16 +965,16 @@ async def get_file_thumbnail(file_id: str, max_size: int = 200):
 
 @app.post("/upload_file")
 async def upload_file(
-    session_id: str, chat_id: str, user_id: str, file: UploadFile = File(...)
+    chat_id: str, user_id: str, file: UploadFile = File(...)
 ):
     """Upload a file and store it, creating a corresponding node in the knowledge graph."""
     import re
 
     from fastapi import HTTPException
 
-    if not session_id or not chat_id or not user_id:
+    if not chat_id or not user_id:
         raise HTTPException(
-            status_code=400, detail="session_id, chat_id, and user_id are required"
+            status_code=400, detail="chat_id and user_id are required"
         )
 
     # Security: File size limit (10MB)
@@ -1123,15 +1080,15 @@ async def upload_file(
         if (
             not _connection_manager
             or not _connection_manager.knowledge_instances
-            or session_id not in _connection_manager.knowledge_instances
-            or chat_id not in _connection_manager.knowledge_instances[session_id]
+            or user_id not in _connection_manager.knowledge_instances
+            or chat_id not in _connection_manager.knowledge_instances[user_id]
         ):
             raise HTTPException(
                 status_code=404,
-                detail=f"No knowledge graph found for session {session_id} and chat {chat_id}",
+                detail=f"No knowledge graph found for user {user_id} and chat {chat_id}",
             )
 
-        knowledge = _connection_manager.knowledge_instances[session_id][chat_id]
+        knowledge = _connection_manager.knowledge_instances[user_id][chat_id]
 
         if not knowledge or not knowledge.repository:
             raise HTTPException(
@@ -1147,13 +1104,14 @@ async def upload_file(
                 properties=file_node_properties,
             )
 
-            # 5. Associate the file node with user, session, and chat
+            # 5. Associate the file node with user and chat
             user_node_id = f"user:{user_id}"
             knowledge.repository.add_edge(
                 source_id=user_node_id, target_id=file_node_id, edge_type="UPLOADED"
             )
+            chat_node_id = f"chat:{chat_id}"
             knowledge.repository.add_edge(
-                source_id=session_id, target_id=file_node_id, edge_type="CONTAINS"
+                source_id=chat_node_id, target_id=file_node_id, edge_type="CONTAINS"
             )
             knowledge.repository.add_edge(
                 source_id=f"chat:{chat_id}",
@@ -1220,7 +1178,6 @@ async def websocket_endpoint(
     await websocket.accept()
     logger.info("Client connected to chat WebSocket.")
 
-    session_id: Optional[str] = None
     user_id: Optional[str] = None
     current_chat_id: Optional[str] = None
     current_bot: Optional[AgentOrchestrator] = None
@@ -1310,43 +1267,22 @@ async def websocket_endpoint(
             await websocket.close()
             return
 
-        session_id, is_new = await _connection_manager.create_or_get_session(
-            connect_payload.session_id
-        )
-
         # Register connection with user_id
-        _connection_manager.connect(session_id, websocket, user_id)
-
-        # Send session info back to client IMMEDIATELY
-        logger.info(f"[{session_id}] Sending session info...")
-        await websocket.send_text(
-            WSMessage(
-                type=MessageType.session_info,
-                data=SessionInfoPayload(
-                    session_id=session_id,
-                    is_new=is_new,
-                    reconnected=not is_new,
-                    chat_id=None,  # No chat yet in new architecture
-                ),
-                session_id=session_id,
-                user_id=user_id,
-            ).to_text()
-        )
+        _connection_manager.connect(user_id, websocket)
 
         # Initialize tools with progress updates (lazy loading on first connection)
-        logger.info(f"[{session_id}] Initializing tools...")
-        toolchain, tool_error = await _connection_manager.initialize_tools_for_session(
-            session_id, websocket
+        logger.info(f"[{user_id}] Initializing tools...")
+        toolchain, tool_error = await _connection_manager.initialize_tools_for_user(
+            user_id, websocket
         )
 
         if tool_error or not toolchain:
             error_msg = tool_error or "Failed to initialize tools"
-            logger.error(f"[{session_id}] Tool initialization failed: {error_msg}")
+            logger.error(f"[{user_id}] Tool initialization failed: {error_msg}")
             await websocket.send_text(
                 WSMessage(
                     type=MessageType.error,
                     data=ErrorPayload(message=f"Tool initialization failed: {error_msg}"),
-                    session_id=session_id,
                     user_id=user_id,
                 ).to_text()
             )
@@ -1355,20 +1291,18 @@ async def websocket_endpoint(
 
         # Send ready message
         tools_loaded = len(toolchain.tool_clients) if toolchain else 0
-        logger.info(f"[{session_id}] Session ready with {tools_loaded} tool(s), sending ready message")
+        logger.info(f"[{user_id}] User ready with {tools_loaded} tool(s), sending ready message")
         await websocket.send_text(
             WSMessage(
                 type=MessageType.ready,
                 data=ReadyPayload(
-                    session_id=session_id,
                     tools_loaded=tools_loaded,
                 ),
-                session_id=session_id,
                 user_id=user_id,
             ).to_text()
         )
 
-        logger.info(f"[{session_id}] Phase 1 complete - session ready for chats")
+        logger.info(f"[{user_id}] Phase 1 complete - user ready for chats")
 
         # ==================== PHASE 2: Chat Operations ====================
 
@@ -1384,7 +1318,6 @@ async def websocket_endpoint(
                         data=ErrorPayload(
                             message="No active chat. Start a chat first."
                         ),
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=current_chat_id,
                     ).to_text()
@@ -1394,7 +1327,7 @@ async def websocket_endpoint(
             try:
                 file_info = f" (with file: {file_id})" if file_id else ""
                 logger.info(
-                    f"[{session_id}:{current_chat_id}] Processing: {user_message[:50]}...{file_info}"
+                    f"[{user_id}:{current_chat_id}] Processing: {user_message[:50]}...{file_info}"
                 )
 
                 # Auto-generate chat name from first message if chat hasn't been named
@@ -1429,18 +1362,18 @@ async def websocket_endpoint(
                             ):
                                 should_generate_name = True
                                 logger.info(
-                                    f"[{session_id}:{current_chat_id}] Chat has no custom name, will auto-generate"
+                                    f"[{user_id}:{current_chat_id}] Chat has no custom name, will auto-generate"
                                 )
                             else:
                                 logger.info(
-                                    f"[{session_id}:{current_chat_id}] Chat already has name '{current_name}', skipping auto-generation"
+                                    f"[{user_id}:{current_chat_id}] Chat already has name '{current_name}', skipping auto-generation"
                                 )
                         else:
                             # Chat doesn't exist yet, will be created with auto-name
                             should_generate_name = True
                     except Exception as e:
                         logger.warning(
-                            f"[{session_id}:{current_chat_id}] Error checking existing chat name: {e}"
+                            f"[{user_id}:{current_chat_id}] Error checking existing chat name: {e}"
                         )
                         # Default to generating name on error
                         should_generate_name = True
@@ -1457,7 +1390,7 @@ Message: {user_message[:200]}
 Respond with ONLY the title, no quotes or extra text. Keep it under 50 characters."""
 
                             logger.info(
-                                f"[{session_id}:{current_chat_id}] Requesting LLM chat name summary..."
+                                f"[{user_id}:{current_chat_id}] Requesting LLM chat name summary..."
                             )
                             summary_response = (
                                 await current_bot.provider.generate_content(
@@ -1468,12 +1401,12 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                                 :50
                             ]  # Limit to 50 chars
                             logger.info(
-                                f"[{session_id}:{current_chat_id}] LLM-generated chat name: '{auto_name}'"
+                                f"[{user_id}:{current_chat_id}] LLM-generated chat name: '{auto_name}'"
                             )
                         except Exception as e:
                             # Fallback to first 50 chars if LLM fails
                             logger.warning(
-                                f"[{session_id}:{current_chat_id}] LLM summarization failed: {e}, using fallback"
+                                f"[{user_id}:{current_chat_id}] LLM summarization failed: {e}, using fallback"
                             )
                             auto_name = user_message[:50].strip()
                             if len(user_message) > 50:
@@ -1497,26 +1430,25 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                                         current_chat_id, auto_name
                                     )
                                     logger.info(
-                                        f"[{session_id}:{current_chat_id}] Updated chat name to: '{auto_name}'"
+                                        f"[{user_id}:{current_chat_id}] Updated chat name to: '{auto_name}'"
                                     )
                                 else:
                                     logger.warning(
-                                        f"[{session_id}:{current_chat_id}] Chat not found, skipping auto-name"
+                                        f"[{user_id}:{current_chat_id}] Chat not found, skipping auto-name"
                                     )
                             except Exception as e:
                                 logger.warning(
-                                    f"[{session_id}:{current_chat_id}] Failed to update chat name: {e}"
+                                    f"[{user_id}:{current_chat_id}] Failed to update chat name: {e}"
                                 )
 
                 response = await current_bot.send_message(user_message, file_id=file_id)
                 logger.info(
-                    f"[{session_id}:{current_chat_id}] Sending response: {response[:50]}..."
+                    f"[{user_id}:{current_chat_id}] Sending response: {response[:50]}..."
                 )
                 await websocket.send_text(
                     WSMessage(
                         type=MessageType.message,
                         data=ChatMessagePayload(text=response),
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=current_chat_id,
                     ).to_text()
@@ -1524,7 +1456,7 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
             except Exception as e:
                 error_msg = str(e)
                 logger.error(
-                    f"[{session_id}:{current_chat_id}] Error processing message: {e}"
+                    f"[{user_id}:{current_chat_id}] Error processing message: {e}"
                 )
                 await websocket.send_text(
                     WSMessage(
@@ -1532,7 +1464,6 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                         data=ErrorPayload(
                             message=f"Error processing message: {error_msg}"
                         ),
-                        session_id=session_id,
                         user_id=user_id,
                         chat_id=current_chat_id,
                     ).to_text()
@@ -1541,7 +1472,7 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
         # Main message loop
         while True:
             raw_data = await websocket.receive_text()
-            logger.info(f"[{session_id}] Received: {raw_data[:100]}...")
+            logger.info(f"[{user_id}] Received: {raw_data[:100]}...")
 
             try:
                 ws_msg = WSMessage.from_text(raw_data)
@@ -1549,7 +1480,6 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                 err = WSMessage(
                     type=MessageType.error,
                     data=ErrorPayload(message=f"Invalid message: {ve}"),
-                    session_id=session_id,
                     user_id=user_id,
                     chat_id=current_chat_id,
                 )
@@ -1560,14 +1490,13 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                 # Start or create a new chat
                 payload = ws_msg.data
                 assert isinstance(payload, StartChatPayload)
-                logger.info(f"[{session_id}] Starting chat: {payload.chat_id}")
+                logger.info(f"[{user_id}] Starting chat: {payload.chat_id}")
 
                 try:
                     # Create/get bot for this chat
                     current_bot = await _connection_manager.create_bot_for_chat(
-                        session_id=session_id,
-                        chat_id=payload.chat_id,
                         user_id=user_id,
+                        chat_id=payload.chat_id,
                         chat_name=payload.chat_name,
                     )
                     current_chat_id = payload.chat_id
@@ -1580,19 +1509,17 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                                 chat_id=payload.chat_id,
                                 is_new=True,  # Could check if chat already existed
                             ),
-                            session_id=session_id,
                             user_id=user_id,
                             chat_id=payload.chat_id,
                         ).to_text()
                     )
-                    logger.info(f"[{session_id}:{current_chat_id}] Chat ready")
+                    logger.info(f"[{user_id}:{current_chat_id}] Chat ready")
                 except Exception as e:
-                    logger.error(f"[{session_id}] Error starting chat: {e}")
+                    logger.error(f"[{user_id}] Error starting chat: {e}")
                     await websocket.send_text(
                         WSMessage(
                             type=MessageType.error,
                             data=ErrorPayload(message=f"Error starting chat: {e}"),
-                            session_id=session_id,
                             user_id=user_id,
                             chat_id=current_chat_id,
                         ).to_text()
@@ -1602,14 +1529,13 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                 # Switch to a different chat
                 payload = ws_msg.data
                 assert isinstance(payload, SwitchChatPayload)
-                logger.info(f"[{session_id}] Switching to chat: {payload.chat_id}")
+                logger.info(f"[{user_id}] Switching to chat: {payload.chat_id}")
 
                 try:
                     # Get or create bot for this chat
                     current_bot = await _connection_manager.switch_chat(
-                        session_id=session_id,
-                        chat_id=payload.chat_id,
                         user_id=user_id,
+                        chat_id=payload.chat_id,
                     )
                     current_chat_id = payload.chat_id
 
@@ -1621,19 +1547,17 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                                 chat_id=payload.chat_id,
                                 is_new=False,
                             ),
-                            session_id=session_id,
                             user_id=user_id,
                             chat_id=payload.chat_id,
                         ).to_text()
                     )
-                    logger.info(f"[{session_id}:{current_chat_id}] Switched to chat")
+                    logger.info(f"[{user_id}:{current_chat_id}] Switched to chat")
                 except Exception as e:
-                    logger.error(f"[{session_id}] Error switching chat: {e}")
+                    logger.error(f"[{user_id}] Error switching chat: {e}")
                     await websocket.send_text(
                         WSMessage(
                             type=MessageType.error,
                             data=ErrorPayload(message=f"Error switching chat: {e}"),
-                            session_id=session_id,
                             user_id=user_id,
                             chat_id=current_chat_id,
                         ).to_text()
@@ -1645,20 +1569,20 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                 assert isinstance(payload, ChatMessagePayload)
                 file_info = f" with file: {payload.file_id}" if payload.file_id else ""
                 logger.info(
-                    f"[{session_id}:{current_chat_id}] Received message: {payload.text[:50]}...{file_info}"
+                    f"[{user_id}:{current_chat_id}] Received message: {payload.text[:50]}...{file_info}"
                 )
 
                 # If there's a current task, cancel it (new message cancels old)
                 if current_bot_task and not current_bot_task.done():
                     logger.info(
-                        f"[{session_id}:{current_chat_id}] Cancelling previous message"
+                        f"[{user_id}:{current_chat_id}] Cancelling previous message"
                     )
                     current_bot_task.cancel()
                     try:
                         await current_bot_task
                     except asyncio.CancelledError:
                         logger.info(
-                            f"[{session_id}:{current_chat_id}] Previous task cancelled"
+                            f"[{user_id}:{current_chat_id}] Previous task cancelled"
                         )
 
                 # Start processing in background (don't await)
@@ -1667,27 +1591,27 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                 )
 
     except WebSocketDisconnect:
-        logger.info(f"[{session_id}] Client disconnected.")
+        logger.info(f"[{user_id}] Client disconnected.")
     except Exception as e:
         import traceback
 
         error_details = traceback.format_exc()
-        logger.error(f"[{session_id}] Error in WebSocket: {e}")
-        logger.error(f"[{session_id}] Traceback: {error_details}")
+        logger.error(f"[{user_id}] Error in WebSocket: {e}")
+        logger.error(f"[{user_id}] Traceback: {error_details}")
     finally:
         # Cancel any ongoing bot processing
         if current_bot_task and not current_bot_task.done():
-            logger.info(f"[{session_id}] Cancelling ongoing bot task")
+            logger.info(f"[{user_id}] Cancelling ongoing bot task")
             current_bot_task.cancel()
             try:
                 await current_bot_task
             except asyncio.CancelledError:
                 pass
 
-        # Disconnect but preserve bot session for reconnection
-        if session_id and _connection_manager:
-            _connection_manager.disconnect(session_id)
-        logger.info(f"[{session_id}] Connection closed (bot session preserved).")
+        # Disconnect but preserve bot instances for reconnection
+        if user_id and _connection_manager:
+            _connection_manager.disconnect(user_id)
+        logger.info(f"[{user_id}] Connection closed (bot instances preserved).")
 
 
 # --- Static Files (Web UI) ---

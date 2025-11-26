@@ -181,17 +181,16 @@ export const unarchiveChat = async (userId, chatId) => {
 /**
  * Upload a file
  * @param {File} file - File to upload
- * @param {string} sessionId - Session identifier
  * @param {string} chatId - Chat identifier
  * @param {string} userId - User identifier
  * @returns {Promise<Object>} Upload result with file_id
  */
-export const uploadFile = async (file, sessionId, chatId, userId) => {
+export const uploadFile = async (file, chatId, userId) => {
   try {
     const formData = new FormData();
     formData.append('file', file);
     
-    const uploadUrl = `/upload_file?session_id=${sessionId}&chat_id=${chatId}&user_id=${userId}`;
+    const uploadUrl = `/upload_file?chat_id=${chatId}&user_id=${userId}`;
     console.log('Upload URL:', uploadUrl);
     
     const response = await fetch(uploadUrl, {
@@ -214,13 +213,12 @@ export const uploadFile = async (file, sessionId, chatId, userId) => {
 
 /**
  * Record tool usage (analytics/tracking)
- * @param {string} sessionId - Session identifier
  * @param {string} toolName - Tool name
  * @param {Object} toolArgs - Tool arguments
  * @param {any} result - Tool result
  * @returns {Promise<void>}
  */
-export const recordToolUsage = async (sessionId, toolName, toolArgs, result) => {
+export const recordToolUsage = async (toolName, toolArgs, result) => {
   try {
     await fetch('/record_tool_usage', {
       method: 'POST',
@@ -229,7 +227,6 @@ export const recordToolUsage = async (sessionId, toolName, toolArgs, result) => 
         ...getAuthHeaders(),
       },
       body: JSON.stringify({
-        session_id: sessionId,
         tool_name: toolName,
         tool_args: toolArgs,
         result: result,

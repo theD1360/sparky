@@ -16,7 +16,6 @@ class ChatInfo(BaseModel):
 
     chat_id: str
     chat_name: str
-    session_id: str
     created_at: str | None
     updated_at: str | None
     archived: bool = False
@@ -95,7 +94,6 @@ async def get_user_chats(
             ChatInfo(
                 chat_id=chat["chat_id"],
                 chat_name=chat["chat_name"],
-                session_id=chat["session_id"],
                 created_at=chat["created_at"],
                 updated_at=chat["updated_at"],
                 archived=chat.get("archived", False),

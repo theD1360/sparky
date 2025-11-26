@@ -363,9 +363,9 @@ class AgentOrchestrator:
             return False
 
         try:
-            # Get all messages from the graph (with session fallback)
+            # Get all messages from the graph
             nodes = self.knowledge.repository.get_chat_messages(
-                chat_id=self._chat_id, limit=None, use_session_fallback=True
+                chat_id=self._chat_id, limit=None
             )
 
             if not nodes:
@@ -753,7 +753,6 @@ class AgentOrchestrator:
     async def start_chat(
         self,
         history: Optional[list] = None,
-        session_id: Optional[str] = None,
         user_id: Optional[str] = None,
         chat_id: Optional[str] = None,
         chat_name: Optional[str] = None,
@@ -765,20 +764,16 @@ class AgentOrchestrator:
 
         Args:
             history: Optional initial chat history
-            session_id: Session identifier for this chat. If None, generates a new one.
             user_id: User identifier for this chat. If None, uses 'default'.
             chat_id: Optional chat identifier. If provided, creates a Chat node.
             chat_name: Optional chat name. Used when creating a Chat node.
             preloaded_identity: Optional pre-loaded identity memory (to avoid reloading)
             preloaded_identity_summary: Optional pre-loaded identity summary (to avoid re-summarizing)
         """
-        # Generate or set session_id
-        if session_id is None:
-            session_id = str(uuid4())
-        self._session_id = session_id
-
         # Store chat_id for linking messages to the chat node
         self._chat_id = chat_id
+        # Use chat_id as session identifier for Knowledge (backward compatibility with Knowledge class)
+        self._session_id = chat_id if chat_id else f"{user_id}:{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
 
         # Use provided user_id or default
         if not user_id:
@@ -789,13 +784,14 @@ class AgentOrchestrator:
 
         user_node_id = f"user:{user_id}"
 
-        # Initialize or update Knowledge module with the session_id
+        # Initialize or update Knowledge module with the chat_id
         if self.knowledge is None and self.toolchain is not None:
-            # Create new Knowledge module with session_id
+            # Create new Knowledge module with chat_id as session identifier
             from .knowledge import Knowledge
 
+            # Use chat_id as the session identifier for Knowledge (each chat has its own memory context)
             self.knowledge = Knowledge(
-                session_id=session_id,
+                session_id=self._session_id,
                 model=None,
                 identity_search_terms=self.identity_search_terms,
             )
@@ -803,11 +799,11 @@ class AgentOrchestrator:
             self.knowledge.subscribe_to_bot_events(self.events)
 
         elif self.knowledge is not None:
-            # Update existing Knowledge module with new session_id
+            # Update existing Knowledge module with new chat_id
             # This requires recreating certain session-specific components
-            self.knowledge.session_id = session_id
-            self.knowledge._mem_transcript_key = f"chat:session:{session_id}:transcript"
-            self.knowledge._mem_summary_key = f"chat:session:{session_id}:summary"
+            self.knowledge.session_id = self._session_id
+            self.knowledge._mem_transcript_key = f"chat:session:{self._session_id}:transcript"
+            self.knowledge._mem_summary_key = f"chat:session:{self._session_id}:summary"
             self.knowledge._user_id = user_node_id
             # Reset turn index for new session
             self.knowledge._turn_index = 0
@@ -857,16 +853,6 @@ class AgentOrchestrator:
         # Create nodes and edges in the knowledge graph
         if self.knowledge and self.knowledge.repository:
             try:
-                # Create session node
-                self.knowledge.repository.add_node(
-                    node_id=session_id,
-                    node_type="Session",
-                    label=f"Session {session_id[:8]}",
-                    content=f"Chat session started at {datetime.datetime.utcnow().isoformat()}",
-                    properties={"session_id": session_id, "user_id": user_id},
-                )
-                logger.info(f"Created Session node: {session_id}")
-
                 # Create user node using UserService
                 if self.user_service:
                     self.user_service.create_user(user_id)
@@ -881,20 +867,6 @@ class AgentOrchestrator:
                     )
                     logger.info(f"Created User node: {user_node_id}")
 
-                # Create BELONGS_TO edge between session and user
-                if self.user_service:
-                    self.user_service.link_user_to_session(user_id, session_id)
-                else:
-                    # Fallback to direct edge creation
-                    self.knowledge.repository.add_edge(
-                        source_id=session_id,
-                        target_id=user_node_id,
-                        edge_type="BELONGS_TO",
-                    )
-                    logger.info(
-                        f"Created BELONGS_TO edge: {session_id} -> {user_node_id}"
-                    )
-
                 # Create Chat node if chat_id is provided
                 if chat_id:
                     chat_node_id = f"chat:{chat_id}"
@@ -908,46 +880,31 @@ class AgentOrchestrator:
                         try:
                             edges = self.knowledge.repository.get_edges(
                                 source_id=chat_node_id,
-                                target_id=session_id,
-                                edge_type="BELONGS_TO_SESSION",
+                                target_id=user_node_id,
+                                edge_type="BELONGS_TO",
                             )
                             if not edges:
                                 # Edge missing, recreate it
                                 self.knowledge.repository.add_edge(
                                     source_id=chat_node_id,
-                                    target_id=session_id,
-                                    edge_type="BELONGS_TO_SESSION",
+                                    target_id=user_node_id,
+                                    edge_type="BELONGS_TO",
                                 )
-                                logger.info("Recreated missing BELONGS_TO_SESSION edge")
+                                logger.info("Recreated missing BELONGS_TO edge")
                         except Exception as e:
                             logger.warning(f"Failed to verify chat edge: {e}")
                     else:
-                        # Only create if it doesn't exist
+                        # Only create if it doesn't exist - use repository.create_chat
                         display_name = chat_name or f"Chat {chat_id[:8]}"
-
-                        self.knowledge.repository.add_node(
-                            node_id=chat_node_id,
-                            node_type="Chat",
-                            label=display_name,
-                            content=f"Chat created at {datetime.datetime.utcnow().isoformat()}",
-                            properties={
-                                "chat_id": chat_id,
-                                "chat_name": chat_name or display_name,
-                                "session_id": session_id,
-                                "archived": False,
-                            },
+                        chat_node = self.knowledge.repository.create_chat(
+                            chat_id=chat_id,
+                            chat_name=display_name,
+                            user_id=user_id,
                         )
-                        logger.info(f"Created NEW Chat node: {chat_node_id}")
-
-                        # Create BELONGS_TO_SESSION edge between chat and session
-                        self.knowledge.repository.add_edge(
-                            source_id=chat_node_id,
-                            target_id=session_id,
-                            edge_type="BELONGS_TO_SESSION",
-                        )
-                        logger.info(
-                            f"Created BELONGS_TO_SESSION edge: {chat_node_id} -> {session_id}"
-                        )
+                        if chat_node:
+                            logger.info(f"Created NEW Chat node: {chat_node_id}")
+                        else:
+                            logger.warning(f"Failed to create chat node: {chat_node_id}")
 
             except Exception as e:
                 logger.error(
@@ -995,11 +952,11 @@ class AgentOrchestrator:
         # Load session context (always fresh per chat)
         if self.identity_service:
             session_context = await self.identity_service.get_session_context(
-                session_id
+                self._session_id
             )
         elif self.knowledge:
             session_context = await self.identity_service.get_session_context(
-                session_id
+                self._session_id
             )
         else:
             session_context = None

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import and_, func, or_, text
+from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import flag_modified
 
 from .database import DatabaseManager
@@ -3463,7 +3464,7 @@ class KnowledgeRepository:
         offset: int = 0,
         include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Get all chats for a user by traversing through sessions.
+        """Get all chats for a user, directly linked or via sessions (for backward compatibility).
 
         Args:
             user_id: User ID to get chats for
@@ -3482,36 +3483,64 @@ class KnowledgeRepository:
             if not user_node:
                 return []
 
-            # Get all sessions belonging to the user
-            # Session -[:BELONGS_TO]-> User
-            session_edges = (
-                session.query(Edge)
-                .filter(Edge.target_id == user_node_id, Edge.edge_type == "BELONGS_TO")
-                .all()
-            )
-
-            session_ids = [edge.source_id for edge in session_edges]
-            if not session_ids:
-                return []
-
-            # Get all chats belonging to these sessions using DISTINCT to prevent duplicates
-            # Chat -[:BELONGS_TO_SESSION]-> Session
-            # Use DISTINCT on Node.id to get unique chats
-            # from sqlalchemy import distinct
-
-            chat_query = (
-                session.query(Node, Edge)
-                .join(Edge, Edge.source_id == Node.id)
-                .filter(
-                    Node.node_type == "Chat",
-                    Edge.edge_type == "BELONGS_TO_SESSION",
-                    Edge.target_id.in_(session_ids),
+            # Get chats directly linked to user: Chat -[:BELONGS_TO]-> User
+            direct_chat_edge = aliased(Edge)
+            direct_chats_query = (
+                session.query(Node, direct_chat_edge)
+                .join(
+                    direct_chat_edge,
+                    and_(
+                        direct_chat_edge.source_id == Node.id,
+                        direct_chat_edge.target_id == user_node_id,
+                        direct_chat_edge.edge_type == "BELONGS_TO"
+                    )
                 )
-                .distinct(Node.id)  # Ensure unique chats
-                .order_by(Node.id, Node.updated_at.desc())
+                .filter(Node.node_type == "Chat")
+                .distinct(Node.id)
             )
 
-            results = chat_query.all()
+            # Also get chats linked via sessions (for backward compatibility during migration)
+            # Chat -[:BELONGS_TO_SESSION]-> Session -[:BELONGS_TO]-> User
+            chat_to_session_edge = aliased(Edge)
+            session_to_user_edge = aliased(Edge)
+            
+            session_chats_query = (
+                session.query(Node, chat_to_session_edge)
+                .join(
+                    chat_to_session_edge,
+                    and_(
+                        chat_to_session_edge.source_id == Node.id,
+                        chat_to_session_edge.edge_type == "BELONGS_TO_SESSION"
+                    )
+                )
+                .join(
+                    session_to_user_edge,
+                    and_(
+                        session_to_user_edge.source_id == chat_to_session_edge.target_id,  # Session ID
+                        session_to_user_edge.target_id == user_node_id,  # User ID
+                        session_to_user_edge.edge_type == "BELONGS_TO"
+                    )
+                )
+                .filter(Node.node_type == "Chat")
+                .distinct(Node.id)
+            )
+
+            # Combine both queries
+            direct_results = direct_chats_query.all()
+            session_results = session_chats_query.all()
+            
+            # Combine and deduplicate by chat ID
+            all_results = {}
+            for chat_node, edge in direct_results + session_results:
+                chat_id = (
+                    chat_node.properties.get("chat_id")
+                    if chat_node.properties
+                    else chat_node.id.replace("chat:", "")
+                )
+                if chat_id not in all_results:
+                    all_results[chat_id] = (chat_node, edge)
+
+            results = list(all_results.values())
 
             # Build chat list with metadata, filtering archived if needed
             chats = []
@@ -3547,7 +3576,6 @@ class KnowledgeRepository:
                         if chat_node.properties
                         else chat_node.label
                     ),
-                    "session_id": edge.target_id,
                     "created_at": (
                         chat_node.created_at.isoformat()
                         if chat_node.created_at
@@ -3580,22 +3608,23 @@ class KnowledgeRepository:
             return chats
 
     def create_chat(
-        self, chat_id: str, chat_name: str, session_id: str
+        self, chat_id: str, chat_name: str, user_id: str
     ) -> Optional[Node]:
-        """Create a chat node and link it to a session.
+        """Create a chat node and link it directly to a user.
 
         Args:
             chat_id: Unique chat identifier
             chat_name: Display name for the chat
-            session_id: Session ID to link the chat to
+            user_id: User ID to link the chat to
 
         Returns:
-            Created Chat node or None if session doesn't exist
+            Created Chat node or None if user doesn't exist
         """
-        # Verify session exists
-        session_node = self.get_node(session_id)
-        if not session_node:
-            logger.warning(f"Cannot create chat: session {session_id} not found")
+        # Verify user exists
+        user_node_id = f"user:{user_id}"
+        user_node = self.get_node(user_node_id)
+        if not user_node:
+            logger.warning(f"Cannot create chat: user {user_id} not found")
             return None
 
         chat_node_id = f"chat:{chat_id}"
@@ -3609,18 +3638,18 @@ class KnowledgeRepository:
             properties={
                 "chat_id": chat_id,
                 "chat_name": chat_name,
-                "session_id": session_id,
+                "user_id": user_id,
             },
         )
 
-        # Link chat to session
+        # Link chat directly to user
         self.add_edge(
             source_id=chat_node_id,
-            target_id=session_id,
-            edge_type="BELONGS_TO_SESSION",
+            target_id=user_node_id,
+            edge_type="BELONGS_TO",
         )
 
-        logger.info(f"Created chat {chat_node_id} for session {session_id}")
+        logger.info(f"Created chat {chat_node_id} for user {user_id}")
         return chat_node
 
     def get_chat(self, chat_id: str) -> Optional[Node]:
@@ -3688,20 +3717,13 @@ class KnowledgeRepository:
         chat_id: str,
         limit: Optional[int] = None,
         offset: int = 0,
-        use_session_fallback: bool = True,
     ) -> List[Node]:
-        """Get messages for a chat with optional fallback to session messages.
-
-        This method implements a fallback strategy to handle orphaned messages:
-        1. First, try to get messages directly linked to the chat node
-        2. If no messages found and use_session_fallback=True, get messages from the session
-        3. Merge and deduplicate results, maintaining chronological order
+        """Get messages for a chat.
 
         Args:
             chat_id: Chat identifier
             limit: Maximum number of messages to return
             offset: Number of messages to skip
-            use_session_fallback: If True, fallback to session-linked messages when needed
 
         Returns:
             List of ChatMessage nodes ordered by creation time
@@ -3732,94 +3754,12 @@ class KnowledgeRepository:
                 f"Found {len(chat_messages)} messages directly linked to chat {chat_id}"
             )
 
-            # If we have messages or fallback is disabled, use what we found
-            if chat_messages or not use_session_fallback:
-                # Apply ordering, offset, and limit
-                # Sort by message number extracted from node ID (chat:session_id:message_num)
-                # This ensures correct order even if timestamps are out of order
-                def get_message_num(node):
-                    try:
-                        # Extract message number from node ID: chat:session_id:message_num
-                        parts = node.id.split(":")
-                        return int(parts[-1]) if parts else 0
-                    except (ValueError, IndexError):
-                        # Fallback to timestamp if ID format is unexpected
-                        return (
-                            node.created_at or datetime.min.replace(tzinfo=timezone.utc)
-                        ).timestamp()
-
-                chat_messages.sort(key=get_message_num)
-
-                if offset:
-                    chat_messages = chat_messages[offset:]
-                if limit:
-                    chat_messages = chat_messages[:limit]
-
-                # Expunge to detach from session
-                for msg in chat_messages:
-                    session.expunge(msg)
-
-                return chat_messages
-
-            # Fallback: Get session ID from chat properties and retrieve session messages
-            session_id = (
-                chat_node.properties.get("session_id") if chat_node.properties else None
-            )
-            if not session_id:
-                # Try to find session through edges: Chat -[:BELONGS_TO_SESSION]-> Session
-                session_edge = (
-                    session.query(Edge)
-                    .filter(
-                        Edge.source_id == chat_node_id,
-                        Edge.edge_type == "BELONGS_TO_SESSION",
-                    )
-                    .first()
-                )
-                if session_edge:
-                    session_id = session_edge.target_id
-                    logger.info(
-                        f"Found session {session_id} for chat {chat_id} via edge traversal"
-                    )
-
-            if not session_id:
-                logger.warning(
-                    f"No session found for chat {chat_id}, cannot use fallback"
-                )
-                return []
-
-            logger.info(
-                f"No messages found directly on chat {chat_id}, falling back to session {session_id}"
-            )
-
-            # Get all messages from the session
-            session_messages_query = (
-                session.query(Node)
-                .join(Edge, Edge.target_id == Node.id)
-                .filter(
-                    Edge.source_id == session_id,
-                    Edge.edge_type == "CONTAINS",
-                    Node.node_type == "ChatMessage",
-                )
-            )
-
-            session_messages = session_messages_query.all()
-            logger.info(
-                f"Found {len(session_messages)} messages in session {session_id}"
-            )
-
-            # Deduplicate by node ID (shouldn't be necessary but ensures safety)
-            seen_ids = set()
-            unique_messages = []
-            for msg in session_messages:
-                if msg.id not in seen_ids:
-                    seen_ids.add(msg.id)
-                    unique_messages.append(msg)
-
-            # Sort by message number extracted from node ID (chat:session_id:message_num)
+            # Apply ordering, offset, and limit
+            # Sort by message number extracted from node ID (chat:chat_id:message_num)
             # This ensures correct order even if timestamps are out of order
             def get_message_num(node):
                 try:
-                    # Extract message number from node ID: chat:session_id:message_num
+                    # Extract message number from node ID: chat:chat_id:message_num
                     parts = node.id.split(":")
                     return int(parts[-1]) if parts else 0
                 except (ValueError, IndexError):
@@ -3828,19 +3768,18 @@ class KnowledgeRepository:
                         node.created_at or datetime.min.replace(tzinfo=timezone.utc)
                     ).timestamp()
 
-            unique_messages.sort(key=get_message_num)
+            chat_messages.sort(key=get_message_num)
 
-            # Apply offset and limit
             if offset:
-                unique_messages = unique_messages[offset:]
+                chat_messages = chat_messages[offset:]
             if limit:
-                unique_messages = unique_messages[:limit]
+                chat_messages = chat_messages[:limit]
 
             # Expunge to detach from session
-            for msg in unique_messages:
+            for msg in chat_messages:
                 session.expunge(msg)
 
-            return unique_messages
+            return chat_messages
 
     def update_chat_name(self, chat_id: str, new_name: str) -> Optional[Node]:
         """Update the name of a chat.

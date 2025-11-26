@@ -100,30 +100,12 @@ from utils.file_ops import (
     search_replace_edit,
 )
 
-# SQLAlchemyError removed as it's no longer used in fastMCP version
-
-
 logger = getLogger(__name__)
-
-# ============================================================================
-# SECTION 0: DATABASE & GRAPH CONFIGURATION
-# ============================================================================
-
-# Database configuration will be loaded in _load_graph() to ensure environment variables are available
-
 mcp = FastMCP("code-tools")
-
-# Global state
 _db_manager: Optional[DatabaseManager] = None
 _kb_repository: Optional[KnowledgeRepository] = None
 _graph_initialized: bool = False
-
-# File protection whitelist - tracks files that have been read and are safe to edit
 _file_read_whitelist: dict[str, dict[str, str]] = {}
-
-# ============================================================================
-# GRAPH INTEGRATION - PHASE 1: FILE INDEXING
-# ============================================================================
 
 
 async def _index_file_to_graph(path: str, content: str) -> None:
@@ -140,15 +122,11 @@ async def _index_file_to_graph(path: str, content: str) -> None:
     """
     if not _kb_repository:
         return
-
     try:
         import hashlib
         from pathlib import Path as PathLib
 
-        # Generate file hash
         file_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
-
-        # Detect language from extension
         file_ext = PathLib(path).suffix.lstrip(".")
         language_map = {
             "py": "python",
@@ -165,8 +143,6 @@ async def _index_file_to_graph(path: str, content: str) -> None:
             "hpp": "cpp",
         }
         language = language_map.get(file_ext, "unknown")
-
-        # Create file node
         file_node_id = f"file:{path}"
         _kb_repository.add_node(
             node_id=file_node_id,
@@ -182,15 +158,13 @@ async def _index_file_to_graph(path: str, content: str) -> None:
                 "lines": content.count("\n") + 1,
             },
         )
-
-        # Parse Python files for additional structure
         if language == "python":
             await _index_python_file_structure(path, content, file_node_id)
-
         logger.info(f"Indexed file to graph: {path}")
-
     except Exception as e:
-        logger.warning(f"Failed to index file {path} to graph: {e}")
+        logger.warning(
+            f"Failed to index file {path} to graph. Error: {e}. File size: {len(content)} bytes."
+        )
 
 
 async def _index_python_file_structure(
@@ -210,11 +184,8 @@ async def _index_python_file_structure(
     """
     if not _kb_repository:
         return
-
     try:
         tree = ast.parse(content)
-
-        # Extract imports
         imports = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -223,10 +194,7 @@ async def _index_python_file_structure(
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     imports.append(node.module)
-
-        # Create import relationships
         for imported_module in set(imports):
-            # Create a module node (or reference existing one)
             module_node_id = f"module:{imported_module}"
             _kb_repository.add_node(
                 node_id=module_node_id,
@@ -235,27 +203,17 @@ async def _index_python_file_structure(
                 content=f"Python module: {imported_module}",
                 properties={"name": imported_module},
             )
-
-            # Create IMPORTS edge
             _kb_repository.add_edge(
                 source_id=file_node_id, target_id=module_node_id, edge_type="IMPORTS"
             )
-
-        # Extract functions
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef):
-                # Only top-level functions (not methods)
                 if hasattr(node, "parent") and isinstance(node.parent, ast.ClassDef):
                     continue
-
                 func_name = node.name
                 func_line = node.lineno
-
-                # Get function signature
                 args = [arg.arg for arg in node.args.args]
                 signature = f"{func_name}({', '.join(args)})"
-
-                # Create function node
                 func_node_id = f"symbol:{path}:{func_name}:{func_line}"
                 _kb_repository.add_node(
                     node_id=func_node_id,
@@ -270,19 +228,13 @@ async def _index_python_file_structure(
                         "signature": signature,
                     },
                 )
-
-                # Link to file
                 _kb_repository.add_edge(
                     source_id=file_node_id, target_id=func_node_id, edge_type="CONTAINS"
                 )
-
-        # Extract classes
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
                 class_name = node.name
                 class_line = node.lineno
-
-                # Create class node
                 class_node_id = f"symbol:{path}:{class_name}:{class_line}"
                 _kb_repository.add_node(
                     node_id=class_node_id,
@@ -296,16 +248,15 @@ async def _index_python_file_structure(
                         "line": class_line,
                     },
                 )
-
-                # Link to file
                 _kb_repository.add_edge(
                     source_id=file_node_id,
                     target_id=class_node_id,
                     edge_type="CONTAINS",
                 )
-
     except Exception as e:
-        logger.warning(f"Failed to parse Python structure for {path}: {e}")
+        logger.warning(
+            f"Failed to parse Python structure for {path}. Error: {e}. File size: {len(content)} bytes."
+        )
 
 
 async def _get_file_context(path: str) -> dict:
@@ -325,15 +276,11 @@ async def _get_file_context(path: str) -> dict:
     """
     if not _kb_repository:
         return {}
-
     try:
         file_node_id = f"file:{path}"
-
-        # Check if file exists in graph
         file_node = _kb_repository.get_node(file_node_id)
         if not file_node:
             return {}
-
         context = {
             "file_info": {
                 "path": path,
@@ -345,16 +292,12 @@ async def _get_file_context(path: str) -> dict:
             "symbols": [],
             "related_files": [],
         }
-
-        # Get imports (outgoing IMPORTS edges)
         import_edges = _kb_repository.get_edges(
             source_id=file_node_id, edge_type="IMPORTS"
         )
         context["imports"] = [
             edge.target_id.replace("module:", "") for edge in import_edges
         ]
-
-        # Get symbols (outgoing CONTAINS edges)
         symbol_edges = _kb_repository.get_edges(
             source_id=file_node_id, edge_type="CONTAINS"
         )
@@ -369,11 +312,8 @@ async def _get_file_context(path: str) -> dict:
                         "signature": symbol_node.properties.get("signature", ""),
                     }
                 )
-
-        # Find related files (files that import the same modules)
-        # This is a simple heuristic - can be enhanced
         if context["imports"]:
-            for module in context["imports"][:5]:  # Limit to avoid too many queries
+            for module in context["imports"][:5]:
                 module_node_id = f"module:{module}"
                 files_importing_module = _kb_repository.get_edges(
                     target_id=module_node_id, edge_type="IMPORTS"
@@ -385,17 +325,12 @@ async def _get_file_context(path: str) -> dict:
                         related_path = edge.source_id.replace("file:", "")
                         if related_path not in context["related_files"]:
                             context["related_files"].append(related_path)
-
         return context
-
     except Exception as e:
         logger.warning(f"Failed to get file context for {path}: {e}")
         return {}
 
 
-# -----------------------------
-# Sandbox helpers
-# -----------------------------
 _SAFE_BUILTINS = {
     "len": len,
     "range": range,
@@ -418,52 +353,50 @@ class SandboxError(Exception):
 
 def _load_graph():
     """Load or initialize database using KnowledgeRepository."""
-    global _kb_repository, _db_manager, _graph_initialized  # pylint: disable=global-statement
-
-    # Skip if already initialized
+    global _kb_repository, _db_manager, _graph_initialized
     if _graph_initialized:
         return
-
-    # Get database URL from environment (required for PostgreSQL)
     db_url = os.getenv("SPARKY_DB_URL")
     if not db_url:
-        # Also try SPARKY_DB_URL for backward compatibility
         db_url = os.getenv("SPARKY_DB_URL")
-
     if not db_url:
         raise RuntimeError(
             "SPARKY_DB_URL or SPARKY_DB_URL environment variable is required for database connection"
         )
-
-    # Mask password in log for security
-    safe_db_url = db_url.split("@")[-1] if "@" in db_url else db_url[:50]
-    logger.info(f"Connecting to PostgreSQL database: ...@{safe_db_url}")
-
-    _db_manager = get_database_manager(db_url=db_url)
-    _db_manager.connect()  # Connect to database first
-
-    # Create or connect to database using repository
-    _kb_repository = KnowledgeRepository(_db_manager)
-
-    # Get graph statistics
-    stats = _kb_repository.get_graph_stats()
-    node_count = stats["total_nodes"]
-    edge_count = stats["total_edges"]
-
-    if node_count == 0:
-        logger.warning(
-            "Empty database detected. Run 'sparky db migrate' to initialize schema and seed bot identity data."
-        )
-    else:
-        logger.debug(
-            "Connected to database: %d nodes, %d edges",
-            node_count,
-            edge_count,
-        )
-
-    # Initialize query engine with repository
-    logger.debug("Query engine initialized successfully")
-    _graph_initialized = True
+    max_retries = 5
+    retry_delay = 2
+    for attempt in range(max_retries):
+        try:
+            safe_db_url = db_url.split("@")[-1] if "@" in db_url else db_url[:50]
+            logger.info(
+                f"Connecting to PostgreSQL database (attempt {attempt + 1}/{max_retries}): ...@{safe_db_url}"
+            )
+            _db_manager = get_database_manager(db_url=db_url)
+            _db_manager.connect()
+            _kb_repository = KnowledgeRepository(_db_manager)
+            stats = _kb_repository.get_graph_stats()
+            node_count = stats["total_nodes"]
+            edge_count = stats["total_edges"]
+            if node_count == 0:
+                logger.warning(
+                    "Empty database detected. Run 'sparky db migrate' to initialize schema and seed bot identity data."
+                )
+            else:
+                logger.debug(
+                    "Connected to database: %d nodes, %d edges", node_count, edge_count
+                )
+            logger.debug("Query engine initialized successfully")
+            _graph_initialized = True
+            return
+        except Exception as e:
+            logger.warning(
+                f"Database connection failed (attempt {attempt + 1}/{max_retries}): {e}"
+            )
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay**attempt)
+            else:
+                logger.error("Max retries reached, failing to connect to database.")
+                raise
 
 
 def _ensure_graph_initialized():
@@ -474,11 +407,6 @@ def _ensure_graph_initialized():
     """
     if not _graph_initialized:
         _load_graph()
-
-
-# -----------------------------
-# File Operations
-# -----------------------------
 
 
 def _mark_file_as_read(path: str, content: str) -> None:
@@ -499,36 +427,27 @@ def _check_can_edit(path: str, content_to_write: str = "") -> tuple[bool, str]:
     Returns:
         Tuple of (can_edit, error_message)
     """
-    # New files can always be written
     if not os.path.exists(path):
-        return True, ""
-
-    # If file is in whitelist, verify it hasn't changed
+        return (True, "")
     if path in _file_read_whitelist:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 current_content = f.read()
             current_hash = hashlib.sha256(current_content.encode()).hexdigest()
-
             if current_hash != _file_read_whitelist[path]["hash"]:
-                # File changed - update whitelist with current state
                 logger.info(f"File {path} changed since last read, updating whitelist")
                 _mark_file_as_read(path, current_content)
         except Exception as e:
             logger.warning(f"Error checking file hash: {e}")
-
-        return True, ""
-
-    # File not in whitelist - automatically mark it as read for convenience
-    # This makes the system less strict but still provides protection via syntax checking
+        return (True, "")
     try:
         with open(path, "r", encoding="utf-8") as f:
             current_content = f.read()
         _mark_file_as_read(path, current_content)
         logger.info(f"Auto-marked file {path} as read for editing")
-        return True, ""
+        return (True, "")
     except Exception as e:
-        return False, f"Error reading file: {str(e)}"
+        return (False, f"Error reading file: {str(e)}")
 
 
 def _check_syntax(ext: str, content: str) -> tuple[str, list]:
@@ -540,25 +459,19 @@ def _check_syntax(ext: str, content: str) -> tuple[str, list]:
     Returns:
         Tuple of (error_description, error_list)
     """
-    # Only check Python files for now
     if ext == "py":
         try:
             ast.parse(content)
-            return "", []
+            return ("", [])
         except SyntaxError as e:
             logger.info(f"CHECKING SYNTAX AND FAILED with {e}")
             offset = e.offset or 0
             error_msg = f"Line {e.lineno}: {e.msg}\n{content[max(0, offset - 50):min(len(content), offset + 50)]}"
-            return error_msg, [{"line": e.lineno, "message": e.msg}]
+            return (error_msg, [{"line": e.lineno, "message": e.msg}])
         except Exception as e:
             logger.warning("Syntax check failed: %s", e)
-            return "", []
-
-    # Skip syntax checking for other file types for now
-    return "", []
-
-
-# Tool definitions using FastMCP decorators
+            return ("", [])
+    return ("", [])
 
 
 def _get_file_tree(path: str, max_depth: int = 3, include_files: bool = True) -> str:
@@ -578,11 +491,6 @@ def _get_file_tree(path: str, max_depth: int = 3, include_files: bool = True) ->
     return tree
 
 
-# -----------------------------
-# Code Execution Functions
-# -----------------------------
-
-
 def _validate_ast(tree: ast.AST) -> None:
     """
     Validate the AST to ensure it is safe to execute.
@@ -596,16 +504,13 @@ def _validate_ast(tree: ast.AST) -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             raise SandboxError("Imports are not allowed")
         if isinstance(node, ast.Call):
-            # Disallow calling names that start/end with '__'
             if isinstance(node.func, ast.Name):
                 if node.func.id.startswith("__") or node.func.id.endswith("__"):
                     raise SandboxError("Calling dunder is not allowed")
             if isinstance(node.func, ast.Attribute):
-                # Disallow calling __dunder__ attributes
                 if node.func.attr.startswith("__") and node.func.attr.endswith("__"):
                     raise SandboxError("Calling dunder attribute is not allowed")
         if isinstance(node, ast.Attribute):
-            # Disallow access to __dict__, __class__, etc.
             if node.attr.startswith("__") and node.attr.endswith("__"):
                 raise SandboxError("Access to dunder attributes is not allowed")
         if isinstance(node, ast.Name):
@@ -631,17 +536,14 @@ def _run_python_code(code: str) -> dict:
         raise
     except Exception as e:
         raise SandboxError(f"Invalid code: {e}")
-
     sandbox_globals: dict[str, Any] = {"__builtins__": _SAFE_BUILTINS}
     sandbox_locals: dict[str, Any] = {}
-
     f = io.StringIO()
     result: Any = None
     try:
         with redirect_stdout(f):
             compiled = compile(tree, filename="<sandbox>", mode="exec")
             exec(compiled, sandbox_globals, sandbox_locals)
-            # If last statement is an expression, evaluate it to get a result
             try:
                 last = tree.body[-1]
                 if isinstance(last, ast.Expr):
@@ -655,7 +557,6 @@ def _run_python_code(code: str) -> dict:
         raise
     except Exception as e:
         raise SandboxError(str(e))
-
     stdout = f.getvalue()
     return {"result": result, "stdout": stdout}
 
@@ -668,25 +569,17 @@ def _run_python_code_unsandboxed(code: str) -> dict:
     """
     if len(code) > 50000:
         raise ValueError("Code too long (limit 50000 characters)")
-
-    # Create a clean namespace
     exec_globals = {"__builtins__": __builtins__}
     exec_locals = {}
-
     f = io.StringIO()
     result: Any = None
-
     try:
         with redirect_stdout(f):
-            # Execute the code
             exec(code, exec_globals, exec_locals)
-
-            # Try to get the result of the last expression
             try:
                 tree = ast.parse(code, mode="exec")
                 last = tree.body[-1]
                 if isinstance(last, ast.Expr):
-                    # Evaluate the last expression
                     result = eval(
                         compile(ast.Expression(last.value), "<string>", "eval"),
                         exec_globals,
@@ -696,7 +589,6 @@ def _run_python_code_unsandboxed(code: str) -> dict:
                 pass
     except Exception as e:
         raise RuntimeError(f"Execution error: {e}")
-
     stdout = f.getvalue()
     return {"result": result, "stdout": stdout}
 
@@ -704,9 +596,7 @@ def _run_python_code_unsandboxed(code: str) -> dict:
 async def _run_shell_command(command: list[str]) -> dict:
     """Execute a shell command and return the result."""
     process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     stdout, stderr = await process.communicate()
     return {
@@ -714,11 +604,6 @@ async def _run_shell_command(command: list[str]) -> dict:
         "stdout": stdout.decode(),
         "stderr": stderr.decode(),
     }
-
-
-# -----------------------------
-# Git Tools
-# -----------------------------
 
 
 @mcp.tool()
@@ -925,7 +810,6 @@ def execute(code: str, language: str = "python", use_sandbox: bool = True) -> di
         language = language.lower()
         if language != "python":
             return MCPResponse.error("Only language='python' is supported").to_dict()
-
         try:
             if use_sandbox:
                 out = _run_python_code(code)
@@ -933,21 +817,15 @@ def execute(code: str, language: str = "python", use_sandbox: bool = True) -> di
             else:
                 out = _run_python_code_unsandboxed(code)
                 mode = "unsandboxed"
-
-            # Create a more informative response
             has_output = bool(out.get("stdout"))
             has_result = out.get("result") is not None
-
             code_lines = code.count("\n") + 1
             message_parts = [f"Executed {code_lines} line(s) in {mode} mode"]
-
             if has_result:
                 message_parts.append("with return value")
             if has_output:
                 message_parts.append("with stdout output")
-
             message = " ".join(message_parts)
-
             return MCPResponse.success(result=out, message=message).to_dict()
         except SandboxError as e:
             return MCPResponse.error(f"Sandbox error: {e}").to_dict()
@@ -955,11 +833,6 @@ def execute(code: str, language: str = "python", use_sandbox: bool = True) -> di
             return MCPResponse.error(str(e)).to_dict()
     except Exception as e:
         return MCPResponse.error(f"Error: {e}").to_dict()
-
-
-# -----------------------------
-# File System Tools
-# -----------------------------
 
 
 @mcp.tool()
@@ -981,26 +854,19 @@ async def read_file(path: str, index_to_graph: bool = True) -> dict:
         The complete file contents as a string
     """
     try:
-        # **PATH VALIDATION:** Check if the file exists
         if not os.path.exists(path):
             return MCPResponse.error(f"Error: File not found: {path}").to_dict()
-        # **PATH VALIDATION:** Check if the path is a file
         if not os.path.isfile(path):
             return MCPResponse.error(f"Error: Not a file: {path}").to_dict()
-
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
-        # Mark file as read for protection system
         _mark_file_as_read(path, content)
-
-        # Index to knowledge graph if enabled
         if index_to_graph:
             try:
                 _ensure_graph_initialized()
                 await _index_file_to_graph(path, content)
             except Exception as e:
                 logger.warning(f"Graph indexing skipped for {path}: {e}")
-
         return MCPResponse.success(result=content).to_dict()
     except FileNotFoundError:
         return MCPResponse.error(f"Error: File not found: {path}").to_dict()
@@ -1048,25 +914,16 @@ async def write_file(path: str, content: str) -> dict:
     edit_file instead.
     """
     try:
-        # Check if file can be edited (file protection)
         can_edit, error_msg = _check_can_edit(path)
         if not can_edit:
             return MCPResponse.error(error_msg).to_dict()
-
-        # Ensure parent directory exists
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-
-        # Write the file
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
-
-        # Mark as read for future edits
         _mark_file_as_read(path, content)
-
         message = f"Successfully wrote to {path}"
-
         return MCPResponse.success(result={"path": path}, message=message).to_dict()
     except Exception as e:
         return MCPResponse.error(f"Error writing file: {str(e)}").to_dict()
@@ -1166,21 +1023,14 @@ async def edit_file(path: str, edits: str) -> dict:
     Returns:
         Success/error response with edit results and any warnings
     """
-
     try:
-        # Check if file can be edited (file protection)
         can_edit, error_msg = _check_can_edit(path)
         if not can_edit:
             return MCPResponse.error(error_msg).to_dict()
-
         if not os.path.exists(path):
             return MCPResponse.error(f"Error: file {path} does not exist").to_dict()
-
-        # Read current content
         with open(path, "r", encoding="utf-8") as f:
             original_content = f.read()
-
-        # Parse and apply search-replace blocks
         lines = edits.strip().split("\n")
 
         def log_fn(msg: str) -> None:
@@ -1194,47 +1044,35 @@ async def edit_file(path: str, edits: str) -> dict:
             return MCPResponse.error(str(e)).to_dict()
         except SearchReplaceMatchError as e:
             return MCPResponse.error(str(e)).to_dict()
-
-        # Format the code using AST
         try:
             tree = ast.parse(edited_content)
             edited_content = ast.unparse(tree)
         except Exception as e:
             logger.warning(f"AST formatting failed: {e}")
             return MCPResponse.error(f"AST formatting failed: {e}").to_dict()
-
-        # Write the edited content
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(edited_content)
         except Exception as e:
             return MCPResponse.error(f"Write Error: {str(e)}").to_dict()
-
-        # Check syntax after editing
         extension = Path(path).suffix.lstrip(".")
-        syntax_errors = ''
+        syntax_errors = ""
         error_list = []
-        if extension == 'py':
-           try:
-               syntax_errors, error_list = _check_syntax(extension, edited_content)
-           except Exception as e:
-               logger.info(f"Syntax check failed in edit_file tool: {e}")
+        if extension == "py":
+            try:
+                syntax_errors, error_list = _check_syntax(extension, edited_content)
+            except Exception as e:
+                logger.info(f"Syntax check failed in edit_file tool: {e}")
         warnings = []
-
         warnings = []
-
         if syntax_errors:
             if extension in {"tsx", "ts"}:
                 syntax_errors += "\nNote: Ignore if 'tagged template literals' are used, they may raise false positive errors in tree-sitter."
             warnings.append(f"Warning: Syntax errors detected:\n{syntax_errors}")
-
-        # Mark as read for future edits
         _mark_file_as_read(path, edited_content)
-
         message = comments
         if warnings:
             message += "\n\n" + "\n".join(warnings)
-
         return MCPResponse.success(
             result={"path": path, "warnings": warnings, "comments": comments},
             message=message,
@@ -1260,28 +1098,18 @@ async def append_file(path: str, content: str) -> dict:
         content: Content to append
     """
     try:
-        # Check if file can be edited (file protection)
         can_edit, error_msg = _check_can_edit(path)
         if not can_edit:
             return MCPResponse.error(error_msg).to_dict()
-
-        # Ensure parent directory exists
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-
         with open(path, "a", encoding="utf-8") as f:
             f.write(content)
-
-        # Read full content for marking as read
         with open(path, "r", encoding="utf-8") as f:
             full_content = f.read()
-
-        # Mark as read for future edits
         _mark_file_as_read(path, full_content)
-
         message = f"Successfully appended to {path}"
-
         return MCPResponse.success(result={"path": path}, message=message).to_dict()
     except Exception as e:
         return MCPResponse.error(f"Error appending to file: {str(e)}").to_dict()
@@ -1378,25 +1206,19 @@ def file_search(
         import glob
         import re
 
-        # Get matching files
-        if "**" in pattern or "*" in pattern or "?" in pattern or "{" in pattern:
-            # Glob pattern - search multiple files
+        if "**" in pattern or "*" in pattern or "?" in pattern or ("{" in pattern):
             files = glob.glob(pattern, recursive=True)
-            files = [f for f in files if os.path.isfile(f)]  # Filter out directories
+            files = [f for f in files if os.path.isfile(f)]
         else:
-            # Single file
             if not os.path.exists(pattern):
                 return MCPResponse.error(f"File not found: {pattern}").to_dict()
             if not os.path.isfile(pattern):
                 return MCPResponse.error(f"Not a file: {pattern}").to_dict()
             files = [pattern]
-
         if not files:
             return MCPResponse.error(
                 f"No files found matching pattern: {pattern}"
             ).to_dict()
-
-        # Compile regex if needed
         if use_regex:
             try:
                 flags = 0 if case_sensitive else re.IGNORECASE
@@ -1404,20 +1226,14 @@ def file_search(
             except re.error as e:
                 return MCPResponse.error(f"Invalid regex pattern: {str(e)}").to_dict()
         else:
-            # Prepare query for case-insensitive search
             search_query = query if case_sensitive else query.lower()
-
-        # Search across all files
         results = []
         total_matches = 0
-
         for file_path in files:
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     lines = f.readlines()
-
                 for line_num, line in enumerate(lines, start=1):
-                    # Check for match
                     if use_regex:
                         match = regex_pattern.search(line)
                         if match:
@@ -1441,29 +1257,19 @@ def file_search(
                                 }
                             )
                             total_matches += 1
-
-                    # Stop if we hit the limit
                     if total_matches >= max_results:
                         break
-
                 if total_matches >= max_results:
                     break
-
             except (UnicodeDecodeError, PermissionError):
-                # Skip files that can't be read
                 continue
-
-        # Format message
         files_searched = len(files)
-        files_with_matches = len(set(r["file"] for r in results))
-
+        files_with_matches = len(set((r["file"] for r in results)))
         search_type = "regex" if use_regex else "text"
         message = f"Found {total_matches} {search_type} match(es) in {files_with_matches} file(s)"
         message += f" (searched {files_searched} file(s))"
-
         if total_matches >= max_results:
             message += f"\n⚠️ Results limited to {max_results}. Use max_results parameter for more."
-
         return MCPResponse.success(
             result={
                 "matches": results,
@@ -1477,7 +1283,6 @@ def file_search(
             },
             message=message,
         ).to_dict()
-
     except Exception as e:
         return MCPResponse.error(f"Error during file search: {str(e)}").to_dict()
 
@@ -1611,7 +1416,6 @@ def file_tree(path: str, max_depth: int = 3, include_files: bool = True) -> dict
     path_obj = Path(path).absolute()
     if not path_obj.exists():
         return MCPResponse.error(f"Path not found: {path}").to_dict()
-
     tree = _get_file_tree(str(path_obj), max_depth, include_files)
     return MCPResponse.success(result=tree).to_dict()
 
@@ -1630,182 +1434,46 @@ def current_directory() -> dict:
     return MCPResponse.success(result=path).to_dict()
 
 
-# ============================================================================
-# PROMPTS FOR FILESYSTEM OPERATION GUIDANCE
-# ============================================================================
-
-
 @mcp.prompt()
 def explore_codebase(directory: str = ".") -> str:
     """Template for systematically exploring and understanding a codebase."""
-    return f"""I need to understand the codebase structure at '{directory}'. Follow this approach:
-
-1. Use file_tree(path="{directory}", max_depth=3) to get an overview of the structure
-2. Look for key files:
-   - README, docs/, or documentation
-   - Configuration files (package.json, pyproject.toml, etc.)
-   - Main entry points (main.py, index.js, etc.)
-   - Test directories
-3. Use read_file() to examine important files
-4. Identify:
-   - Project type and purpose
-   - Main modules/components
-   - Dependencies and configuration
-   - Architecture patterns
-
-Start broad with the tree view, then drill down into specific files."""
+    return f"""I need to understand the codebase structure at '{directory}'. Follow this approach:\n\n1. Use file_tree(path="{directory}", max_depth=3) to get an overview of the structure\n2. Look for key files:\n   - README, docs/, or documentation\n   - Configuration files (package.json, pyproject.toml, etc.)\n   - Main entry points (main.py, index.js, etc.)\n   - Test directories\n3. Use read_file() to examine important files\n4. Identify:\n   - Project type and purpose\n   - Main modules/components\n   - Dependencies and configuration\n   - Architecture patterns\n\nStart broad with the tree view, then drill down into specific files."""
 
 
 @mcp.prompt()
 def make_code_changes(file_path: str, change_description: str) -> str:
     """Template for making safe, targeted code changes."""
-    return f"""I need to modify '{file_path}': {change_description}
-
-Follow this safe editing workflow:
-1. Use read_file(path="{file_path}") to see current contents
-2. Locate the exact section to modify
-3. Use edit_file() for precise changes:
-   - Include enough context in search blocks (5+ lines before/after)
-   - Match indentation and formatting exactly
-   - Make ONE focused change per block
-4. The system will:
-   - Verify syntax automatically
-   - Prevent accidental overwrites
-   - Show exactly what changed
-
-IMPORTANT: Always read before editing. Use edit_file for code, write_file for simple files."""
+    return f"""I need to modify '{file_path}': {change_description}\n\nFollow this safe editing workflow:\n1. Use read_file(path="{file_path}") to see current contents\n2. Locate the exact section to modify\n3. Use edit_file() for precise changes:\n   - Include enough context in search blocks (5+ lines before/after)\n   - Match indentation and formatting exactly\n   - Make ONE focused change per block\n4. The system will:\n   - Verify syntax automatically\n   - Prevent accidental overwrites\n   - Show exactly what changed\n\nIMPORTANT: Always read before editing. Use edit_file for code, write_file for simple files."""
 
 
 @mcp.prompt()
 def refactor_code(target: str, refactoring_goal: str) -> str:
     """Template for refactoring code safely across files."""
-    return f"""I need to refactor '{target}': {refactoring_goal}
-
-Safe refactoring process:
-1. Explore scope:
-   - Use file_tree() to identify affected files
-   - Use file_search() to find all occurrences of symbols to change
-2. Plan changes:
-   - List all files that need modification
-   - Identify dependencies between changes
-3. Execute changes:
-   - read_file() each file first
-   - Use edit_file() for each modification
-   - Make changes in dependency order (bottom-up)
-4. Verify:
-   - Syntax checking happens automatically
-   - Consider running tests if available
-
-Work systematically through each file, one at a time."""
+    return f"I need to refactor '{target}': {refactoring_goal}\n\nSafe refactoring process:\n1. Explore scope:\n   - Use file_tree() to identify affected files\n   - Use file_search() to find all occurrences of symbols to change\n2. Plan changes:\n   - List all files that need modification\n   - Identify dependencies between changes\n3. Execute changes:\n   - read_file() each file first\n   - Use edit_file() for each modification\n   - Make changes in dependency order (bottom-up)\n4. Verify:\n   - Syntax checking happens automatically\n   - Consider running tests if available\n\nWork systematically through each file, one at a time."
 
 
 @mcp.prompt()
 def create_new_file(file_path: str, purpose: str) -> str:
     """Template for creating new files with proper structure."""
-    return f"""I need to create '{file_path}': {purpose}
-
-File creation checklist:
-1. Check context:
-   - Use file_tree() to see project structure
-   - Check for similar existing files to match style
-   - Identify the appropriate location
-2. Determine file type and requirements:
-   - Language/framework conventions
-   - Project coding standards
-   - Necessary imports/headers
-3. Create the file:
-   - Use write_file(path="{file_path}", content=...)
-   - Include proper headers, imports, docstrings
-   - Follow project structure patterns
-4. Verify:
-   - Syntax will be checked automatically
-   - Ensure it fits the project organization
-
-New files do not need to be read first - the protection system allows creation."""
+    return f"""I need to create '{file_path}': {purpose}\n\nFile creation checklist:\n1. Check context:\n   - Use file_tree() to see project structure\n   - Check for similar existing files to match style\n   - Identify the appropriate location\n2. Determine file type and requirements:\n   - Language/framework conventions\n   - Project coding standards\n   - Necessary imports/headers\n3. Create the file:\n   - Use write_file(path="{file_path}", content=...)\n   - Include proper headers, imports, docstrings\n   - Follow project structure patterns\n4. Verify:\n   - Syntax will be checked automatically\n   - Ensure it fits the project organization\n\nNew files do not need to be read first - the protection system allows creation."""
 
 
 @mcp.prompt()
 def find_and_fix(issue_description: str, search_path: str = ".") -> str:
     """Template for finding and fixing issues in code."""
-    return f"""I need to find and fix: {issue_description}
-
-Systematic debugging approach:
-1. Locate the problem:
-   - Use file_tree(path="{search_path}") to find relevant files
-   - Use file_search() to search for error messages or related code
-   - Use head() or tail() to check log files if applicable
-2. Understand the context:
-   - read_file() the problematic file(s)
-   - Use get_lines() to examine specific sections
-   - Check related files and dependencies
-3. Implement the fix:
-   - Use edit_file() for precise corrections
-   - Include sufficient context in search blocks
-   - Test syntax is validated automatically
-4. Verify the fix:
-   - Review the changes made
-   - Check for side effects in related code
-
-Work methodically - understand before changing."""
+    return f'I need to find and fix: {issue_description}\n\nSystematic debugging approach:\n1. Locate the problem:\n   - Use file_tree(path="{search_path}") to find relevant files\n   - Use file_search() to search for error messages or related code\n   - Use head() or tail() to check log files if applicable\n2. Understand the context:\n   - read_file() the problematic file(s)\n   - Use get_lines() to examine specific sections\n   - Check related files and dependencies\n3. Implement the fix:\n   - Use edit_file() for precise corrections\n   - Include sufficient context in search blocks\n   - Test syntax is validated automatically\n4. Verify the fix:\n   - Review the changes made\n   - Check for side effects in related code\n\nWork methodically - understand before changing.'
 
 
 @mcp.prompt()
 def organize_project(base_path: str = ".") -> str:
     """Template for organizing or restructuring a project."""
-    return f"""I need to organize the project structure at '{base_path}'.
-
-Project organization workflow:
-1. Assess current state:
-   - Use file_tree(path="{base_path}", max_depth=4) for full overview
-   - Identify misplaced files, duplicates, or poor organization
-   - List what should be grouped together
-2. Plan the reorganization:
-   - Define target directory structure
-   - Identify files to move, rename, or consolidate
-   - Consider impact on imports/references
-3. Execute changes safely:
-   - Use create_directory() for new folders
-   - Use move() to relocate files
-   - Use copy() if you need backups first
-   - Use edit_file() to update imports/paths
-4. Clean up:
-   - Use delete() to remove old empty directories
-   - Verify all references still work
-
-Make one structural change at a time, updating references as you go."""
+    return f"""I need to organize the project structure at '{base_path}'.\n\nProject organization workflow:\n1. Assess current state:\n   - Use file_tree(path="{base_path}", max_depth=4) for full overview\n   - Identify misplaced files, duplicates, or poor organization\n   - List what should be grouped together\n2. Plan the reorganization:\n   - Define target directory structure\n   - Identify files to move, rename, or consolidate\n   - Consider impact on imports/references\n3. Execute changes safely:\n   - Use create_directory() for new folders\n   - Use move() to relocate files\n   - Use copy() if you need backups first\n   - Use edit_file() to update imports/paths\n4. Clean up:\n   - Use delete() to remove old empty directories\n   - Verify all references still work\n\nMake one structural change at a time, updating references as you go."""
 
 
 @mcp.prompt()
 def code_review(file_or_directory: str) -> str:
     """Template for reviewing code quality and identifying issues."""
-    return f"""Perform a code review of '{file_or_directory}'.
-
-Code review process:
-1. Understand scope:
-   - Use file_tree() if directory, or read_file() if single file
-   - Identify all files to review
-2. Review each file for:
-   - Code quality and readability
-   - Potential bugs or edge cases
-   - Security vulnerabilities
-   - Performance issues
-   - Inconsistent patterns
-   - Missing documentation
-3. Use file_search() to check for:
-   - TODO/FIXME comments
-   - Common anti-patterns
-   - Inconsistent naming
-4. Document findings:
-   - List issues by severity
-   - Suggest specific improvements
-   - Use edit_file() to fix simple issues
-
-Provide constructive, actionable feedback."""
-
-
-# ============================================================================
-# RESOURCES FOR QUICK DATA ACCESS
-# ============================================================================
+    return f"Perform a code review of '{file_or_directory}'.\n\nCode review process:\n1. Understand scope:\n   - Use file_tree() if directory, or read_file() if single file\n   - Identify all files to review\n2. Review each file for:\n   - Code quality and readability\n   - Potential bugs or edge cases\n   - Security vulnerabilities\n   - Performance issues\n   - Inconsistent patterns\n   - Missing documentation\n3. Use file_search() to check for:\n   - TODO/FIXME comments\n   - Common anti-patterns\n   - Inconsistent naming\n4. Document findings:\n   - List issues by severity\n   - Suggest specific improvements\n   - Use edit_file() to fix simple issues\n\nProvide constructive, actionable feedback."
 
 
 @mcp.resource("filesystem://cwd")
@@ -1845,7 +1513,6 @@ def resource_file(path: str) -> str:
         return MCPResponse.error(f"Path not found: {path}").to_dict()
     if path_obj.is_dir():
         return MCPResponse.error(f"Path is a directory: {path}").to_dict()
-
     return path_obj.read_text()
 
 
@@ -1863,20 +1530,13 @@ def resource_directory(path: str) -> str:
         return MCPResponse.error(f"Error listing directory: {str(e)}").to_dict()
 
 
-# ============================================================================
-# GRAPH-POWERED TOOLS - PHASE 1
-# ============================================================================
-
-
 @mcp.tool()
 async def lint(path: str) -> dict:
     """Run a linter on a file to find errors and style issues."""
     try:
         command = ["poetry", "run", "ruff", "check", path]
         process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         if process.returncode == 0:
@@ -1924,34 +1584,25 @@ async def get_file_context(path: str) -> dict:
         ```
     """
     try:
-        # Ensure graph is initialized
         try:
             _ensure_graph_initialized()
         except Exception as e:
             return MCPResponse.error(
-                f"Knowledge graph initialization failed: {str(e)}\n"
-                "Ensure SPARKY_DB_URL or SPARKY_DB_URL environment variable is set."
+                f"Knowledge graph initialization failed: {str(e)}\nEnsure SPARKY_DB_URL or SPARKY_DB_URL environment variable is set."
             ).to_dict()
-
         context = await _get_file_context(path)
-
         if not context:
             return MCPResponse.error(
                 f"File {path} not found in knowledge graph. Read the file first to index it."
             ).to_dict()
-
-        # Format a nice summary message
         num_imports = len(context.get("imports", []))
         num_symbols = len(context.get("symbols", []))
         num_related = len(context.get("related_files", []))
-
         message = f"File context for {path}:\n"
         message += f"- {num_imports} imports\n"
         message += f"- {num_symbols} symbols defined\n"
         message += f"- {num_related} related files\n"
-
         return MCPResponse.success(result=context, message=message).to_dict()
-
     except Exception as e:
         return MCPResponse.error(f"Error getting file context: {str(e)}").to_dict()
 
@@ -1985,30 +1636,18 @@ async def search_codebase(query: str, file_type: str = None, limit: int = 10) ->
         ```
     """
     try:
-        # Ensure graph is initialized
         try:
             _ensure_graph_initialized()
         except Exception as e:
             return MCPResponse.error(
-                f"Knowledge graph initialization failed: {str(e)}\n"
-                "Ensure SPARKY_DB_URL or SPARKY_DB_URL environment variable is set."
+                f"Knowledge graph initialization failed: {str(e)}\nEnsure SPARKY_DB_URL or SPARKY_DB_URL environment variable is set."
             ).to_dict()
-
-        # Search using knowledge repository's semantic search
         results = _kb_repository.search_nodes(
             query_text=query, node_type=file_type, limit=limit
         )
-
-        # Format results
         formatted_results = []
         for node in results:
-            result_dict = {
-                "type": node.node_type,
-                "label": node.label,
-                "id": node.id,
-            }
-
-            # Add type-specific information
+            result_dict = {"type": node.node_type, "label": node.label, "id": node.id}
             if node.node_type == "File":
                 result_dict.update(
                     {
@@ -2028,18 +1667,10 @@ async def search_codebase(query: str, file_type: str = None, limit: int = 10) ->
                     }
                 )
             elif node.node_type == "Module":
-                result_dict.update(
-                    {
-                        "name": node.properties.get("name", ""),
-                    }
-                )
-
+                result_dict.update({"name": node.properties.get("name", "")})
             formatted_results.append(result_dict)
-
         message = f"Found {len(formatted_results)} results for query: '{query}'"
-
         return MCPResponse.success(result=formatted_results, message=message).to_dict()
-
     except Exception as e:
         return MCPResponse.error(f"Error searching codebase: {str(e)}").to_dict()
 
@@ -2082,29 +1713,20 @@ async def symbol_search(
         symbol_search(file_pattern="src/tools/", symbol_type="function")
     """
     try:
-        # Ensure graph is initialized
         try:
             _ensure_graph_initialized()
         except Exception as e:
             return MCPResponse.error(
-                f"Knowledge graph initialization failed: {str(e)}\n"
-                "Ensure SPARKY_DB_URL environment variable is set."
+                f"Knowledge graph initialization failed: {str(e)}\nEnsure SPARKY_DB_URL environment variable is set."
             ).to_dict()
-
         if not _kb_repository:
             return MCPResponse.error("Knowledge graph not available").to_dict()
-
-        # Get all symbol nodes
         symbols = []
-
-        # Query symbols from the graph - use search if we have a name pattern
         if symbol_name:
-            # Use semantic search for symbol names
             nodes = _kb_repository.search_nodes(
                 query_text=symbol_name, node_type="Symbol", limit=limit * 2
             )
         else:
-            # Get all symbols of a certain type
             from database.models import Node
             from sqlalchemy import select
 
@@ -2112,39 +1734,27 @@ async def symbol_search(
                 stmt = select(Node).where(Node.node_type == "Symbol")
                 result = session.execute(stmt)
                 nodes = [row[0] for row in result.fetchall()][: limit * 2]
-
-        # Filter and format results
         for node in nodes:
             if not node or node.node_type != "Symbol":
                 continue
-
             name = node.properties.get("name", "")
             kind = node.properties.get("kind", "")
             file_path = node.properties.get("file", "")
             line = node.properties.get("line", 0)
             signature = node.properties.get("signature", "")
-
-            # Apply filters
             if symbol_type and kind != symbol_type:
                 continue
-
-            # Apply name filter with wildcard support
             if symbol_name:
                 import fnmatch
 
-                # Convert wildcards to pattern
                 if not fnmatch.fnmatch(
                     name.lower(), symbol_name.lower().replace("*", "*")
                 ):
-                    # Also try semantic match from search results
                     if symbol_name not in name.lower():
                         continue
-
-            # Apply file pattern filter
             if file_pattern:
                 if file_pattern not in file_path:
                     continue
-
             symbols.append(
                 {
                     "name": name,
@@ -2154,23 +1764,17 @@ async def symbol_search(
                     "signature": signature,
                 }
             )
-
             if len(symbols) >= limit:
                 break
-
-        # Sort by file and line
         symbols.sort(key=lambda x: (x["file"], x["line"]))
-
         message = f"Found {len(symbols)} symbol(s)"
         if symbol_name:
             message += f" matching '{symbol_name}'"
         if symbol_type:
             message += f" of type '{symbol_type}'"
-
         return MCPResponse.success(
             result={"symbols": symbols, "count": len(symbols)}, message=message
         ).to_dict()
-
     except Exception as e:
         logger.exception("Error in symbol_search")
         return MCPResponse.error(f"Error searching symbols: {str(e)}").to_dict()
@@ -2206,42 +1810,30 @@ async def find_references(
         find_references("utils.helpers")
     """
     try:
-        # Ensure graph is initialized
         try:
             _ensure_graph_initialized()
         except Exception as e:
             return MCPResponse.error(
-                f"Knowledge graph initialization failed: {str(e)}\n"
-                "Ensure SPARKY_DB_URL environment variable is set."
+                f"Knowledge graph initialization failed: {str(e)}\nEnsure SPARKY_DB_URL environment variable is set."
             ).to_dict()
-
         if not _kb_repository:
             return MCPResponse.error("Knowledge graph not available").to_dict()
-
-        # Look for module node
         module_node_id = f"module:{module_or_symbol}"
         module_node = _kb_repository.get_node(module_node_id)
-
         if not module_node:
             return MCPResponse.error(
-                f"Module '{module_or_symbol}' not found in knowledge graph.\n"
-                "Make sure files that import it have been read and indexed."
+                f"Module '{module_or_symbol}' not found in knowledge graph.\nMake sure files that import it have been read and indexed."
             ).to_dict()
-
-        # Find all files that import this module (incoming IMPORTS edges)
         import_edges = _kb_repository.get_edges(
             target_id=module_node_id, edge_type="IMPORTS"
         )
-
         references = []
         for edge in import_edges:
-            # Get the source file
             source_node = _kb_repository.get_node(edge.source_id)
             if source_node and source_node.node_type == "File":
                 file_path = source_node.properties.get("path", "")
                 language = source_node.properties.get("language", "")
                 lines = source_node.properties.get("lines", 0)
-
                 references.append(
                     {
                         "file": file_path,
@@ -2250,12 +1842,8 @@ async def find_references(
                         "reference_type": "import",
                     }
                 )
-
-        # Sort by file path
         references.sort(key=lambda x: x["file"])
-
         message = f"Found {len(references)} file(s) that reference '{module_or_symbol}'"
-
         return MCPResponse.success(
             result={
                 "module": module_or_symbol,
@@ -2264,7 +1852,6 @@ async def find_references(
             },
             message=message,
         ).to_dict()
-
     except Exception as e:
         logger.exception("Error in find_references")
         return MCPResponse.error(f"Error finding references: {str(e)}").to_dict()
@@ -2296,66 +1883,50 @@ async def batch_read_files(paths: list[str], index_to_graph: bool = True) -> dic
         results = {}
         errors = {}
         successful = 0
-
         for path in paths:
             try:
-                # Check if file exists
                 if not os.path.exists(path):
                     errors[path] = "File not found"
                     continue
-
                 if not os.path.isfile(path):
                     errors[path] = "Not a file"
                     continue
-
-                # Read file
                 with open(path, "r", encoding="utf-8") as f:
                     content = f.read()
-
-                # Mark as read for protection system
                 _mark_file_as_read(path, content)
-
-                # Index to graph if enabled
                 if index_to_graph:
                     try:
                         _ensure_graph_initialized()
                         await _index_file_to_graph(path, content)
                     except Exception as e:
                         logger.warning(f"Graph indexing skipped for {path}: {e}")
-
                 results[path] = content
                 successful += 1
-
             except PermissionError:
                 errors[path] = "Permission denied"
             except UnicodeDecodeError:
                 errors[path] = "Cannot decode file (binary or invalid encoding)"
             except Exception as e:
                 errors[path] = str(e)
-
         message = f"Successfully read {successful}/{len(paths)} file(s)"
         if errors:
             message += f", {len(errors)} error(s)"
-
         return MCPResponse.success(
             result={"files": results, "errors": errors, "successful_count": successful},
             message=message,
         ).to_dict()
-
     except Exception as e:
         return MCPResponse.error(f"Error in batch read: {str(e)}").to_dict()
 
 
 def main():
     """Run the MCP server."""
-    # Initialize knowledge graph on startup
     try:
         _load_graph()
         logger.info("Knowledge graph initialized successfully")
     except Exception as e:
         logger.warning(f"Failed to initialize knowledge graph: {e}")
         logger.warning("Graph-powered tools will not be available")
-
     mcp.run()
 
 

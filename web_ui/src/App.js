@@ -104,15 +104,6 @@ function App({ onThemeChange }) {
   const [prompts, setPrompts] = useState([]);
   const [toolUses, setToolUses] = useState([]);
   const [toolResults, setToolResults] = useState([]);
-  const [sessionId, setSessionId] = useState(() => {
-    // Try to restore session from localStorage
-    const savedSession = localStorage.getItem('session_id');
-    if (savedSession) {
-      console.log('Restoring session from localStorage:', savedSession);
-      return savedSession;
-    }
-    return null;
-  });
   const [userChats, setUserChats] = useState([]);
   const [archivedChats, setArchivedChats] = useState([]);
   const [showArchivedChats, setShowArchivedChats] = useState(false);
@@ -151,7 +142,7 @@ function App({ onThemeChange }) {
         console.error('Cannot upload file: user not authenticated');
         return;
       }
-      const uploadUrl = `/upload_file?session_id=${sessionId}&chat_id=${currentChatId}&user_id=${userId}`;
+      const uploadUrl = `/upload_file?chat_id=${currentChatId}&user_id=${userId}`;
       console.log('Upload URL:', uploadUrl);
       
       const uploadResponse = await fetch(uploadUrl, {
@@ -650,15 +641,14 @@ function App({ onThemeChange }) {
       setReconnectionAttempts(0);
       setReconnectionError(null);
 
-      // Send connect with token and session_id (if resuming a session)
+      // Send connect with token
       const connectMessage = {
         type: 'connect',
         data: {
-          session_id: sessionId, // Will be null for new sessions, or existing ID for reconnects
           token: token, // JWT token for authentication
         },
       };
-      console.log('Sending connect message with token, session_id:', sessionId);
+      console.log('Sending connect message with token');
       socket.current.send(JSON.stringify(connectMessage));
       
       // If we have a current chat ID when reconnecting, we need to re-establish it
@@ -713,11 +703,7 @@ function App({ onThemeChange }) {
       
       switch (data.type) {
         case 'session_info':
-          const newSessionId = data.data.session_id;
-          setSessionId(newSessionId);
-          // Persist session to localStorage for reconnection
-          localStorage.setItem('session_id', newSessionId);
-          console.log('Session established:', newSessionId);
+          // Session info no longer needed - connection is established
           break;
         
         case 'tool_loading_progress':

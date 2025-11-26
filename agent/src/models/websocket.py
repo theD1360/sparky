@@ -48,24 +48,12 @@ class ThoughtPayload(BaseModel):
 
 
 class ConnectPayload(BaseModel):
-    session_id: Optional[str] = Field(
-        None, description="Existing session ID or None for new session"
-    )
     personality: Optional[str] = Field(None, description="Personality prompt")
     history: Optional[list] = Field(None, description="History of messages")
     user_id: Optional[str] = Field(None, description="User identifier (deprecated, use token)")
     token: Optional[str] = Field(None, description="JWT authentication token")
     chat_id: Optional[str] = Field(None, description="Chat identifier for grouping messages")
     chat_name: Optional[str] = Field(None, description="Display name for the chat")
-
-
-class SessionInfoPayload(BaseModel):
-    session_id: str = Field(description="Session identifier")
-    is_new: bool = Field(description="Whether this is a newly created session")
-    reconnected: bool = Field(
-        default=False, description="Whether this is a reconnection to existing session"
-    )
-    chat_id: Optional[str] = Field(None, description="Chat identifier")
 
 
 class ToolLoadingProgressPayload(BaseModel):
@@ -75,7 +63,6 @@ class ToolLoadingProgressPayload(BaseModel):
 
 
 class ReadyPayload(BaseModel):
-    session_id: str = Field(description="Session identifier")
     tools_loaded: int = Field(description="Number of tools successfully loaded")
 
 
@@ -114,7 +101,6 @@ Payload = Union[
     ToolResultPayload,
     ThoughtPayload,
     ConnectPayload,
-    SessionInfoPayload,
     ToolLoadingProgressPayload,
     ReadyPayload,
     StartChatPayload,
@@ -128,7 +114,6 @@ Payload = Union[
 class WSMessage(BaseModel):
     type: MessageType
     data: Payload
-    session_id: Optional[str] = Field(None, description="Session identifier for message validation")
     user_id: Optional[str] = Field(None, description="User identifier for message validation")
     chat_id: Optional[str] = Field(None, description="Chat identifier for message validation")
 
@@ -137,7 +122,6 @@ class WSMessage(BaseModel):
         # Tolerate legacy keys
         msg_type = obj.get("type")
         data = obj.get("data")
-        session_id = obj.get("session_id")
         user_id = obj.get("user_id")
         chat_id = obj.get("chat_id")
         if msg_type is None:
@@ -179,14 +163,8 @@ class WSMessage(BaseModel):
             )
         elif mt == MessageType.connect:
             payload = ConnectPayload.model_validate(
-                data if isinstance(data, dict) else {"session_id": None}
+                data if isinstance(data, dict) else {}
             )
-        elif mt == MessageType.session_info:
-            if isinstance(data, dict):
-                payload = SessionInfoPayload.model_validate(data)
-            else:
-                # Fallback - shouldn't happen
-                payload = SessionInfoPayload(session_id=str(data), is_new=True)
         elif mt == MessageType.tool_loading_progress:
             if isinstance(data, dict):
                 payload = ToolLoadingProgressPayload.model_validate(data)
@@ -198,7 +176,7 @@ class WSMessage(BaseModel):
             if isinstance(data, dict):
                 payload = ReadyPayload.model_validate(data)
             else:
-                payload = ReadyPayload(session_id=str(data), tools_loaded=0)
+                payload = ReadyPayload(tools_loaded=0)
         elif mt == MessageType.start_chat:
             if isinstance(data, dict):
                 payload = StartChatPayload.model_validate(data)
@@ -229,7 +207,7 @@ class WSMessage(BaseModel):
         else:
             # Fallback shouldn't happen due to Enum, but keep for safety
             payload = StatusPayload(message=str(data))
-        return cls(type=mt, data=payload, session_id=session_id, user_id=user_id, chat_id=chat_id)
+        return cls(type=mt, data=payload, user_id=user_id, chat_id=chat_id)
 
     @classmethod
     def from_text(cls, text: str) -> "WSMessage":
@@ -268,14 +246,7 @@ class WSMessage(BaseModel):
             if self.data.task_id:
                 data["task_id"] = self.data.task_id
         elif isinstance(self.data, ConnectPayload):
-            data = {"session_id": self.data.session_id}
-        elif isinstance(self.data, SessionInfoPayload):
-            data = {
-                "session_id": self.data.session_id,
-                "is_new": self.data.is_new,
-                "reconnected": self.data.reconnected,
-                "chat_id": self.data.chat_id,
-            }
+            data = {}
         elif isinstance(self.data, ToolLoadingProgressPayload):
             data = {
                 "tool_name": self.data.tool_name,
@@ -284,7 +255,6 @@ class WSMessage(BaseModel):
             }
         elif isinstance(self.data, ReadyPayload):
             data = {
-                "session_id": self.data.session_id,
                 "tools_loaded": self.data.tools_loaded,
             }
         elif isinstance(self.data, StartChatPayload):
@@ -321,8 +291,6 @@ class WSMessage(BaseModel):
             )
         result = {"type": self.type.value, "data": data}
         # Add metadata fields if present
-        if self.session_id:
-            result["session_id"] = self.session_id
         if self.user_id:
             result["user_id"] = self.user_id
         if self.chat_id:

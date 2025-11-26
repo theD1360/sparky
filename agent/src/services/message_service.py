@@ -55,7 +55,7 @@ class MessageService:
         self,
         content: str,
         role: str,
-        session_id: str,
+        session_id: Optional[str] = None,  # Deprecated: kept for backward compatibility
         chat_id: Optional[str] = None,
         internal: bool = False,
         message_type: str = "message",
@@ -68,8 +68,8 @@ class MessageService:
         Args:
             content: The message content
             role: The role of the speaker (e.g., 'user', 'model')
-            session_id: Session identifier
-            chat_id: Optional chat identifier
+            session_id: Deprecated - Session identifier (kept for backward compatibility)
+            chat_id: Chat identifier (required)
             internal: Whether this is an internal/system message
             message_type: Type of message ('message', 'tool_use', 'tool_result', 'thought', 'summary', 'internal')
             tool_name: Optional tool name for tool_use and tool_result messages
@@ -79,36 +79,29 @@ class MessageService:
         Returns:
             The node ID of the created message, or None if failed
         """
-        if not session_id:
+        if not chat_id:
             logger.warning(
-                f"Cannot save message to graph: session_id is None (role={role})"
+                f"Cannot save message to graph: chat_id is None (role={role})"
             )
             return None
 
         try:
-            # Get current message count from graph for this chat or session
-            if chat_id:
-                # Use session-fallback aware method to get accurate count
-                current_messages = self.repository.get_chat_messages(
-                    chat_id=chat_id, use_session_fallback=True
-                )
-                message_num = len(current_messages) + 1
-                logger.debug(
-                    f"Calculated message_num={message_num} for chat {chat_id} "
-                    f"(found {len(current_messages)} existing messages)"
-                )
-            else:
-                # Fallback: use timestamp-based ID
-                message_num = int(datetime.datetime.utcnow().timestamp() * 1000)
-                logger.debug(
-                    f"No chat_id provided, using timestamp-based message_num={message_num}"
-                )
+            # Get current message count from graph for this chat
+            # Get messages for accurate count
+            current_messages = self.repository.get_chat_messages(
+                chat_id=chat_id
+            )
+            message_num = len(current_messages) + 1
+            logger.debug(
+                f"Calculated message_num={message_num} for chat {chat_id} "
+                f"(found {len(current_messages)} existing messages)"
+            )
 
-            chat_node_id = f"chat:{session_id}:{message_num}"
+            chat_node_id = f"chat:{chat_id}:{message_num}"
 
             logger.info(
                 f"Saving message to graph: node_id={chat_node_id}, role={role}, "
-                f"session_id={session_id}, chat_id={chat_id}, internal={internal}, "
+                f"chat_id={chat_id}, internal={internal}, "
                 f"message_type={message_type}"
             )
 
@@ -134,46 +127,27 @@ class MessageService:
             )
             logger.debug(f"Created ChatMessage node: {chat_node_id}")
 
-            # Link to session (ALWAYS - this is our safety net)
-            self.repository.add_edge(
-                source_id=session_id,
-                target_id=chat_node_id,
-                edge_type="CONTAINS",
-            )
-            logger.debug(
-                f"Linked message to session: {session_id} -[CONTAINS]-> {chat_node_id}"
-            )
-
-            # Also link from chat node if chat_id is available
-            if chat_id:
-                chat_node_full_id = f"chat:{chat_id}"
-                try:
-                    # Verify chat node exists before linking
-                    chat_node = self.repository.get_node(chat_node_full_id)
-                    if chat_node:
-                        self.repository.add_edge(
-                            source_id=chat_node_full_id,
-                            target_id=chat_node_id,
-                            edge_type="CONTAINS",
-                        )
-                        logger.info(
-                            f"Linked message to chat node: {chat_node_full_id} -[CONTAINS]-> {chat_node_id}"
-                        )
-                    else:
-                        logger.warning(
-                            f"Chat node {chat_node_full_id} not found! Message will only be linked to session. "
-                            f"This may cause message history issues."
-                        )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to link message to chat node {chat_node_full_id}: {e}. "
-                        f"Message is still linked to session {session_id}."
+            # Link message to chat node
+            chat_node_full_id = f"chat:{chat_id}"
+            try:
+                # Verify chat node exists before linking
+                chat_node = self.repository.get_node(chat_node_full_id)
+                if chat_node:
+                    self.repository.add_edge(
+                        source_id=chat_node_full_id,
+                        target_id=chat_node_id,
+                        edge_type="CONTAINS",
                     )
-            else:
-                logger.warning(
-                    f"No chat_id provided for message {chat_node_id}. "
-                    f"Message only linked to session {session_id}. "
-                    f"Future retrieval will rely on session fallback mechanism."
+                    logger.debug(
+                        f"Linked message to chat node: {chat_node_full_id} -[CONTAINS]-> {chat_node_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"Chat node {chat_node_full_id} not found, cannot link message"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Failed to link message to chat node for chat_id={chat_id}: {e}"
                 )
 
             # Link file attachment if provided
@@ -231,9 +205,9 @@ class MessageService:
             return []
 
         try:
-            # Get all messages from the graph (with session fallback enabled)
+            # Get all messages from the graph
             nodes = self.repository.get_chat_messages(
-                chat_id=chat_id, limit=None, use_session_fallback=True
+                chat_id=chat_id, limit=None
             )
             logger.debug(
                 f"Retrieved {len(nodes)} total messages for chat {chat_id} (including session fallback)"
@@ -295,9 +269,9 @@ class MessageService:
             Formatted string with role: content pairs
         """
         try:
-            # Use session fallback to get all messages
+            # Get all messages for the chat
             nodes = self.repository.get_chat_messages(
-                chat_id=chat_id, use_session_fallback=True
+                chat_id=chat_id
             )
             logger.debug(
                 f"Retrieved {len(nodes)} messages for summary formatting (chat {chat_id})"
