@@ -374,14 +374,36 @@ class ConnectionManager:
                     )
                     await ws.send_text(fallback.to_text())
 
-        async def send_tool_result_notification(tool_name, result_text):
+        async def send_tool_result_notification(tool_name, result_text, status=None):
             ws = self.active_connections.get(user_id)
             if ws:
                 try:
                     # Ensure result is a string
                     if not isinstance(result_text, str):
                         result_text = "" if result_text is None else str(result_text)
-                    payload = ToolResultPayload(name=str(tool_name), result=result_text)
+                    
+                    # Parse structured data from result
+                    result_content = None
+                    messages = None
+                    try:
+                        # Try to parse as JSON to extract structured data
+                        parsed_result = json.loads(result_text) if result_text else None
+                        if isinstance(parsed_result, dict):
+                            result_content = parsed_result.get("result") or parsed_result.get("content") or parsed_result
+                            messages = parsed_result.get("messages") or parsed_result.get("message")
+                            if messages and not isinstance(messages, list):
+                                messages = [messages]
+                    except (json.JSONDecodeError, TypeError):
+                        # Not JSON, use as-is
+                        pass
+                    
+                    payload = ToolResultPayload(
+                        name=str(tool_name), 
+                        result=result_text, 
+                        status=status,
+                        result_content=result_content,
+                        messages=messages
+                    )
                     msg = WSMessage(
                         type=MessageType.tool_result,
                         data=payload,

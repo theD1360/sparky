@@ -108,6 +108,90 @@ _graph_initialized: bool = False
 _file_read_whitelist: dict[str, dict[str, str]] = {}
 
 
+def _detect_content_type(path: str, content: Any = None) -> Optional[str]:
+    """Detect content type from file extension or content.
+
+    Args:
+        path: File path
+        content: Optional file content for content-based detection
+
+    Returns:
+        Content type string (e.g., 'python', 'json', 'javascript') or None
+    """
+    from pathlib import Path as PathLib
+
+    file_ext = PathLib(path).suffix.lstrip(".").lower()
+
+    # Extension-based detection
+    extension_map = {
+        "py": "python",
+        "js": "javascript",
+        "jsx": "javascript",
+        "ts": "typescript",
+        "tsx": "typescript",
+        "java": "java",
+        "go": "go",
+        "rs": "rust",
+        "c": "c",
+        "cpp": "cpp",
+        "cc": "cpp",
+        "h": "c",
+        "hpp": "cpp",
+        "hxx": "cpp",
+        "json": "json",
+        "yaml": "yaml",
+        "yml": "yaml",
+        "toml": "toml",
+        "xml": "xml",
+        "html": "html",
+        "css": "css",
+        "scss": "scss",
+        "sass": "sass",
+        "sh": "bash",
+        "bash": "bash",
+        "zsh": "bash",
+        "sql": "sql",
+        "md": "markdown",
+        "markdown": "markdown",
+        "txt": "text",
+        "log": "text",
+        "ini": "ini",
+        "cfg": "ini",
+        "conf": "ini",
+        "dockerfile": "dockerfile",
+        "makefile": "makefile",
+        "mk": "makefile",
+        "rb": "ruby",
+        "php": "php",
+        "swift": "swift",
+        "kt": "kotlin",
+        "scala": "scala",
+        "r": "r",
+        "m": "matlab",
+        "lua": "lua",
+        "pl": "perl",
+        "ps1": "powershell",
+        "bat": "batch",
+        "cmd": "batch",
+    }
+
+    # Check extension first
+    if file_ext in extension_map:
+        return extension_map[file_ext]
+
+    # Content-based detection for JSON
+    if content and isinstance(content, str):
+        content_stripped = content.strip()
+        if content_stripped.startswith("{") or content_stripped.startswith("["):
+            try:
+                json.loads(content_stripped)
+                return "json"
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    return None
+
+
 async def _index_file_to_graph(path: str, content: str) -> None:
     """Index file metadata and structure into the knowledge graph.
 
@@ -476,19 +560,57 @@ def _check_syntax(ext: str, content: str) -> tuple[str, list]:
 
 def _get_file_tree(path: str, max_depth: int = 3, include_files: bool = True) -> str:
     """Get a tree-like representation of a directory structure."""
-    tree = ""
-    if max_depth <= 0:
-        return tree
-    tree += f"{path}/\n"
-    if include_files:
-        for file in os.listdir(path):
-            tree += f"  {file}\n"
-    for dir in os.listdir(path):
-        if os.path.isdir(os.path.join(path, dir)):
-            tree += _get_file_tree(
-                os.path.join(path, dir), max_depth - 1, include_files
-            )
-    return tree
+
+    def _build_tree(
+        current_path: str, prefix: str = "", is_last: bool = True, depth: int = 0
+    ) -> str:
+        """Recursively build tree structure with proper formatting."""
+        if depth > max_depth:
+            return ""
+
+        result = ""
+        path_obj = Path(current_path)
+        name = path_obj.name if depth > 0 else path_obj.as_posix()
+
+        # Add current directory/file
+        connector = "└── " if is_last else "├── "
+        result += f"{prefix}{connector}{name}\n"
+
+        if not os.path.isdir(current_path):
+            return result
+
+        # Prepare items (directories first, then files)
+        try:
+            items = []
+            for item in sorted(os.listdir(current_path)):
+                item_path = os.path.join(current_path, item)
+                if os.path.isdir(item_path):
+                    items.append((item, item_path, True))
+                elif include_files:
+                    items.append((item, item_path, False))
+
+            # Process each item
+            for idx, (item_name, item_path, is_dir) in enumerate(items):
+                is_last_item = idx == len(items) - 1
+                extension = "    " if is_last else "│   "
+                new_prefix = prefix + extension
+
+                if is_dir:
+                    result += _build_tree(
+                        item_path, new_prefix, is_last_item, depth + 1
+                    )
+                else:
+                    connector = "└── " if is_last_item else "├── "
+                    result += f"{new_prefix}{connector}{item_name}\n"
+        except PermissionError:
+            result += f"{prefix}    [Permission Denied]\n"
+
+        return result
+
+    if not os.path.exists(path):
+        return f"Path not found: {path}\n"
+
+    return _build_tree(path, "", True, 0)
 
 
 def _validate_ast(tree: ast.AST) -> None:
@@ -867,7 +989,8 @@ async def read_file(path: str, index_to_graph: bool = True) -> dict:
                 await _index_file_to_graph(path, content)
             except Exception as e:
                 logger.warning(f"Graph indexing skipped for {path}: {e}")
-        return MCPResponse.success(result=content).to_dict()
+        content_type = _detect_content_type(path, content)
+        return MCPResponse.success(result=content, content_type=content_type).to_dict()
     except FileNotFoundError:
         return MCPResponse.error(f"Error: File not found: {path}").to_dict()
     except PermissionError:
@@ -893,7 +1016,7 @@ def list_directory(path: str = ".") -> dict:
     try:
         entries = os.listdir(path)
         result = "\n".join(sorted(entries))
-        return MCPResponse.success(result=result).to_dict()
+        return MCPResponse.success(result=result, content_type="text").to_dict()
     except FileNotFoundError:
         return MCPResponse.error("Error: Directory not found").to_dict()
     except PermissionError:
@@ -1133,7 +1256,8 @@ def head(path: str, lines: int = 10) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             head_lines = [next(f) for _ in range(int(lines))]
         result = "".join(head_lines)
-        return MCPResponse.success(result=result).to_dict()
+        content_type = _detect_content_type(path, result)
+        return MCPResponse.success(result=result, content_type=content_type).to_dict()
     except Exception as e:
         return MCPResponse.error(f"Error reading file: {str(e)}").to_dict()
 
@@ -1156,7 +1280,8 @@ def tail(path: str, lines: int = 10) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             tail_lines = f.readlines()[-int(lines) :]
         result = "".join(tail_lines)
-        return MCPResponse.success(result=result).to_dict()
+        content_type = _detect_content_type(path, result)
+        return MCPResponse.success(result=result, content_type=content_type).to_dict()
     except Exception as e:
         return MCPResponse.error(f"Error reading file: {str(e)}").to_dict()
 
@@ -1393,7 +1518,8 @@ def get_lines(path: str, start_line: int, end_line: int) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             lines = f.readlines()[start_line - 1 : end_line]
         result = "".join(lines)
-        return MCPResponse.success(result=result).to_dict()
+        content_type = _detect_content_type(path, result)
+        return MCPResponse.success(result=result, content_type=content_type).to_dict()
     except Exception as e:
         return MCPResponse.error(f"Error getting lines from file: {str(e)}").to_dict()
 
@@ -1417,7 +1543,8 @@ def file_tree(path: str, max_depth: int = 3, include_files: bool = True) -> dict
     if not path_obj.exists():
         return MCPResponse.error(f"Path not found: {path}").to_dict()
     tree = _get_file_tree(str(path_obj), max_depth, include_files)
-    return MCPResponse.success(result=tree).to_dict()
+    # Use 'plaintext' content type to preserve formatting and newlines in code block
+    return MCPResponse.success(result=tree, content_type="plaintext").to_dict()
 
 
 @mcp.tool()
@@ -1881,6 +2008,7 @@ async def batch_read_files(paths: list[str], index_to_graph: bool = True) -> dic
     """
     try:
         results = {}
+        content_types = {}
         errors = {}
         successful = 0
         for path in paths:
@@ -1900,7 +2028,10 @@ async def batch_read_files(paths: list[str], index_to_graph: bool = True) -> dic
                         await _index_file_to_graph(path, content)
                     except Exception as e:
                         logger.warning(f"Graph indexing skipped for {path}: {e}")
+                content_type = _detect_content_type(path, content)
                 results[path] = content
+                if content_type:
+                    content_types[path] = content_type
                 successful += 1
             except PermissionError:
                 errors[path] = "Permission denied"
@@ -1911,8 +2042,21 @@ async def batch_read_files(paths: list[str], index_to_graph: bool = True) -> dic
         message = f"Successfully read {successful}/{len(paths)} file(s)"
         if errors:
             message += f", {len(errors)} error(s)"
+
+        # Build result with content types for each file
+        files_with_types = {}
+        for path, content in results.items():
+            files_with_types[path] = {
+                "content": content,
+                "content_type": content_types.get(path),
+            }
+
         return MCPResponse.success(
-            result={"files": results, "errors": errors, "successful_count": successful},
+            result={
+                "files": files_with_types,
+                "errors": errors,
+                "successful_count": successful,
+            },
             message=message,
         ).to_dict()
     except Exception as e:

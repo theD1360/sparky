@@ -412,11 +412,11 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
                         if forwarder:
                             await forwarder.forward_tool_use(tool_name, tool_args)
 
-                    async def on_tool_result(tool_name: str, result: str):
+                    async def on_tool_result(tool_name: str, result: str, status: str = None):
                         """Forward tool result events to WebSocket."""
                         forwarder = await _get_or_refresh_forwarder()
                         if forwarder:
-                            await forwarder.forward_tool_result(tool_name, result)
+                            await forwarder.forward_tool_result(tool_name, result, status)
 
                     async def on_thought(thought: str):
                         """Forward thought events to WebSocket."""

@@ -27,12 +27,16 @@ class MCPResponse(BaseModel):
         status: Response status (success, error, or empty)
         message: Optional human-readable message
         result: The actual result data (can be any JSON-serializable type)
+        content_type: Optional content type for frontend display (e.g., 'python', 'json', 'javascript')
         pagination: Optional pagination metadata for paginated responses
     """
 
     status: ResponseStatus = Field(..., description="Response status")
     message: Optional[str] = Field(None, description="Optional human-readable message")
     result: Any = Field(default=None, description="The actual result data")
+    content_type: Optional[str] = Field(
+        None, description="Content type for frontend display (e.g., 'python', 'json', 'javascript'). Defaults to 'text' if not specified."
+    )
     pagination: Optional[PaginationMetadata] = Field(
         None, description="Optional pagination metadata"
     )
@@ -42,6 +46,7 @@ class MCPResponse(BaseModel):
         cls,
         result: Any = None,
         message: Optional[str] = None,
+        content_type: Optional[str] = None,
         pagination: Optional[PaginationMetadata] = None,
     ) -> "MCPResponse":
         """Create a success response."""
@@ -49,6 +54,7 @@ class MCPResponse(BaseModel):
             status=ResponseStatus.SUCCESS,
             result=result,
             message=message,
+            content_type=content_type,
             pagination=pagination,
         )
 
@@ -116,6 +122,9 @@ class MCPResponse(BaseModel):
             "message": self.message,
             "result": self.result,
         }
+
+        # Add content_type (always include, defaults to "text")
+        response_dict["content_type"] = self.content_type or "text"
 
         # Add pagination if present
         if self.pagination:

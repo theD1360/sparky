@@ -727,7 +727,7 @@ Cannot proceed without identity."""
 
         logger.debug("Tracking tool call: %s -> %s", tool_name, tool_call_id)
 
-    async def _on_tool_result(self, tool_name: str, result: str):
+    async def _on_tool_result(self, tool_name: str, result: str, status: str = None):
         """Handle tool result event - match with pending call and create ToolCall node."""
         logger.debug(f"Knowledge: Received TOOL_RESULT event for {tool_name}")
 

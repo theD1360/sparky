@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -39,6 +39,9 @@ class ToolUsePayload(BaseModel):
 class ToolResultPayload(BaseModel):
     name: str
     result: str
+    status: Optional[str] = Field(None, description="Tool execution status: 'success' or 'error'")
+    result_content: Optional[Any] = Field(None, description="Structured result content (dict/list)")
+    messages: Optional[list] = Field(None, description="Additional messages from tool execution")
     task_id: Optional[str] = Field(None, description="Optional task ID if tool result is from task execution")
 
 
@@ -156,7 +159,7 @@ class WSMessage(BaseModel):
             if isinstance(data, dict):
                 payload = ToolResultPayload.model_validate(data)
             else:
-                payload = ToolResultPayload(name=str(data), result="")
+                payload = ToolResultPayload(name=str(data), result="", status=None)
         elif mt == MessageType.thought:
             payload = ThoughtPayload.model_validate(
                 data if isinstance(data, dict) else {"text": str(data)}
@@ -239,6 +242,12 @@ class WSMessage(BaseModel):
                 data["task_id"] = self.data.task_id
         elif isinstance(self.data, ToolResultPayload):
             data = {"name": self.data.name, "result": self.data.result}
+            if self.data.status:
+                data["status"] = self.data.status
+            if self.data.result_content is not None:
+                data["result_content"] = self.data.result_content
+            if self.data.messages:
+                data["messages"] = self.data.messages
             if self.data.task_id:
                 data["task_id"] = self.data.task_id
         elif isinstance(self.data, ThoughtPayload):
@@ -299,3 +308,7 @@ class WSMessage(BaseModel):
 
     def to_text(self) -> str:
         return json.dumps(self.to_dict())
+
+
+# Rebuild model to resolve forward references after all classes are defined
+WSMessage.model_rebuild()

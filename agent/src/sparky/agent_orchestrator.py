@@ -239,7 +239,7 @@ class AgentOrchestrator:
         )
         self.events.subscribe(
             BotEvents.TOOL_RESULT,
-            lambda tool_name, result: self._handle_tool_result(tool_name, result),
+            lambda tool_name, result, status=None: self._handle_tool_result(tool_name, result, status),
         )
         self.events.subscribe(
             BotEvents.THOUGHT,
@@ -289,7 +289,7 @@ class AgentOrchestrator:
                 tool_args=args,
             )
 
-    def _handle_tool_result(self, tool_name: str, result: Any):
+    def _handle_tool_result(self, tool_name: str, result: Any, status: str = None):
         """Handle TOOL_RESULT event by delegating to message service."""
         if self.message_service:
             self.message_service.save_message(

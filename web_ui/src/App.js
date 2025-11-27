@@ -320,6 +320,8 @@ function App({ onThemeChange }) {
         startTransition(() => {
           const loadedMessages = [];
           
+          // First pass: collect all messages
+          const tempMessages = [];
           data.messages.forEach(msg => {
             const message_type = msg.message_type || 'message';
             
@@ -329,28 +331,50 @@ function App({ onThemeChange }) {
               const toolUseText = msg.tool_name && msg.tool_args 
                 ? `${msg.tool_name}(${JSON.stringify(msg.tool_args)})`
                 : msg.text;
-              // Add to chat messages with special role
-              loadedMessages.push({
+              // Add to temp messages with special role
+              tempMessages.push({
                 role: 'tool_use',
                 text: toolUseText,
-                toolData: { name: msg.tool_name, args: msg.tool_args }
+                toolData: { name: msg.tool_name || 'unknown', args: msg.tool_args || {} },
+                toolName: msg.tool_name || 'unknown',
+                args: msg.tool_args || {}
               });
             } else if (message_type === 'tool_result') {
-              // Add to chat messages with special role
-              loadedMessages.push({
+              // Add to temp messages with special role
+              // Extract structured data if available (from new format)
+              const resultData = typeof msg.text === 'string' ? (() => {
+                try {
+                  const parsed = JSON.parse(msg.text);
+                  return parsed;
+                } catch {
+                  return null;
+                }
+              })() : msg.text;
+              
+              tempMessages.push({
                 role: 'tool_result',
-                text: msg.text,
-                toolData: { result: msg.text }
+                text: msg.text || '',
+                toolData: { 
+                  result: msg.text || '', 
+                  name: msg.tool_name || 'unknown', 
+                  status: msg.status,
+                  result_content: msg.result_content || (resultData && (resultData.result || resultData.content || resultData)),
+                  messages: msg.messages || (resultData && (resultData.messages || (resultData.message ? [resultData.message] : null)))
+                },
+                toolName: msg.tool_name || 'unknown',
+                status: msg.status,
+                result_content: msg.result_content,
+                messages: msg.messages
               });
             } else if (message_type === 'thought') {
               // Thoughts get special role for styling
-              loadedMessages.push({
+              tempMessages.push({
                 role: 'thought',
                 text: msg.text
               });
             } else {
               // Regular messages (user or model)
-              loadedMessages.push({
+              tempMessages.push({
                 role: msg.role,
                 text: msg.text,
                 attachments: msg.attachments || null
@@ -358,7 +382,56 @@ function App({ onThemeChange }) {
             }
           });
           
-          setChatMessages(loadedMessages);
+          // Second pass: pair tool_use and tool_result messages
+          const pairedMessages = [];
+          const toolUseMap = new Map(); // Map tool name to tool_use message index
+          
+          tempMessages.forEach((msg, index) => {
+            if (msg.role === 'tool_use') {
+              // Store tool_use for potential pairing
+              if (msg.toolName) {
+                toolUseMap.set(msg.toolName, pairedMessages.length);
+              }
+              pairedMessages.push(msg);
+            } else if (msg.role === 'tool_result') {
+              // Try to find matching tool_use
+              if (msg.toolName) {
+                const toolUseIndex = toolUseMap.get(msg.toolName);
+                if (toolUseIndex !== undefined && toolUseIndex !== null && pairedMessages[toolUseIndex]) {
+                  // Replace the tool_use message with unified tool message
+                  const toolUseMsg = pairedMessages[toolUseIndex];
+                  if (toolUseMsg && toolUseMsg.role === 'tool_use') {
+                    pairedMessages[toolUseIndex] = {
+                      role: 'tool',
+                      toolName: msg.toolName || toolUseMsg.toolName,
+                      args: (toolUseMsg.toolData && toolUseMsg.toolData.args) || toolUseMsg.args || {},
+                      result: msg.text || '',
+                      status: (msg.toolData && msg.toolData.status) || msg.status || 'success',
+                      toolData: {
+                        use: toolUseMsg.toolData || { name: toolUseMsg.toolName, args: toolUseMsg.args },
+                        result: {
+                          ...(msg.toolData || { result: msg.text, name: msg.toolName }),
+                          result_content: (msg.toolData && msg.toolData.result_content) || msg.result_content,
+                          content_type: (msg.toolData && msg.toolData.content_type) || msg.content_type,
+                          messages: (msg.toolData && msg.toolData.messages) || msg.messages
+                        }
+                      }
+                    };
+                    toolUseMap.delete(msg.toolName); // Remove from map
+                    // Don't add separate tool_result message
+                    return; // Skip adding this message
+                  }
+                }
+              }
+              // No matching tool_use found, add as separate tool_result
+              pairedMessages.push(msg);
+            } else {
+              // Regular message, add as-is
+              pairedMessages.push(msg);
+            }
+          });
+          
+          setChatMessages(pairedMessages);
           console.log(`Loaded ${loadedMessages.length} messages`);
         });
       } else {
@@ -817,16 +890,65 @@ function App({ onThemeChange }) {
           break;
           
         case 'tool_use':
+          // Add tool_use message - will be paired when tool_result arrives
           const toolUseText = `${data.data.name}(${JSON.stringify(data.data.args)})`;
-          // Add to main chat with special role
-          setChatMessages(prev => [...prev, { role: 'tool_use', text: toolUseText, toolData: data.data }]);
+          setChatMessages(prev => [...prev, { 
+            role: 'tool_use', 
+            text: toolUseText, 
+            toolData: data.data,
+            timestamp: Date.now() // Add timestamp for pairing
+          }]);
           setToolUses(prev => [...prev, data.data]);
           break;
           
         case 'tool_result':
+          // Pair with matching tool_use message
           const toolResultText = `${data.data.result}`;
-          // Add to main chat with special role
-          setChatMessages(prev => [...prev, { role: 'tool_result', text: toolResultText, toolData: data.data }]);
+          setChatMessages(prev => {
+            const newMessages = [...prev];
+            // Find the most recent matching tool_use message
+            let toolUseIndex = -1;
+            for (let i = newMessages.length - 1; i >= 0; i--) {
+              if (newMessages[i].role === 'tool_use' && 
+                  newMessages[i].toolData?.name === data.data.name) {
+                toolUseIndex = i;
+                break;
+              }
+            }
+            
+            if (toolUseIndex >= 0 && newMessages[toolUseIndex]) {
+              // Replace tool_use with unified tool message
+              const toolUseMsg = newMessages[toolUseIndex];
+              if (toolUseMsg && toolUseMsg.role === 'tool_use') {
+                newMessages[toolUseIndex] = {
+                  role: 'tool',
+                  toolName: data.data.name,
+                  args: (toolUseMsg.toolData && toolUseMsg.toolData.args) || toolUseMsg.args || {},
+                  result: toolResultText,
+                  status: data.data.status || 'success',
+                  toolData: {
+                    use: toolUseMsg.toolData || { name: data.data.name, args: toolUseMsg.args },
+                    result: {
+                      ...data.data,
+                      result_content: data.data.result_content,
+                      content_type: data.data.content_type,
+                      messages: data.data.messages
+                    }
+                  }
+                };
+                // Don't add separate tool_result message
+                return newMessages;
+              }
+            }
+            // No matching tool_use found, add as separate tool_result
+            newMessages.push({ 
+              role: 'tool_result', 
+              text: toolResultText, 
+              toolData: data.data 
+            });
+            return newMessages;
+            return newMessages;
+          });
           setToolResults(prev => [...prev, data.data]);
           break;
           
@@ -1666,10 +1788,15 @@ function App({ onThemeChange }) {
           <Stack spacing={1.5}>
             {chatMessages.map((message, index) => (
               <ChatMessage 
-                key={`msg-${index}-${message.text.substring(0, 20)}`}
+                key={`msg-${index}-${message.text?.substring(0, 20) || message.toolName || index}`}
                 role={message.role} 
                 text={message.text} 
                 attachments={message.attachments}
+                toolName={message.toolName}
+                args={message.args}
+                result={message.result}
+                status={message.status}
+                toolData={message.toolData}
               />
             ))}
             

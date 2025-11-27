@@ -269,12 +269,13 @@ class TokenUsageService:
         except Exception as e:
             logger.debug(f"Failed to estimate tool call tokens: {e}")
     
-    async def _handle_tool_result(self, tool_name: str, result_text: str) -> None:
+    async def _handle_tool_result(self, tool_name: str, result_text: str, status: str = None) -> None:
         """Handle TOOL_RESULT event and estimate tokens.
         
         Args:
             tool_name: Name of the tool that was called
             result_text: Result returned by the tool
+            status: Optional status of the tool execution ('success' or 'error')
         """
         try:
             # Parse result_text if it's a structured result

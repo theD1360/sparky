@@ -179,7 +179,7 @@ async def shell(
         "stderr": stderr_out,
     }
 
-    return MCPResponse.success(result=result).to_dict()
+    return MCPResponse.success(result=result, content_type="json").to_dict()
 
 
 def main():

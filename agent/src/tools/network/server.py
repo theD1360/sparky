@@ -288,7 +288,7 @@ async def ip_info(ip: str) -> dict:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(f"https://ipinfo.io/{ip}/json")
             r.raise_for_status()
-            return MCPResponse.success(r.json()).to_dict()
+            return MCPResponse.success(r.json(), content_type="json").to_dict()
     except httpx.HTTPStatusError as e:
         return MCPResponse.error(
             f"ipinfo.io API error: {e.response.status_code} - {e.response.text}"

@@ -111,17 +111,18 @@ class WebSocketForwarder:
         payload = ToolUsePayload(name=tool_name, args=tool_args, task_id=self.task_id)
         return await self.send_message(MessageType.tool_use, payload)
 
-    async def forward_tool_result(self, tool_name: str, result: str) -> bool:
+    async def forward_tool_result(self, tool_name: str, result: str, status: str = None) -> bool:
         """Forward a tool result event.
 
         Args:
             tool_name: Name of the tool that was used
             result: Result from the tool
+            status: Optional status ('success' or 'error')
 
         Returns:
             True if sent successfully, False otherwise
         """
-        payload = ToolResultPayload(name=tool_name, result=result, task_id=self.task_id)
+        payload = ToolResultPayload(name=tool_name, result=result, status=status, task_id=self.task_id)
         return await self.send_message(MessageType.tool_result, payload)
 
     async def forward_thought(self, thought: str) -> bool:

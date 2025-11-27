@@ -412,7 +412,7 @@ class GeminiProvider(LLMProvider):
             # Dispatch tool result event
             # TokenUsageService will automatically estimate tokens from this event
             await events.async_dispatch(
-                BotEvents.TOOL_RESULT, original_name, tool_result_str
+                BotEvents.TOOL_RESULT, original_name, tool_result_str, tool_result_obj.status
             )
 
             return genai.protos.Part(

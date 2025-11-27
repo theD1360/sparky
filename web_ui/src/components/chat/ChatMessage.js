@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import ToolMessage from './ToolMessage';
 import './ChatMessage.css';
 
-const ChatMessage = React.memo(({ role, text, attachments }) => {
+const ChatMessage = React.memo(({ role, text, attachments, toolName, args, result, status, toolData }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [shouldShowToggle, setShouldShowToggle] = useState(false);
   const contentRef = useRef(null);
@@ -52,6 +53,19 @@ const ChatMessage = React.memo(({ role, text, attachments }) => {
       setShouldShowToggle(height > 100);
     }
   }, [text, isCollapsible]);
+
+  // Handle unified tool messages - must be after hooks
+  if (role === 'tool') {
+    return (
+      <ToolMessage
+        toolName={toolName}
+        args={args}
+        result={result}
+        status={status}
+        toolData={toolData}
+      />
+    );
+  }
 
   // Status messages don't get bubbles
   if (role === 'status') {
