@@ -2,7 +2,6 @@
 
 Sparky is a powerful AI assistant.
 
-
 ## Getting Started
 
 To get Sparky running, follow these steps:
@@ -17,7 +16,6 @@ To get Sparky running, follow these steps:
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-
 ## Features
 
 - **Knowledge Graph**: Store and retrieve information using a graph-based memory system
@@ -29,11 +27,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Table of Contents
 
-*   [Architecture Overview](docs/architecture_overview.md): High-level overview of Sparky's internal architecture and components.
-*   [Identity](docs/identity.md): Details about Sparky's self-perception, values, and capabilities.
-*   [Context Management](docs/context_management.md): Explanation of how Sparky manages and utilizes context during conversations and tasks.
-*   [Message Middleware](docs/MESSAGE_MIDDLEWARE.md): Intercept and modify user messages with middleware.
-*   [Quick Start: Command Middleware](docs/QUICK_START_MIDDLEWARE.md): 5-minute guide to slash commands.
+*   [Architecture](docs/architecture/architecture.md): Details about Sparky's internal architecture and components.
+*   [Message Middleware](docs/middleware/MESSAGE_MIDDLEWARE.md): Intercept and modify user messages with middleware.
+*   [Quick Start: Command Middleware](docs/middleware/QUICK_START_MIDDLEWARE.md): 5-minute guide to slash commands.
+*   [Knowledge Graph](docs/knowledge_graph/knowledge_graph.md): Description of Sparky's knowledge graph and how it is used for reasoning and information retrieval.
 
 ## Examples
 
@@ -43,8 +40,5 @@ Here are a few examples of how to interact with Sparky:
 *   "Analyze my recent performance and suggest areas for improvement."
 *   "Summarize the key points from our last conversation."
 *   "What tools can you use to help me with research?"
-
-*   [Tool Usage](docs/tool_usage.md): Information on the tools Sparky can use and how they are employed to accomplish tasks.
-*   [Knowledge Graph](docs/knowledge_graph.md): Description of Sparky's knowledge graph and how it is used for reasoning and information retrieval.
 
 This is a test append.

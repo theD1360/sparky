@@ -99,13 +99,10 @@ npm start
 
 ## 📚 Documentation
 
-- **[Agent Documentation](agent/README.md)** - Detailed information about Sparky's architecture and features
+- **[Agent Development Guide](docs/agent_development_guide.md)** - Development best practices and conventions for contributors.
 - **[Docker Setup Guide](DOCKER_SETUP.md)** - Complete Docker setup and troubleshooting
-- **[Architecture Documentation](agent/docs/)** - In-depth technical documentation
-  - [Architecture Overview](agent/docs/architecture/overview.md)
-  - [Token Budget System](agent/docs/core/token_budget.md)
-  - [Knowledge Graph](agent/docs/knowledge_graph/)
-  - [Middleware System](agent/docs/middleware/)
+- **[Graph Intelligence Features](docs/features/graph_intelligence_features.md)** - Semantic similarity search, health checks, graph exports, and duplicate management.
+- **[Task Chat Integration](docs/features/task_chat_integration.md)** - Executing tasks within existing chat contexts.
 
 ## 🎮 Usage Examples
 
@@ -132,6 +129,7 @@ BadRobot/
 │   ├── tests/             # Test suite
 │   └── docs/              # Technical documentation
 ├── web_ui/                # React frontend
+│   └── docs/              # WEB UI Specific documentation, including speech models
 ├── docker-compose.yml     # Docker orchestration
 ├── Dockerfile            # Container definition
 └── .env.example          # Environment template
@@ -170,10 +168,6 @@ test: add or update tests
 
 Pre-commit hooks are configured to enforce code quality and commit message standards.
 
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 ## 🐛 Troubleshooting
 
 ### Database connection issues
@@ -200,6 +194,10 @@ pre-commit install
 ```
 
 For more help, check the [Docker Setup Guide](DOCKER_SETUP.md) or open an issue.
+
+### Speech Model issues
+
+See `web_ui/docs/SPEECH_MODELS_TROUBLESHOOTING.md` and `web_ui/docs/vits_voice_fix_summary.md` for common issues
 
 ---
 

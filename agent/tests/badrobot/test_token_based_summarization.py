@@ -297,7 +297,7 @@ class TestIntegrationWithStartChat:
                 orchestrator.events.async_dispatch = AsyncMock()
                 
                 # Call start_chat
-                await orchestrator.start_chat(session_id="test-session")
+                await orchestrator.start_chat(chat_id="test-session")
                 
                 # Verify summarization was called
                 orchestrator._summarize_conversation.assert_called_once()
@@ -331,7 +331,7 @@ class TestIntegrationWithStartChat:
                 orchestrator.events.async_dispatch = AsyncMock()
                 
                 # Call start_chat
-                await orchestrator.start_chat(session_id="test-session")
+                await orchestrator.start_chat(chat_id="test-session")
                 
                 # Verify summarization was NOT called
                 orchestrator._summarize_conversation.assert_not_called()

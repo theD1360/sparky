@@ -15,9 +15,9 @@ from uuid import uuid4
 
 from badmcp.control import Control
 from badmcp.tool_chain import ToolChain
+from events import TaskEvents
 from services import TaskService
 from sparky import AgentOrchestrator
-from events import TaskEvents
 from sparky.middleware import (
     CommandPromptMiddleware,
     ResourceFetchingMiddleware,
@@ -341,7 +341,6 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
                     f"Starting chat for task {task_id} with chat_id={chat_id}, user={task_user_id}"
                 )
                 await bot.start_chat(
-                    session_id=self.session_id,
                     user_id=task_user_id,  # Use task's user_id (from chat or default to agent)
                     chat_id=chat_id,
                     chat_name=chat_name,
@@ -412,11 +411,15 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
                         if forwarder:
                             await forwarder.forward_tool_use(tool_name, tool_args)
 
-                    async def on_tool_result(tool_name: str, result: str, status: str = None):
+                    async def on_tool_result(
+                        tool_name: str, result: str, status: str = None
+                    ):
                         """Forward tool result events to WebSocket."""
                         forwarder = await _get_or_refresh_forwarder()
                         if forwarder:
-                            await forwarder.forward_tool_result(tool_name, result, status)
+                            await forwarder.forward_tool_result(
+                                tool_name, result, status
+                            )
 
                     async def on_thought(thought: str):
                         """Forward thought events to WebSocket."""
