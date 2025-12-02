@@ -194,7 +194,7 @@ class TokenUsageService:
             source: Source of the estimate (e.g., 'history', 'message', 'thought')
         """
         if self.events:
-            from sparky.event_types import BotEvents
+            from events import BotEvents
 
             await self.events.async_dispatch(
                 BotEvents.TOKEN_ESTIMATE, estimated_tokens, source
@@ -208,7 +208,7 @@ class TokenUsageService:
             usage_dict: Dictionary with token counts (input_tokens, output_tokens, etc.)
         """
         if self.events:
-            from sparky.event_types import BotEvents
+            from events import BotEvents
 
             await self.events.async_dispatch(BotEvents.TOKEN_USAGE, usage_dict)
             logger.debug(

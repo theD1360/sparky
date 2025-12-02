@@ -5,6 +5,7 @@ and the agent to ensure consistent toolchain and knowledge setup.
 """
 
 import asyncio
+import os
 import traceback
 from logging import getLogger
 from typing import List, Optional, Tuple
@@ -12,6 +13,9 @@ from typing import List, Optional, Tuple
 from badmcp.config import MCPConfig
 from badmcp.tool_chain import ToolChain
 from badmcp.tool_client import ToolClient
+from database.database import get_database_manager
+from database.repository import KnowledgeRepository
+from services import KnowledgeService
 
 logger = getLogger(__name__)
 
@@ -99,8 +103,6 @@ async def initialize_toolchain_with_knowledge(
     Returns:
         Tuple of (toolchain, knowledge, error_message)
     """
-    from sparky.knowledge import Knowledge
-
     # Initialize toolchain
     toolchain, error = await initialize_toolchain(log_prefix=log_prefix)
     if error:
@@ -109,11 +111,26 @@ async def initialize_toolchain_with_knowledge(
     try:
         # Initialize Knowledge module
         logger.info(f"[{log_prefix}] Initializing shared Knowledge module...")
-        knowledge = Knowledge(
-            session_id=session_id,
-            model=None,  # Will be set per-connection for chat server
-            auto_memory=True,
-        )
+        
+        # Create repository first
+        db_url = os.getenv("SPARKY_DB_URL")
+        if not db_url:
+            logger.warning(
+                f"[{log_prefix}] SPARKY_DB_URL not set, KnowledgeService will not be initialized"
+            )
+            knowledge = None
+        else:
+            db_manager = get_database_manager(db_url=db_url)
+            db_manager.connect()
+            repository = KnowledgeRepository(db_manager)
+            
+            knowledge = KnowledgeService(
+                repository=repository,
+                session_id=session_id,
+                model=None,  # Will be set per-connection for chat server
+                auto_memory=True,
+            )
+            logger.info(f"[{log_prefix}] Initialized KnowledgeService with repository")
 
         return toolchain, knowledge, None
 

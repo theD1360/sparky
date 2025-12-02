@@ -17,6 +17,7 @@ from .auth_service import (
 )
 from .file_service import FileService
 from .identity_service import IdentityService
+from .knowledge_service import KnowledgeService
 from .message_service import MessageService
 from .task_service import TaskService
 from .token_usage import CharacterBasedEstimator, TokenEstimator, TokenUsageService
@@ -32,6 +33,7 @@ __all__ = [
     "UserManagementService",
     "IdentityService",
     "FileService",
+    "KnowledgeService",
     "TaskService",
     "create_access_token",
     "create_refresh_token",

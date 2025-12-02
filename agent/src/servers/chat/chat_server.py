@@ -11,6 +11,10 @@ from typing import Any, Dict, Optional, Tuple
 
 import aiofiles
 from badmcp.tool_chain import ToolChain
+
+# Import the necessary components for the agent orchestrator
+from database.database import get_database_manager
+from database.repository import KnowledgeRepository
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -42,15 +46,12 @@ from servers.chat.routes import (
     health_router,
     prompts_router,
     resources_router,
-    user_router,
     user_management_router,
+    user_router,
 )
-
-# Import the necessary components for the agent orchestrator
+from services import KnowledgeService
 from sparky import AgentOrchestrator
 from sparky.constants import SPARKY_CHAT_PID_FILE
-from sparky.knowledge import Knowledge
-from sparky.toolchain_cache import get_toolchain_cache
 from sparky.logging_config import setup_logging
 from sparky.middleware import (
     CommandPromptMiddleware,
@@ -59,6 +60,7 @@ from sparky.middleware import (
     SelfModificationGuard,
 )
 from sparky.providers import GeminiProvider, ProviderConfig
+from sparky.toolchain_cache import get_toolchain_cache
 
 
 class ToolUsageData(BaseModel):
@@ -75,7 +77,7 @@ setup_logging()
 
 # Shared resources loaded once at server startup
 _app_toolchain: ToolChain | None = None
-_app_knowledge: Knowledge | None = None
+_app_knowledge: KnowledgeService | None = None
 _startup_error: str | None = None
 _connection_manager: "ConnectionManager | None" = None
 _agent_loop_instance = None
@@ -99,7 +101,7 @@ class ConnectionManager:
         # user_id -> chat_id -> agent orchestrator instance
         self.bot_sessions: Dict[str, Dict[str, AgentOrchestrator]] = {}
         # user_id -> chat_id -> Knowledge instance (isolated per chat)
-        self.knowledge_instances: Dict[str, Dict[str, Knowledge]] = {}
+        self.knowledge_instances: Dict[str, Dict[str, KnowledgeService]] = {}
         # user_id -> current active chat_id
         self.current_chat: Dict[str, str] = {}
         # user_id -> last activity timestamp
@@ -129,7 +131,9 @@ class ConnectionManager:
             Tuple of (toolchain, error_message)
         """
         if self.tools_initialized.get(user_id, False) and self.toolchain:
-            logger.info(f"[{user_id}] Tools already initialized for user, using cached toolchain")
+            logger.info(
+                f"[{user_id}] Tools already initialized for user, using cached toolchain"
+            )
             return self.toolchain, None
 
         logger.info(f"[{user_id}] Initializing tools for first time...")
@@ -196,23 +200,25 @@ class ConnectionManager:
 
     async def _maybe_start_agent_loop(self, toolchain: ToolChain):
         """Start agent loop if enabled and not already running.
-        
+
         Args:
             toolchain: Initialized toolchain to use
         """
         global _agent_loop_instance, _agent_loop_task
-        
+
         # Check if already running
         if _agent_loop_instance is not None:
             logger.info("Agent loop already running, skipping startup")
             return
-        
+
         # Check if enabled
-        enable_agent_loop = os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
+        enable_agent_loop = (
+            os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
+        )
         if not enable_agent_loop:
             logger.debug("Agent loop not enabled (SPARKY_ENABLE_AGENT_LOOP=false)")
             return
-        
+
         try:
             logger.info("Starting agent loop after toolchain initialization...")
             from servers.task import AgentLoop
@@ -225,7 +231,9 @@ class ConnectionManager:
                 connection_manager=self,
             )
             _agent_loop_task = _agent_loop_instance.start_background()
-            logger.info(f"Agent loop started in background (poll interval: {poll_interval}s)")
+            logger.info(
+                f"Agent loop started in background (poll interval: {poll_interval}s)"
+            )
         except Exception as e:
             logger.error(f"Failed to start agent loop: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -233,7 +241,7 @@ class ConnectionManager:
     async def load_and_cache_identity(
         self,
         user_id: str,
-        knowledge: Knowledge,
+        knowledge: KnowledgeService,
         generate_fn: Any,
     ) -> Tuple[str, str]:
         """Load identity and cache it at user level.
@@ -315,11 +323,36 @@ class ConnectionManager:
 
         # Create isolated Knowledge instance for this chat
         logger.info(f"[{user_id}:{chat_id}] Creating isolated Knowledge instance")
-        # Use chat_id as the session identifier for Knowledge (each chat has its own memory context)
-        knowledge = Knowledge(
-            session_id=chat_id,
-            model=None,
-        )
+
+        # Create repository first
+        db_url = os.getenv("SPARKY_DB_URL")
+        if not db_url:
+            logger.warning(
+                f"[{user_id}:{chat_id}] SPARKY_DB_URL not set, KnowledgeService will not be initialized"
+            )
+            knowledge = None
+        else:
+            try:
+                db_manager = get_database_manager(db_url=db_url)
+                db_manager.connect()
+                repository = KnowledgeRepository(db_manager)
+
+                # Use chat_id as the session identifier for Knowledge (each chat has its own memory context)
+                knowledge = KnowledgeService(
+                    repository=repository,
+                    session_id=chat_id,
+                    model=None,
+                )
+                logger.info(
+                    f"[{user_id}:{chat_id}] Initialized KnowledgeService with repository"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{user_id}:{chat_id}] Failed to initialize KnowledgeService: {e}",
+                    exc_info=True,
+                )
+                knowledge = None
+
         self.knowledge_instances[user_id][chat_id] = knowledge
 
         # Create bot with user-specific callbacks
@@ -381,7 +414,7 @@ class ConnectionManager:
                     # Ensure result is a string
                     if not isinstance(result_text, str):
                         result_text = "" if result_text is None else str(result_text)
-                    
+
                     # Parse structured data from result
                     result_content = None
                     messages = None
@@ -389,20 +422,26 @@ class ConnectionManager:
                         # Try to parse as JSON to extract structured data
                         parsed_result = json.loads(result_text) if result_text else None
                         if isinstance(parsed_result, dict):
-                            result_content = parsed_result.get("result") or parsed_result.get("content") or parsed_result
-                            messages = parsed_result.get("messages") or parsed_result.get("message")
+                            result_content = (
+                                parsed_result.get("result")
+                                or parsed_result.get("content")
+                                or parsed_result
+                            )
+                            messages = parsed_result.get(
+                                "messages"
+                            ) or parsed_result.get("message")
                             if messages and not isinstance(messages, list):
                                 messages = [messages]
                     except (json.JSONDecodeError, TypeError):
                         # Not JSON, use as-is
                         pass
-                    
+
                     payload = ToolResultPayload(
-                        name=str(tool_name), 
-                        result=result_text, 
+                        name=str(tool_name),
+                        result=result_text,
                         status=status,
                         result_content=result_content,
-                        messages=messages
+                        messages=messages,
                     )
                     msg = WSMessage(
                         type=MessageType.tool_result,
@@ -512,7 +551,7 @@ class ConnectionManager:
         )
 
         # Subscribe to all bot events using consistent event subscription pattern
-        from sparky.event_types import BotEvents
+        from events import BotEvents
 
         # WebSocket notifications
         bot.events.subscribe(BotEvents.TOOL_USE, send_tool_use_notification)
@@ -550,9 +589,7 @@ class ConnectionManager:
         logger.info(f"[{user_id}:{chat_id}] Bot instance created and chat started")
         return bot
 
-    async def switch_chat(
-        self, user_id: str, chat_id: str
-    ) -> AgentOrchestrator:
+    async def switch_chat(self, user_id: str, chat_id: str) -> AgentOrchestrator:
         """Switch to a different chat for a user.
 
         Args:
@@ -573,7 +610,9 @@ class ConnectionManager:
             bot = self.bot_sessions[user_id][chat_id]
             # Check if chat is initialized - if not, initialize it
             if not bot.chat:
-                logger.info(f"[{user_id}:{chat_id}] Bot exists but chat not initialized, initializing...")
+                logger.info(
+                    f"[{user_id}:{chat_id}] Bot exists but chat not initialized, initializing..."
+                )
                 await bot.start_chat(
                     user_id=user_id,
                     chat_id=chat_id,
@@ -586,9 +625,7 @@ class ConnectionManager:
             logger.info(f"[{user_id}:{chat_id}] Creating new bot for chat")
             return await self.create_bot_for_chat(user_id, chat_id)
 
-    def connect(
-        self, user_id: str, websocket: WebSocket
-    ):
+    def connect(self, user_id: str, websocket: WebSocket):
         """Register active websocket connection for a user.
 
         Args:
@@ -730,27 +767,31 @@ async def cleanup_server(app: FastAPI):
         logger.info("Connection manager initialized")
 
         # Check if agent loop is enabled
-        enable_agent_loop = os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
-        
+        enable_agent_loop = (
+            os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
+        )
+
         if enable_agent_loop:
             # If agent loop is enabled, load toolchain at startup
             logger.info("Agent loop is enabled - loading toolchain at startup")
             from sparky.toolchain_cache import get_toolchain_cache
-            
+
             cache = get_toolchain_cache()
             toolchain, error = await cache.get_or_load_toolchain()
-            
+
             if error:
                 logger.error(f"Failed to load toolchain at startup: {error}")
                 _startup_error = error
             elif toolchain:
                 _connection_manager.toolchain = toolchain
-                logger.info(f"Toolchain loaded at startup: {len(toolchain.tool_clients)} tool server(s)")
-                
+                logger.info(
+                    f"Toolchain loaded at startup: {len(toolchain.tool_clients)} tool server(s)"
+                )
+
                 # Start agent loop immediately
                 try:
                     from servers.task import AgentLoop
-                    
+
                     poll_interval = int(os.getenv("SPARKY_AGENT_POLL_INTERVAL", "10"))
                     _agent_loop_instance = AgentLoop(
                         toolchain=toolchain,
@@ -759,12 +800,16 @@ async def cleanup_server(app: FastAPI):
                         connection_manager=_connection_manager,
                     )
                     _agent_loop_task = _agent_loop_instance.start_background()
-                    logger.info(f"Agent loop started at startup (poll interval: {poll_interval}s)")
+                    logger.info(
+                        f"Agent loop started at startup (poll interval: {poll_interval}s)"
+                    )
                 except Exception as e:
                     logger.error(f"Failed to start agent loop: {e}")
                     logger.error(f"Traceback: {traceback.format_exc()}")
         else:
-            logger.info("Agent loop is disabled - toolchain will be loaded on first client connection")
+            logger.info(
+                "Agent loop is disabled - toolchain will be loaded on first client connection"
+            )
             logger.info("Set SPARKY_ENABLE_AGENT_LOOP=true to enable agent loop")
 
         # Start periodic cleanup task
@@ -986,18 +1031,14 @@ async def get_file_thumbnail(file_id: str, max_size: int = 200):
 
 
 @app.post("/upload_file")
-async def upload_file(
-    chat_id: str, user_id: str, file: UploadFile = File(...)
-):
+async def upload_file(chat_id: str, user_id: str, file: UploadFile = File(...)):
     """Upload a file and store it, creating a corresponding node in the knowledge graph."""
     import re
 
     from fastapi import HTTPException
 
     if not chat_id or not user_id:
-        raise HTTPException(
-            status_code=400, detail="chat_id and user_id are required"
-        )
+        raise HTTPException(status_code=400, detail="chat_id and user_id are required")
 
     # Security: File size limit (10MB)
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB in bytes
@@ -1190,7 +1231,8 @@ async def upload_file(
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(
-    websocket: WebSocket, token: Optional[str] = Query(None, description="JWT authentication token")
+    websocket: WebSocket,
+    token: Optional[str] = Query(None, description="JWT authentication token"),
 ):
     """WebSocket endpoint with two-phase architecture:
 
@@ -1265,12 +1307,16 @@ async def websocket_endpoint(
             authenticated_user = get_user_from_websocket_token(jwt_token)
             if authenticated_user:
                 user_id = authenticated_user.id
-                logger.info(f"Authenticated user via JWT: {user_id} ({authenticated_user.username})")
+                logger.info(
+                    f"Authenticated user via JWT: {user_id} ({authenticated_user.username})"
+                )
             else:
                 await websocket.send_text(
                     WSMessage(
                         type=MessageType.error,
-                        data=ErrorPayload(message="Invalid or expired authentication token"),
+                        data=ErrorPayload(
+                            message="Invalid or expired authentication token"
+                        ),
                     ).to_text()
                 )
                 await websocket.close()
@@ -1304,7 +1350,9 @@ async def websocket_endpoint(
             await websocket.send_text(
                 WSMessage(
                     type=MessageType.error,
-                    data=ErrorPayload(message=f"Tool initialization failed: {error_msg}"),
+                    data=ErrorPayload(
+                        message=f"Tool initialization failed: {error_msg}"
+                    ),
                     user_id=user_id,
                 ).to_text()
             )
@@ -1313,7 +1361,9 @@ async def websocket_endpoint(
 
         # Send ready message
         tools_loaded = len(toolchain.tool_clients) if toolchain else 0
-        logger.info(f"[{user_id}] User ready with {tools_loaded} tool(s), sending ready message")
+        logger.info(
+            f"[{user_id}] User ready with {tools_loaded} tool(s), sending ready message"
+        )
         await websocket.send_text(
             WSMessage(
                 type=MessageType.ready,
@@ -1699,8 +1749,11 @@ if BUILD_DIR:
         # Don't serve SPA for API routes - let them 404 naturally
         if full_path.startswith("api/"):
             from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail=f"API endpoint not found: /{full_path}")
-        
+
+            raise HTTPException(
+                status_code=404, detail=f"API endpoint not found: /{full_path}"
+            )
+
         index_path = os.path.join(BUILD_DIR, "index.html")
         if not os.path.exists(index_path):
             logger.error(f"index.html not found at {index_path}")

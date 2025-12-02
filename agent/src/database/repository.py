@@ -941,7 +941,12 @@ class KnowledgeRepository:
                 query = query.offset(offset)
             if limit:
                 query = query.limit(limit)
-            return query.all()
+            edges = query.all()
+            # Refresh and expunge all edges to detach from session
+            for edge in edges:
+                session.refresh(edge)
+                session.expunge(edge)
+            return edges
 
     def get_edges_count(self, source_id: Optional[str]=None, target_id: Optional[str]=None, edge_type: Optional[str]=None) -> int:
         """Get count of edges with optional filtering.
@@ -1176,9 +1181,8 @@ class KnowledgeRepository:
             else:
                 incoming_results = []
             all_results = outgoing_results + incoming_results
+            # Expunge objects to detach from session (no refresh needed for freshly queried objects)
             for edge, node in all_results:
-                session.refresh(edge)
-                session.refresh(node)
                 session.expunge(edge)
                 session.expunge(node)
             return all_results
@@ -1253,8 +1257,9 @@ class KnowledgeRepository:
                 if current == end_id:
                     return path
                 neighbors = self.get_node_neighbors(current, direction='both')
-                for _, neighbor_node in neighbors:
-                    neighbor_id = neighbor_node.id
+                # Extract node IDs immediately to avoid detached instance issues
+                neighbor_ids = [neighbor_node.id for _, neighbor_node in neighbors]
+                for neighbor_id in neighbor_ids:
                     if neighbor_id not in visited:
                         visited.add(neighbor_id)
                         queue.append((neighbor_id, path + [neighbor_id]))
@@ -1287,8 +1292,9 @@ class KnowledgeRepository:
                     all_paths_list.append(path.copy())
                     return
                 neighbors = self.get_node_neighbors(current, direction='both')
-                for _, neighbor_node in neighbors:
-                    neighbor_id = neighbor_node.id
+                # Extract node IDs immediately to avoid detached instance issues
+                neighbor_ids = [neighbor_node.id for _, neighbor_node in neighbors]
+                for neighbor_id in neighbor_ids:
                     if neighbor_id not in visited:
                         visited.add(neighbor_id)
                         path.append(neighbor_id)
@@ -1381,8 +1387,9 @@ class KnowledgeRepository:
                 while queue:
                     current = queue.popleft()
                     neighbors = self.get_node_neighbors(current, direction='both')
-                    for _, neighbor_node in neighbors:
-                        neighbor_id = neighbor_node.id
+                    # Extract node IDs immediately to avoid detached instance issues
+                    neighbor_ids = [neighbor_node.id for _, neighbor_node in neighbors]
+                    for neighbor_id in neighbor_ids:
                         if neighbor_id not in visited:
                             visited.add(neighbor_id)
                             component.add(neighbor_id)
@@ -1422,14 +1429,17 @@ class KnowledgeRepository:
                 if depth >= max_depth:
                     continue
                 neighbors = self.get_node_neighbors(current, direction=direction, edge_types=edge_types)
+                # Extract node information immediately to avoid detached instance issues
                 for edge, neighbor_node in neighbors:
-                    if node_types and neighbor_node.node_type not in node_types:
+                    neighbor_id = neighbor_node.id
+                    neighbor_type = neighbor_node.node_type
+                    if node_types and neighbor_type not in node_types:
                         continue
                     if edge not in visited_edges:
                         visited_edges.append(edge)
-                    if neighbor_node.id not in visited_nodes:
-                        visited_nodes.add(neighbor_node.id)
-                        queue.append((neighbor_node.id, depth + 1))
+                    if neighbor_id not in visited_nodes:
+                        visited_nodes.add(neighbor_id)
+                        queue.append((neighbor_id, depth + 1))
             subgraph = {'nodes': [node.to_dict() for node in session.query(Node).filter(Node.id.in_(visited_nodes)).all()], 'edges': [edge.to_dict() for edge in visited_edges], 'statistics': {'node_count': len(visited_nodes), 'edge_count': len(visited_edges), 'max_depth_reached': max_depth}}
             return subgraph
 
@@ -1456,10 +1466,15 @@ class KnowledgeRepository:
                     if node_id not in context['nodes']:
                         context['nodes'][node_id] = node.to_dict() if node_id == node.id else session.query(Node).filter(Node.id == node_id).first().to_dict()
                     neighbors = self.get_node_neighbors(node_id, direction='both')
-                    for edge, neighbor_node in neighbors:
-                        next_level.add(neighbor_node.id)
-                        if edge not in context['edges']:
-                            context['edges'].append(edge.to_dict())
+                    # Extract node IDs immediately to avoid detached instance issues
+                    neighbor_ids = [neighbor_node.id for _, neighbor_node in neighbors]
+                    for neighbor_id in neighbor_ids:
+                        next_level.add(neighbor_id)
+                    # Also collect edges for context (extract immediately to avoid detached instance issues)
+                    for edge, _ in neighbors:
+                        edge_dict = edge.to_dict()
+                        if edge_dict not in context['edges']:
+                            context['edges'].append(edge_dict)
                 nodes_to_visit.update(next_level)
                 current_level = next_level
             for node_id in nodes_to_visit:

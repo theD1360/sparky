@@ -1,20 +1,21 @@
-"""Knowledge Module - Handles memory, reflection, and knowledge graph operations.
+"""Knowledge service for handling memory, reflection, and knowledge graph operations.
 
-This module provides a clean separation between the Bot's core functionality
-and knowledge management. It communicates with the Bot via events.
+This service provides a clean interface for knowledge management operations,
+acting as glue between the knowledge repository and other parts of the codebase.
+It handles memory management, tool call tracking, session management, and
+knowledge graph associations.
 """
 
 import datetime as _dt
+import json
 import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
 
-from database.database import get_database_manager
 from database.repository import KnowledgeRepository
+from events import BotEvents, KnowledgeEvents
 from utils.events import Events
-
-from .event_types import BotEvents, KnowledgeEvents
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +25,19 @@ def get_utc_timestamp() -> str:
     return _dt.datetime.utcnow().isoformat()
 
 
-class Knowledge:
-    """Manages memory, reflection, and knowledge graph operations.
+class KnowledgeService:
+    """Service for managing memory, reflection, and knowledge graph operations.
 
-    The Knowledge module handles all knowledge-related operations independently
-    from the AgentOrchestrator, communicating via events for clean separation of concerns.
+    This service acts as the glue layer between the knowledge repository and
+    other parts of the codebase. It handles:
+    - Memory management (transcripts, summaries, lessons)
+    - Tool call tracking and indexing
+    - Session management in the knowledge graph
+    - Automatic memory associations
+    - Event-driven knowledge operations
+
+    The service communicates with other components via events for clean
+    separation of concerns.
     """
 
     # Tools that should NOT be logged to the knowledge graph (prevents recursion)
@@ -74,6 +83,7 @@ class Knowledge:
     # pylint: disable=too-many-instance-attributes
     def __init__(
         self,
+        repository: KnowledgeRepository,
         session_id: Optional[str] = None,
         model: Optional[Any] = None,
         summary_every: Optional[int] = None,
@@ -83,10 +93,10 @@ class Knowledge:
         association_depth: int = 2,
         identity_search_terms: Optional[List[str]] = None,
     ):
-        """Initialize the Knowledge module.
+        """Initialize the Knowledge service.
 
         Args:
-            toolchain: ToolChain instance for calling memory/knowledge tools
+            repository: KnowledgeRepository instance (required)
             session_id: Session identifier for memory management
             model: Gemini model instance (shared reference for the bot)
             summary_every: Turns between summaries (default: env or 5)
@@ -96,6 +106,10 @@ class Knowledge:
             association_depth: Max depth for loading associated memories (default: 2)
             identity_search_terms: Custom search terms for finding identity memories (default: ["who am I and what is my purpose?"])
         """
+        if not repository:
+            raise ValueError("KnowledgeRepository is required")
+
+        self.repository = repository
         self.session_id = session_id or _dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
         self.model = model
         self.auto_memory = auto_memory
@@ -129,34 +143,6 @@ class Knowledge:
         self._mem_summary_key = f"chat:session:{self.session_id}:summary"
         self._mem_lessons_key = "chat:lessons"
         self._mem_initialized = False
-
-        # Check available tools
-
-        # Initialize repository for direct database access
-        try:
-            # Get database URL from environment (required for PostgreSQL)
-            db_url = os.getenv("SPARKY_DB_URL")
-            if not db_url:
-                raise RuntimeError(
-                    "SPARKY_DB_URL environment variable is required for database connection"
-                )
-
-            # Mask password in log for security
-            safe_db_url = db_url.split("@")[-1] if "@" in db_url else db_url[:50]
-            logger.info(f"Knowledge: Connecting to database: ...@{safe_db_url}")
-
-            db_manager = get_database_manager(db_url=db_url)
-            db_manager.connect()
-            self.repository = KnowledgeRepository(db_manager)
-            logger.info("Knowledge: Initialized repository for direct database access")
-        except Exception as e:
-            logger.error(
-                f"Knowledge: Failed to initialize repository: {e}",
-                exc_info=True,
-            )
-            self.repository = None
-
-        print(f"Knowledge: self.repository = {self.repository}")
 
         # Turn tracking
         self._turn_index = 0
@@ -1057,8 +1043,6 @@ Cannot proceed without identity."""
             )
 
             # Create ToolCall node with all details
-            import json
-
             properties = {
                 "tool_name": tool_name,
                 "arguments": json.dumps(arguments, separators=(",", ":")),

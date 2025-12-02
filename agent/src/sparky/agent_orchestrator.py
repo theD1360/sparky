@@ -10,11 +10,19 @@ from typing import Any, Coroutine, List, Optional
 from uuid import uuid4
 
 from badmcp.tool_chain import ToolChain
-from services import FileService, IdentityService, MessageService, UserService
+from database.database import get_database_manager
+from database.repository import KnowledgeRepository
+from services import (
+    FileService,
+    IdentityService,
+    KnowledgeService,
+    MessageService,
+    UserService,
+)
 from utils.async_util import run_async
+from events import BotEvents
 from utils.events import Events
 
-from .event_types import BotEvents
 from .history_utils import convert_nodes_to_llm_format, format_nodes_for_summary
 from .logging_config import setup_logging
 from .middleware import BaseMiddleware, MiddlewareRegistry, ToolCallContext
@@ -239,7 +247,9 @@ class AgentOrchestrator:
         )
         self.events.subscribe(
             BotEvents.TOOL_RESULT,
-            lambda tool_name, result, status=None: self._handle_tool_result(tool_name, result, status),
+            lambda tool_name, result, status=None: self._handle_tool_result(
+                tool_name, result, status
+            ),
         )
         self.events.subscribe(
             BotEvents.THOUGHT,
@@ -391,7 +401,7 @@ class AgentOrchestrator:
             if len(messages_to_check) < 20:
                 logger.debug(
                     "Skipping summarization: only %d messages (need at least 20)",
-                    len(messages_to_check)
+                    len(messages_to_check),
                 )
                 return False
 
@@ -400,13 +410,16 @@ class AgentOrchestrator:
             if messages_to_check:
                 first_message = messages_to_check[0]
                 if first_message.created_at:
-                    conversation_age = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc) - first_message.created_at
+                    conversation_age = (
+                        datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+                        - first_message.created_at
+                    )
                     min_age_minutes = 5
                     if conversation_age.total_seconds() < min_age_minutes * 60:
                         logger.debug(
                             "Skipping summarization: conversation only %.1f minutes old (need at least %d)",
                             conversation_age.total_seconds() / 60,
-                            min_age_minutes
+                            min_age_minutes,
                         )
                         return False
 
@@ -419,7 +432,9 @@ class AgentOrchestrator:
             # pylint: enable=protected-access
 
             if not messages:
-                logger.debug("No messages to check after conversion, skipping summarization")
+                logger.debug(
+                    "No messages to check after conversion, skipping summarization"
+                )
                 return False
 
             # Estimate tokens
@@ -773,7 +788,11 @@ class AgentOrchestrator:
         # Store chat_id for linking messages to the chat node
         self._chat_id = chat_id
         # Use chat_id as session identifier for Knowledge (backward compatibility with Knowledge class)
-        self._session_id = chat_id if chat_id else f"{user_id}:{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        self._session_id = (
+            chat_id
+            if chat_id
+            else f"{user_id}:{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        )
 
         # Use provided user_id or default
         if not user_id:
@@ -786,25 +805,41 @@ class AgentOrchestrator:
 
         # Initialize or update Knowledge module with the chat_id
         if self.knowledge is None and self.toolchain is not None:
-            # Create new Knowledge module with chat_id as session identifier
-            from .knowledge import Knowledge
+            # Create repository first
+            db_url = os.getenv("SPARKY_DB_URL")
+            if not db_url:
+                logger.warning(
+                    "SPARKY_DB_URL not set, KnowledgeService will not be initialized"
+                )
+            else:
+                try:
+                    db_manager = get_database_manager(db_url=db_url)
+                    db_manager.connect()
+                    repository = KnowledgeRepository(db_manager)
 
-            # Use chat_id as the session identifier for Knowledge (each chat has its own memory context)
-            self.knowledge = Knowledge(
-                session_id=self._session_id,
-                model=None,
-                identity_search_terms=self.identity_search_terms,
-            )
-            # Subscribe to bot events
-            self.knowledge.subscribe_to_bot_events(self.events)
+                    # Use chat_id as the session identifier for Knowledge (each chat has its own memory context)
+                    self.knowledge = KnowledgeService(
+                        repository=repository,
+                        session_id=self._session_id,
+                        model=None,
+                        identity_search_terms=self.identity_search_terms,
+                    )
+                    # Subscribe to bot events
+                    self.knowledge.subscribe_to_bot_events(self.events)
+                    logger.info("Initialized KnowledgeService with repository")
+                except Exception as e:
+                    logger.error(
+                        f"Failed to initialize KnowledgeService: {e}", exc_info=True
+                    )
 
         elif self.knowledge is not None:
             # Update existing Knowledge module with new chat_id
             # This requires recreating certain session-specific components
             self.knowledge.session_id = self._session_id
-            self.knowledge._mem_transcript_key = f"chat:session:{self._session_id}:transcript"
+            self.knowledge._mem_transcript_key = (
+                f"chat:session:{self._session_id}:transcript"
+            )
             self.knowledge._mem_summary_key = f"chat:session:{self._session_id}:summary"
-            self.knowledge._user_id = user_node_id
             # Reset turn index for new session
             self.knowledge._turn_index = 0
             # Clear associated memories tracking for new session
@@ -904,7 +939,9 @@ class AgentOrchestrator:
                         if chat_node:
                             logger.info(f"Created NEW Chat node: {chat_node_id}")
                         else:
-                            logger.warning(f"Failed to create chat node: {chat_node_id}")
+                            logger.warning(
+                                f"Failed to create chat node: {chat_node_id}"
+                            )
 
             except Exception as e:
                 logger.error(

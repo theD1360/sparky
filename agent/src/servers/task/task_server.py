@@ -17,7 +17,7 @@ from badmcp.control import Control
 from badmcp.tool_chain import ToolChain
 from services import TaskService
 from sparky import AgentOrchestrator
-from sparky.event_types import TaskEvents
+from events import TaskEvents
 from sparky.middleware import (
     CommandPromptMiddleware,
     ResourceFetchingMiddleware,
@@ -370,7 +370,7 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
                 # Only subscribe once when bot is created, not on every task execution
                 # Event handlers look up forwarder dynamically so they work with reused bots
                 if chat_id in self._chat_websocket_forwarders:
-                    from sparky.event_types import BotEvents
+                    from events import BotEvents
 
                     # Create event handlers that look up the forwarder dynamically
                     # This allows them to work with reused bot instances

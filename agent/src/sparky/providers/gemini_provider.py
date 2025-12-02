@@ -16,7 +16,7 @@ from google.generativeai.types import StopCandidateException
 from badmcp.transform.gemini_transformer import GeminiTransformer
 from utils.helpers import to_plain_obj
 
-from ..event_types import BotEvents
+from events import BotEvents
 from .base import LLMProvider, ProviderConfig
 
 logger = logging.getLogger(__name__)

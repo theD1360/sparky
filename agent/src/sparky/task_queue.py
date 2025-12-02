@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from logging import getLogger
 from typing import Any, Dict, List, Optional
 
-from sparky.event_types import TaskEvents
+from events import TaskEvents
 from database.database import get_database_manager
 from database.repository import KnowledgeRepository
 from utils.events import Events
