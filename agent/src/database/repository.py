@@ -3,17 +3,14 @@
 This module provides a clean interface for database operations, abstracting
 the SQLAlchemy implementation details from the rest of the application.
 """
-
 import json
 import logging
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
-
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import flag_modified
-
 from .database import DatabaseManager
 from .embeddings import EmbeddingManager
 from .models import Edge, Node
@@ -21,9 +18,7 @@ from .opencypher.filter_evaluator import FilterEvaluator
 from .opencypher.query_parser import QueryParser
 from .opencypher.results_projector import ResultProjector
 from .standards import normalize_edge_type, normalize_node_type
-
 logger = logging.getLogger(__name__)
-
 
 class KnowledgeRepository:
     """Repository for knowledge graph operations.
@@ -43,7 +38,7 @@ class KnowledgeRepository:
         self.evaluator = FilterEvaluator()
         self.projector = ResultProjector()
 
-    def _get_json_property_query(self, property_key: str, operation: str = "=") -> str:
+    def _get_json_property_query(self, property_key: str, operation: str='=') -> str:
         """Generate database-agnostic JSON property query.
 
         Args:
@@ -53,17 +48,13 @@ class KnowledgeRepository:
         Returns:
             SQL fragment for JSON property query
         """
-        is_postgres = self.db_manager.engine.dialect.name == "postgresql"
-
+        is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
         if is_postgres:
-            # PostgreSQL uses -> and ->> operators
-            # Use ->> for text extraction (returns text, not jsonb)
             return f"properties->>'{property_key}' {operation} :value"
         else:
-            # SQLite uses JSON_EXTRACT function
             return f"JSON_EXTRACT(properties, '$.{property_key}') {operation} :value"
 
-    def _get_json_search_query(self, operation: str = "LIKE") -> str:
+    def _get_json_search_query(self, operation: str='LIKE') -> str:
         """Generate database-agnostic JSON search query for entire properties field.
 
         Args:
@@ -72,16 +63,13 @@ class KnowledgeRepository:
         Returns:
             SQL fragment for JSON search query
         """
-        is_postgres = self.db_manager.engine.dialect.name == "postgresql"
-
+        is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
         if is_postgres:
-            # PostgreSQL: Cast to text for LIKE search
-            return f"properties::text {operation} :pattern"
+            return f'properties::text {operation} :pattern'
         else:
-            # SQLite uses JSON_EXTRACT function
             return f"JSON_EXTRACT(properties, '$') {operation} :pattern"
 
-    def query_graph(self, query: str, parameters: Optional[Dict] = None) -> List[Dict]:
+    def query_graph(self, query: str, parameters: Optional[Dict]=None) -> List[Dict]:
         """Execute a query against the knowledge graph using SQLAlchemy.
 
         Args:
@@ -91,40 +79,22 @@ class KnowledgeRepository:
         Returns:
             List of results
         """
-        # Parse the query
         ast = self.parser.parse(query)
-
         with self.db_manager.get_session() as session:
-            query_type = ast.get("type", "match")
-
-            if query_type == "match":
-                # Build and execute SQLAlchemy query
-                matches = self._execute_sqlalchemy_query(session, ast["match"])
-
-                # Apply WHERE conditions
-                if ast.get("where"):
-                    matches = [
-                        m for m in matches if self.evaluator.evaluate(ast["where"], m)
-                    ]
-
-                # Project results
-                return self.projector.project(matches, ast["return"])
-
-            elif query_type == "create":
-                return self._execute_create_operation(session, ast["create"])
-
-            elif query_type == "update":
-                return self._execute_update_operation(
-                    session, ast["update"], ast.get("where", [])
-                )
-
-            elif query_type == "delete":
-                return self._execute_delete_operation(
-                    session, ast["delete"], ast.get("where", [])
-                )
-
+            query_type = ast.get('type', 'match')
+            if query_type == 'match':
+                matches = self._execute_sqlalchemy_query(session, ast['match'])
+                if ast.get('where'):
+                    matches = [m for m in matches if self.evaluator.evaluate(ast['where'], m)]
+                return self.projector.project(matches, ast['return'])
+            elif query_type == 'create':
+                return self._execute_create_operation(session, ast['create'])
+            elif query_type == 'update':
+                return self._execute_update_operation(session, ast['update'], ast.get('where', []))
+            elif query_type == 'delete':
+                return self._execute_delete_operation(session, ast['delete'], ast.get('where', []))
             else:
-                raise ValueError(f"Unsupported query type: {query_type}")
+                raise ValueError(f'Unsupported query type: {query_type}')
 
     def _execute_sqlalchemy_query(self, session, match_pattern: Dict) -> List[Dict]:
         """Execute SQLAlchemy query based on MATCH pattern.
@@ -136,103 +106,56 @@ class KnowledgeRepository:
         Returns:
             List of match dictionaries
         """
-        if not match_pattern.get("nodes"):
+        if not match_pattern.get('nodes'):
             return []
-
-        # For simple single-node queries, use direct SQLAlchemy
-        if len(match_pattern["nodes"]) == 1 and not match_pattern.get("edges"):
-            return self._execute_simple_node_query(session, match_pattern["nodes"][0])
-
-        # For complex patterns, use the existing pattern matcher approach
-        # but with SQLAlchemy-optimized queries
+        if len(match_pattern['nodes']) == 1 and (not match_pattern.get('edges')):
+            return self._execute_simple_node_query(session, match_pattern['nodes'][0])
         return self._execute_complex_pattern_query(session, match_pattern)
 
     def _execute_simple_node_query(self, session, node_spec: Dict) -> List[Dict]:
         """Execute a simple single-node query using SQLAlchemy."""
         query = session.query(Node)
-
-        # Apply node type filter
-        if "label" in node_spec:
-            query = query.filter(Node.node_type == node_spec["label"])
-
-        # Apply property filters
-        if "properties" in node_spec:
-            for prop, value in node_spec["properties"].items():
-                query = query.filter(
-                    text(self._get_json_property_query(prop, "="))
-                ).params(value=value)
-
-        # Execute and format results
+        if 'label' in node_spec:
+            query = query.filter(Node.node_type == node_spec['label'])
+        if 'properties' in node_spec:
+            for prop, value in node_spec['properties'].items():
+                query = query.filter(text(self._get_json_property_query(prop, '='))).params(value=value)
         results = query.all()
-        var_name = node_spec["var"]
-
-        return [{var_name: {"id": node.id, **node.to_dict()}} for node in results]
+        var_name = node_spec['var']
+        return [{var_name: {'id': node.id, **node.to_dict()}} for node in results]
 
     def _execute_complex_pattern_query(self, session, pattern: Dict) -> List[Dict]:
         """Execute complex patterns with edges using SQLAlchemy."""
-        # Start with first node
-        first_node = pattern["nodes"][0]
+        first_node = pattern['nodes'][0]
         candidates = self._execute_simple_node_query(session, first_node)
-
-        # If there are edges, traverse them
-        if pattern.get("edges"):
+        if pattern.get('edges'):
             return self._traverse_with_edges(session, pattern, candidates)
-
         return candidates
 
-    def _traverse_with_edges(
-        self, session, pattern: Dict, initial_matches: List[Dict]
-    ) -> List[Dict]:
+    def _traverse_with_edges(self, session, pattern: Dict, initial_matches: List[Dict]) -> List[Dict]:
         """Traverse edges to extend matches using SQLAlchemy."""
-        if len(pattern["nodes"]) < 2:
+        if len(pattern['nodes']) < 2:
             return initial_matches
-
         results = []
-
         for match in initial_matches:
-            # Get source node
-            source_var = pattern["nodes"][0]["var"]
-            source_id = match[source_var]["id"]
-
-            # Get target specification
-            target_spec = pattern["nodes"][1]
-            edge_spec = pattern["edges"][0]
-
-            # Build SQLAlchemy query for neighbors
-            edge_type = edge_spec.get("type")
-
-            # Query for outgoing edges and target nodes
-            query = (
-                session.query(Edge, Node)
-                .join(Node, Edge.target_id == Node.id)
-                .filter(Edge.source_id == source_id)
-            )
-
+            source_var = pattern['nodes'][0]['var']
+            source_id = match[source_var]['id']
+            target_spec = pattern['nodes'][1]
+            edge_spec = pattern['edges'][0]
+            edge_type = edge_spec.get('type')
+            query = session.query(Edge, Node).join(Node, Edge.target_id == Node.id).filter(Edge.source_id == source_id)
             if edge_type:
                 query = query.filter(Edge.edge_type == edge_type)
-
-            # Apply target node filters
-            if target_spec.get("label"):
-                query = query.filter(Node.node_type == target_spec["label"])
-
-            if target_spec.get("properties"):
-                for prop, value in target_spec["properties"].items():
-                    query = query.filter(
-                        text(self._get_json_property_query(prop, "="))
-                    ).params(value=value)
-
-            # Execute query
+            if target_spec.get('label'):
+                query = query.filter(Node.node_type == target_spec['label'])
+            if target_spec.get('properties'):
+                for prop, value in target_spec['properties'].items():
+                    query = query.filter(text(self._get_json_property_query(prop, '='))).params(value=value)
             neighbors = query.all()
-
             for edge, target_node in neighbors:
-                # Create new binding
                 new_match = match.copy()
-                new_match[target_spec["var"]] = {
-                    "id": target_node.id,
-                    **target_node.to_dict(),
-                }
+                new_match[target_spec['var']] = {'id': target_node.id, **target_node.to_dict()}
                 results.append(new_match)
-
         return results
 
     def _execute_create_operation(self, session, create_spec: Dict) -> List[Dict]:
@@ -246,61 +169,33 @@ class KnowledgeRepository:
             List of created objects
         """
         results = []
-
-        # Create nodes
-        for node_spec in create_spec.get("nodes", []):
-            var = node_spec["var"]
-            label = node_spec.get("label", "Node")
-            properties = node_spec.get("properties", {})
-
-            # Generate unique ID
-            node_id = f"{var}_{self._generate_id()}"
-
-            # Create node
-            node = Node(
-                id=node_id,
-                node_type=label,
-                label=properties.get("name", var),
-                content=properties.get("content"),
-                properties=properties,
-            )
+        for node_spec in create_spec.get('nodes', []):
+            var = node_spec['var']
+            label = node_spec.get('label', 'Node')
+            properties = node_spec.get('properties', {})
+            node_id = f'{var}_{self._generate_id()}'
+            node = Node(id=node_id, node_type=label, label=properties.get('name', var), content=properties.get('content'), properties=properties)
             session.add(node)
             session.commit()
-
-            results.append({var: {"id": node_id, **node.to_dict()}})
-            logger.info(f"Created node {node_id} of type {label}")
-
-        # Create edges
-        for edge_spec in create_spec.get("edges", []):
-            edge_type = edge_spec["type"]
-            var = edge_spec.get("var")
-
-            # For now, we'll create edges between the first two nodes created
+            results.append({var: {'id': node_id, **node.to_dict()}})
+            logger.info(f'Created node {node_id} of type {label}')
+        for edge_spec in create_spec.get('edges', []):
+            edge_type = edge_spec['type']
+            var = edge_spec.get('var')
             if len(results) >= 2:
-                source_var = create_spec["nodes"][0]["var"]
-                target_var = create_spec["nodes"][1]["var"]
-
-                source_id = results[0][source_var]["id"]
-                target_id = results[1][target_var]["id"]
-
-                edge = Edge(
-                    source_id=source_id,
-                    target_id=target_id,
-                    edge_type=edge_type,
-                    properties={},
-                )
+                source_var = create_spec['nodes'][0]['var']
+                target_var = create_spec['nodes'][1]['var']
+                source_id = results[0][source_var]['id']
+                target_id = results[1][target_var]['id']
+                edge = Edge(source_id=source_id, target_id=target_id, edge_type=edge_type, properties={})
                 session.add(edge)
                 session.commit()
-
                 if var:
                     results.append({var: edge.to_dict()})
-                logger.info(f"Created edge {source_id} -> {target_id}")
-
+                logger.info(f'Created edge {source_id} -> {target_id}')
         return results
 
-    def _execute_update_operation(
-        self, session, update_spec: Dict, where_conditions: List
-    ) -> List[Dict]:
+    def _execute_update_operation(self, session, update_spec: Dict, where_conditions: List) -> List[Dict]:
         """Execute UPDATE operation.
 
         Args:
@@ -311,49 +206,31 @@ class KnowledgeRepository:
         Returns:
             List of updated objects
         """
-        var = update_spec["variable"]
-        properties = update_spec["properties"]
-
-        # Find nodes to update
+        var = update_spec['variable']
+        properties = update_spec['properties']
         query = session.query(Node)
-
-        # Apply WHERE conditions
         for condition in where_conditions:
-            if condition["type"] == "equals":
-                if condition["property"] == "id":
-                    query = query.filter(Node.id == condition["value"])
+            if condition['type'] == 'equals':
+                if condition['property'] == 'id':
+                    query = query.filter(Node.id == condition['value'])
                 else:
-                    query = query.filter(
-                        text(self._get_json_property_query(condition["property"], "="))
-                    ).params(value=condition["value"])
-            elif condition["type"] == "starts_with":
-                query = query.filter(
-                    text(self._get_json_property_query(condition["property"], "LIKE"))
-                ).params(value=f"{condition['value']}%")
-
-        # Get nodes to update
+                    query = query.filter(text(self._get_json_property_query(condition['property'], '='))).params(value=condition['value'])
+            elif condition['type'] == 'starts_with':
+                query = query.filter(text(self._get_json_property_query(condition['property'], 'LIKE'))).params(value=f"{condition['value']}%")
         nodes_to_update = query.all()
         results = []
-
         for node in nodes_to_update:
-            # Update properties
             if node.properties is None:
                 node.properties = {}
-
             for key, value in properties.items():
                 node.properties[key] = value
-
             node.updated_at = datetime.utcnow()
             session.commit()
-
-            results.append({var: {"id": node.id, **node.to_dict()}})
-            logger.info(f"Updated node {node.id}")
-
+            results.append({var: {'id': node.id, **node.to_dict()}})
+            logger.info(f'Updated node {node.id}')
         return results
 
-    def _execute_delete_operation(
-        self, session, delete_spec: Dict, where_conditions: List
-    ) -> List[Dict]:
+    def _execute_delete_operation(self, session, delete_spec: Dict, where_conditions: List) -> List[Dict]:
         """Execute DELETE operation.
 
         Args:
@@ -364,59 +241,33 @@ class KnowledgeRepository:
         Returns:
             List of deleted objects
         """
-        variables = delete_spec["variables"]
+        variables = delete_spec['variables']
         results = []
-
         for var in variables:
-            # Find nodes to delete
             query = session.query(Node)
-
-            # Apply WHERE conditions
             for condition in where_conditions:
-                if condition["type"] == "equals":
-                    if condition["property"] == "id":
-                        query = query.filter(Node.id == condition["value"])
+                if condition['type'] == 'equals':
+                    if condition['property'] == 'id':
+                        query = query.filter(Node.id == condition['value'])
                     else:
-                        query = query.filter(
-                            text(
-                                self._get_json_property_query(
-                                    condition["property"], "="
-                                )
-                            )
-                        ).params(value=condition["value"])
-                elif condition["type"] == "starts_with":
-                    query = query.filter(
-                        text(
-                            self._get_json_property_query(condition["property"], "LIKE")
-                        )
-                    ).params(value=f"{condition['value']}%")
-
-            # Get nodes to delete
+                        query = query.filter(text(self._get_json_property_query(condition['property'], '='))).params(value=condition['value'])
+                elif condition['type'] == 'starts_with':
+                    query = query.filter(text(self._get_json_property_query(condition['property'], 'LIKE'))).params(value=f"{condition['value']}%")
             nodes_to_delete = query.all()
-
             for node in nodes_to_delete:
-                # Delete associated edges first
-                session.query(Edge).filter(
-                    or_(Edge.source_id == node.id, Edge.target_id == node.id)
-                ).delete()
-
-                # Delete the node
-                results.append({var: {"id": node.id, **node.to_dict()}})
+                session.query(Edge).filter(or_(Edge.source_id == node.id, Edge.target_id == node.id)).delete()
+                results.append({var: {'id': node.id, **node.to_dict()}})
                 session.delete(node)
                 session.commit()
-                logger.info(f"Deleted node {node.id}")
-
+                logger.info(f'Deleted node {node.id}')
         return results
 
     def _generate_id(self) -> str:
         """Generate a unique ID for new nodes."""
         import uuid
-
         return str(uuid.uuid4())[:8]
 
-    def _generate_and_store_embedding(
-        self, session, node: Node, rowid: Optional[int] = None
-    ) -> None:
+    def _generate_and_store_embedding(self, session, node: Node, rowid: Optional[int]=None) -> None:
         """Generate and store embedding for a node.
 
         Args:
@@ -425,81 +276,39 @@ class KnowledgeRepository:
             rowid: SQLite rowid of the node (not used for PostgreSQL)
         """
         try:
-            # Check database type
-            is_postgres = self.db_manager.engine.dialect.name == "postgresql"
-
-            # Combine node_type, label, and content for embedding
-            text_parts = [node.node_type or "", node.label or ""]
+            is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
+            text_parts = [node.node_type or '', node.label or '']
             if node.content:
                 text_parts.append(node.content)
-            combined_text = " ".join(filter(None, text_parts))
-
+            combined_text = ' '.join(filter(None, text_parts))
             if not combined_text.strip():
-                logger.debug(f"Skipping embedding for empty node {node.id}")
+                logger.debug(f'Skipping embedding for empty node {node.id}')
                 return
-
-            # Truncate text if it's too large for the embedding API
-            # Gemini embedding API has a limit of ~36,000 bytes
-            # We'll use a conservative limit of 30,000 bytes to be safe
             MAX_EMBEDDING_BYTES = 30000
-            combined_text_bytes = combined_text.encode("utf-8")
+            combined_text_bytes = combined_text.encode('utf-8')
             if len(combined_text_bytes) > MAX_EMBEDDING_BYTES:
-                logger.warning(
-                    f"Node {node.id} content too large ({len(combined_text_bytes)} bytes), "
-                    f"truncating to {MAX_EMBEDDING_BYTES} bytes for embedding"
-                )
-                # Truncate and decode, handling potential UTF-8 boundary issues
+                logger.warning(f'Node {node.id} content too large ({len(combined_text_bytes)} bytes), truncating to {MAX_EMBEDDING_BYTES} bytes for embedding')
                 truncated_bytes = combined_text_bytes[:MAX_EMBEDDING_BYTES]
-                # Try to decode, removing invalid UTF-8 at the end if necessary
-                combined_text = truncated_bytes.decode("utf-8", errors="ignore")
-                # Add ellipsis to indicate truncation
-                combined_text += "..."
-
-            # Generate embedding
+                combined_text = truncated_bytes.decode('utf-8', errors='ignore')
+                combined_text += '...'
             embedding_manager = EmbeddingManager.get_instance()
             embedding = embedding_manager.embed_text(combined_text)
-
-            if not embedding or all(v == 0.0 for v in embedding):
-                logger.warning(f"Generated empty/zero embedding for node {node.id}")
+            if not embedding or all((v == 0.0 for v in embedding)):
+                logger.warning(f'Generated empty/zero embedding for node {node.id}')
                 return
-
             if is_postgres:
-                # PostgreSQL: Update embedding column directly on nodes table
-                # Convert embedding list to PostgreSQL vector format (pgvector)
-                embedding_str = "[" + ",".join(map(str, embedding)) + "]"
-                # Escape single quotes in node.id to prevent SQL injection
+                embedding_str = '[' + ','.join(map(str, embedding)) + ']'
                 escaped_id = node.id.replace("'", "''")
-                # Use session.execute with text() - format query directly to avoid parameter binding issues
                 update_query = f"UPDATE nodes SET embedding = '{embedding_str}'::vector WHERE id = '{escaped_id}'"
                 session.execute(text(update_query))
             else:
-                # SQLite: Use nodes_vec virtual table
-                # Delete existing embedding if any (for updates)
-                session.execute(
-                    text("DELETE FROM nodes_vec WHERE rowid = :rowid"), {"rowid": rowid}
-                )
-
-                # Insert new embedding
-                session.execute(
-                    text(
-                        "INSERT INTO nodes_vec(rowid, embedding) VALUES (:rowid, json(:embedding))"
-                    ),
-                    {"rowid": rowid, "embedding": json.dumps(embedding)},
-                )
-
-            logger.debug(f"Generated and stored embedding for node {node.id}")
-
+                session.execute(text('DELETE FROM nodes_vec WHERE rowid = :rowid'), {'rowid': rowid})
+                session.execute(text('INSERT INTO nodes_vec(rowid, embedding) VALUES (:rowid, json(:embedding))'), {'rowid': rowid, 'embedding': json.dumps(embedding)})
+            logger.debug(f'Generated and stored embedding for node {node.id}')
         except Exception as e:
-            logger.warning(f"Failed to generate embedding for node {node.id}: {e}")
+            logger.warning(f'Failed to generate embedding for node {node.id}: {e}')
 
-    def add_node(
-        self,
-        node_id: str,
-        node_type: str,
-        label: str,
-        content: Optional[str] = None,
-        properties: Optional[Dict[str, Any]] = None,
-    ) -> Node:
+    def add_node(self, node_id: str, node_type: str, label: str, content: Optional[str]=None, properties: Optional[Dict[str, Any]]=None) -> Node:
         """Add or update a node in the knowledge graph.
 
         Args:
@@ -512,80 +321,47 @@ class KnowledgeRepository:
         Returns:
             The created or updated Node instance
         """
-        # Normalize node type to ensure consistency
         node_type = normalize_node_type(node_type)
-
         with self.db_manager.get_session() as session:
-            # Check if node exists
             existing = session.query(Node).filter(Node.id == node_id).first()
-
             if existing:
-                # Update existing node
                 existing.node_type = node_type
                 existing.label = label
                 existing.content = content
                 existing.properties = properties or {}
                 existing.updated_at = datetime.now(timezone.utc)
                 session.commit()
-                # Generate embedding for updated node
-                is_postgres = self.db_manager.engine.dialect.name == "postgresql"
+                is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
                 if not is_postgres:
-                    # SQLite: Get rowid for vector storage
                     session.refresh(existing)
-                    rowid_result = session.execute(
-                        text("SELECT rowid FROM nodes WHERE id = :node_id"),
-                        {"node_id": node_id},
-                    ).fetchone()
+                    rowid_result = session.execute(text('SELECT rowid FROM nodes WHERE id = :node_id'), {'node_id': node_id}).fetchone()
                     if rowid_result:
-                        self._generate_and_store_embedding(
-                            session, existing, rowid_result[0]
-                        )
+                        self._generate_and_store_embedding(session, existing, rowid_result[0])
                 else:
-                    # PostgreSQL: rowid not needed
                     self._generate_and_store_embedding(session, existing)
                 session.commit()
-                # Refresh to load all attributes, then expunge to detach from session
                 session.refresh(existing)
                 session.expunge(existing)
-                logger.info(f"Updated node {node_id}")
+                logger.info(f'Updated node {node_id}')
                 return existing
             else:
-                # Create new node
-                node = Node(
-                    id=node_id,
-                    node_type=node_type,
-                    label=label,
-                    content=content,
-                    properties=properties or {},
-                )
+                node = Node(id=node_id, node_type=node_type, label=label, content=content, properties=properties or {})
                 session.add(node)
-                session.flush()  # Flush to ensure node is in database
-                # Generate embedding for new node
-                is_postgres = self.db_manager.engine.dialect.name == "postgresql"
+                session.flush()
+                is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
                 if not is_postgres:
-                    # SQLite: Get rowid for vector storage
-                    rowid_result = session.execute(
-                        text("SELECT rowid FROM nodes WHERE id = :node_id"),
-                        {"node_id": node_id},
-                    ).fetchone()
+                    rowid_result = session.execute(text('SELECT rowid FROM nodes WHERE id = :node_id'), {'node_id': node_id}).fetchone()
                     if rowid_result:
-                        self._generate_and_store_embedding(
-                            session, node, rowid_result[0]
-                        )
+                        self._generate_and_store_embedding(session, node, rowid_result[0])
                 else:
-                    # PostgreSQL: rowid not needed
                     self._generate_and_store_embedding(session, node)
                 session.commit()
-                # Refresh to load all attributes, then expunge to detach from session
                 session.refresh(node)
                 session.expunge(node)
-                logger.info(f"Created node {node_id}")
+                logger.info(f'Created node {node_id}')
                 return node
 
-    def bulk_add_nodes(
-        self,
-        nodes: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+    def bulk_add_nodes(self, nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Add or update multiple nodes in a single transaction.
 
         Args:
@@ -606,115 +382,53 @@ class KnowledgeRepository:
         added = []
         updated = []
         failed = []
-
         with self.db_manager.get_session() as session:
-            is_postgres = self.db_manager.engine.dialect.name == "postgresql"
-
+            is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
             for node_data in nodes:
                 try:
-                    node_id = node_data.get("node_id")
-                    node_type = node_data.get("node_type")
-                    label = node_data.get("label")
-                    content = node_data.get("content")
-                    properties = node_data.get("properties", {})
-
-                    if not node_id or not node_type or not label:
-                        failed.append(
-                            {
-                                "node_id": node_id or "unknown",
-                                "error": "Missing required fields: node_id, node_type, or label",
-                            }
-                        )
+                    node_id = node_data.get('node_id')
+                    node_type = node_data.get('node_type')
+                    label = node_data.get('label')
+                    content = node_data.get('content')
+                    properties = node_data.get('properties', {})
+                    if not node_id or not node_type or (not label):
+                        failed.append({'node_id': node_id or 'unknown', 'error': 'Missing required fields: node_id, node_type, or label'})
                         continue
-
-                    # Normalize node type
                     node_type = normalize_node_type(node_type)
-
-                    # Check if node exists
                     existing = session.query(Node).filter(Node.id == node_id).first()
-
                     if existing:
-                        # Update existing node
                         existing.node_type = node_type
                         existing.label = label
                         existing.content = content
                         existing.properties = properties
                         existing.updated_at = datetime.now(timezone.utc)
                         session.flush()
-
-                        # Generate embedding for updated node
                         if not is_postgres:
-                            rowid_result = session.execute(
-                                text("SELECT rowid FROM nodes WHERE id = :node_id"),
-                                {"node_id": node_id},
-                            ).fetchone()
+                            rowid_result = session.execute(text('SELECT rowid FROM nodes WHERE id = :node_id'), {'node_id': node_id}).fetchone()
                             if rowid_result:
-                                self._generate_and_store_embedding(
-                                    session, existing, rowid_result[0]
-                                )
+                                self._generate_and_store_embedding(session, existing, rowid_result[0])
                         else:
                             self._generate_and_store_embedding(session, existing)
-
                         updated.append(node_id)
                     else:
-                        # Create new node
-                        node = Node(
-                            id=node_id,
-                            node_type=node_type,
-                            label=label,
-                            content=content,
-                            properties=properties,
-                        )
+                        node = Node(id=node_id, node_type=node_type, label=label, content=content, properties=properties)
                         session.add(node)
                         session.flush()
-
-                        # Generate embedding for new node
                         if not is_postgres:
-                            rowid_result = session.execute(
-                                text("SELECT rowid FROM nodes WHERE id = :node_id"),
-                                {"node_id": node_id},
-                            ).fetchone()
+                            rowid_result = session.execute(text('SELECT rowid FROM nodes WHERE id = :node_id'), {'node_id': node_id}).fetchone()
                             if rowid_result:
-                                self._generate_and_store_embedding(
-                                    session, node, rowid_result[0]
-                                )
+                                self._generate_and_store_embedding(session, node, rowid_result[0])
                         else:
                             self._generate_and_store_embedding(session, node)
-
                         added.append(node_id)
-
                 except Exception as e:
-                    logger.error(
-                        f"Error adding/updating node {node_data.get('node_id', 'unknown')}: {e}"
-                    )
-                    failed.append(
-                        {
-                            "node_id": node_data.get("node_id", "unknown"),
-                            "error": str(e),
-                        }
-                    )
-
-            # Commit all changes at once
+                    logger.error(f"Error adding/updating node {node_data.get('node_id', 'unknown')}: {e}")
+                    failed.append({'node_id': node_data.get('node_id', 'unknown'), 'error': str(e)})
             session.commit()
+        logger.info(f'Bulk add nodes: {len(added)} added, {len(updated)} updated, {len(failed)} failed')
+        return {'added': added, 'updated': updated, 'failed': failed, 'total': len(nodes)}
 
-        logger.info(
-            f"Bulk add nodes: {len(added)} added, {len(updated)} updated, {len(failed)} failed"
-        )
-        return {
-            "added": added,
-            "updated": updated,
-            "failed": failed,
-            "total": len(nodes),
-        }
-
-    def update_node(
-        self,
-        node_id: str,
-        node_type: Optional[str] = None,
-        label: Optional[str] = None,
-        content: Optional[str] = None,
-        properties: Optional[Dict[str, Any]] = None,
-    ) -> Node:
+    def update_node(self, node_id: str, node_type: Optional[str]=None, label: Optional[str]=None, content: Optional[str]=None, properties: Optional[Dict[str, Any]]=None) -> Node:
         """Update an existing node in the knowledge graph.
 
         Unlike add_node which creates or updates, this method only updates existing nodes
@@ -735,13 +449,9 @@ class KnowledgeRepository:
             ValueError: If the node doesn't exist
         """
         with self.db_manager.get_session() as session:
-            # Check if node exists
             existing = session.query(Node).filter(Node.id == node_id).first()
-
             if not existing:
-                raise ValueError(f"Node {node_id} not found")
-
-            # Update only provided fields
+                raise ValueError(f'Node {node_id} not found')
             if node_type is not None:
                 existing.node_type = normalize_node_type(node_type)
             if label is not None:
@@ -750,32 +460,19 @@ class KnowledgeRepository:
                 existing.content = content
             if properties is not None:
                 existing.properties = properties
-
             existing.updated_at = datetime.now(timezone.utc)
             session.flush()
-
-            # Generate embedding for updated node
-            is_postgres = self.db_manager.engine.dialect.name == "postgresql"
+            is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
             if not is_postgres:
-                # SQLite: Get rowid for vector storage
-                rowid_result = session.execute(
-                    text("SELECT rowid FROM nodes WHERE id = :node_id"),
-                    {"node_id": node_id},
-                ).fetchone()
+                rowid_result = session.execute(text('SELECT rowid FROM nodes WHERE id = :node_id'), {'node_id': node_id}).fetchone()
                 if rowid_result:
-                    self._generate_and_store_embedding(
-                        session, existing, rowid_result[0]
-                    )
+                    self._generate_and_store_embedding(session, existing, rowid_result[0])
             else:
-                # PostgreSQL: rowid not needed
                 self._generate_and_store_embedding(session, existing)
-
-            # Refresh to load all attributes
             session.flush()
             session.refresh(existing)
-            # Expunge to detach from session so object can be used after session closes
             session.expunge(existing)
-            logger.info(f"Updated node {node_id}")
+            logger.info(f'Updated node {node_id}')
             return existing
 
     def get_node(self, node_id: str) -> Optional[Node]:
@@ -790,15 +487,11 @@ class KnowledgeRepository:
         with self.db_manager.get_session() as session:
             node = session.query(Node).filter(Node.id == node_id).first()
             if node:
+                session.refresh(node)
                 session.expunge(node)
             return node
 
-    def get_nodes(
-        self,
-        node_type: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: int = 0,
-    ) -> List[Node]:
+    def get_nodes(self, node_type: Optional[str]=None, limit: Optional[int]=None, offset: int=0) -> List[Node]:
         """Get nodes with optional filtering.
 
         Args:
@@ -811,28 +504,20 @@ class KnowledgeRepository:
         """
         with self.db_manager.get_session() as session:
             query = session.query(Node)
-
             if node_type:
                 query = query.filter(Node.node_type == node_type)
-
             query = query.order_by(Node.created_at)
-
             if offset:
                 query = query.offset(offset)
-
             if limit:
                 query = query.limit(limit)
-
             nodes = query.all()
-            # Expunge all nodes to detach from session
             for node in nodes:
+                session.refresh(node)
                 session.expunge(node)
             return nodes
 
-    def get_nodes_count(
-        self,
-        node_type: Optional[str] = None,
-    ) -> int:
+    def get_nodes_count(self, node_type: Optional[str]=None) -> int:
         """Get count of nodes with optional filtering.
 
         Args:
@@ -843,19 +528,11 @@ class KnowledgeRepository:
         """
         with self.db_manager.get_session() as session:
             query = session.query(func.count(Node.id))
-
             if node_type:
                 query = query.filter(Node.node_type == node_type)
-
             return query.scalar() or 0
 
-    def add_edge(
-        self,
-        source_id: str,
-        target_id: str,
-        edge_type: str,
-        properties: Optional[Dict[str, Any]] = None,
-    ) -> Edge:
+    def add_edge(self, source_id: str, target_id: str, edge_type: str, properties: Optional[Dict[str, Any]]=None) -> Edge:
         """Add an edge between two nodes.
 
         Args:
@@ -870,55 +547,28 @@ class KnowledgeRepository:
         Raises:
             ValueError: If source or target node doesn't exist
         """
-        # Normalize edge type to ensure consistency
         edge_type = normalize_edge_type(edge_type)
-
         with self.db_manager.get_session() as session:
-            # Verify nodes exist
             source = session.query(Node).filter(Node.id == source_id).first()
             target = session.query(Node).filter(Node.id == target_id).first()
-
             if not source:
-                raise ValueError(f"Source node {source_id} not found")
+                raise ValueError(f'Source node {source_id} not found')
             if not target:
-                raise ValueError(f"Target node {target_id} not found")
-
-            # Check if edge already exists
-            existing = (
-                session.query(Edge)
-                .filter(
-                    and_(
-                        Edge.source_id == source_id,
-                        Edge.target_id == target_id,
-                        Edge.edge_type == edge_type,
-                    )
-                )
-                .first()
-            )
-
+                raise ValueError(f'Target node {target_id} not found')
+            existing = session.query(Edge).filter(and_(Edge.source_id == source_id, Edge.target_id == target_id, Edge.edge_type == edge_type)).first()
             if existing:
-                # Update existing edge
                 existing.properties = properties or {}
                 session.commit()
-                logger.info(f"Updated edge {source_id} -> {target_id}")
+                logger.info(f'Updated edge {source_id} -> {target_id}')
                 return existing
             else:
-                # Create new edge
-                edge = Edge(
-                    source_id=source_id,
-                    target_id=target_id,
-                    edge_type=edge_type,
-                    properties=properties or {},
-                )
+                edge = Edge(source_id=source_id, target_id=target_id, edge_type=edge_type, properties=properties or {})
                 session.add(edge)
                 session.commit()
-                logger.info(f"Created edge {source_id} -> {target_id}")
+                logger.info(f'Created edge {source_id} -> {target_id}')
                 return edge
 
-    def bulk_add_edges(
-        self,
-        edges: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+    def bulk_add_edges(self, edges: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Add or update multiple edges in a single transaction.
 
         Args:
@@ -938,123 +588,50 @@ class KnowledgeRepository:
         added = []
         updated = []
         failed = []
-
         with self.db_manager.get_session() as session:
-            # First, get all unique node IDs from edges to verify they exist
             all_node_ids = set()
             for edge_data in edges:
-                source_id = edge_data.get("source_id")
-                target_id = edge_data.get("target_id")
+                source_id = edge_data.get('source_id')
+                target_id = edge_data.get('target_id')
                 if source_id:
                     all_node_ids.add(source_id)
                 if target_id:
                     all_node_ids.add(target_id)
-
-            # Fetch all nodes in one query
-            existing_nodes = (
-                session.query(Node.id).filter(Node.id.in_(all_node_ids)).all()
-                if all_node_ids
-                else []
-            )
+            existing_nodes = session.query(Node.id).filter(Node.id.in_(all_node_ids)).all() if all_node_ids else []
             existing_node_ids = {node.id for node in existing_nodes}
-
             for edge_data in edges:
                 try:
-                    source_id = edge_data.get("source_id")
-                    target_id = edge_data.get("target_id")
-                    edge_type = edge_data.get("edge_type")
-                    properties = edge_data.get("properties", {})
-
-                    if not source_id or not target_id or not edge_type:
-                        failed.append(
-                            {
-                                "edge": f"{source_id} -> {target_id}",
-                                "error": "Missing required fields: source_id, target_id, or edge_type",
-                            }
-                        )
+                    source_id = edge_data.get('source_id')
+                    target_id = edge_data.get('target_id')
+                    edge_type = edge_data.get('edge_type')
+                    properties = edge_data.get('properties', {})
+                    if not source_id or not target_id or (not edge_type):
+                        failed.append({'edge': f'{source_id} -> {target_id}', 'error': 'Missing required fields: source_id, target_id, or edge_type'})
                         continue
-
-                    # Check if nodes exist
                     if source_id not in existing_node_ids:
-                        failed.append(
-                            {
-                                "edge": f"{source_id} -> {target_id}",
-                                "error": f"Source node {source_id} not found",
-                            }
-                        )
+                        failed.append({'edge': f'{source_id} -> {target_id}', 'error': f'Source node {source_id} not found'})
                         continue
-
                     if target_id not in existing_node_ids:
-                        failed.append(
-                            {
-                                "edge": f"{source_id} -> {target_id}",
-                                "error": f"Target node {target_id} not found",
-                            }
-                        )
+                        failed.append({'edge': f'{source_id} -> {target_id}', 'error': f'Target node {target_id} not found'})
                         continue
-
-                    # Normalize edge type
                     edge_type = normalize_edge_type(edge_type)
-
-                    # Check if edge already exists
-                    existing = (
-                        session.query(Edge)
-                        .filter(
-                            and_(
-                                Edge.source_id == source_id,
-                                Edge.target_id == target_id,
-                                Edge.edge_type == edge_type,
-                            )
-                        )
-                        .first()
-                    )
-
-                    edge_desc = f"{source_id} -> {target_id} ({edge_type})"
-
+                    existing = session.query(Edge).filter(and_(Edge.source_id == source_id, Edge.target_id == target_id, Edge.edge_type == edge_type)).first()
+                    edge_desc = f'{source_id} -> {target_id} ({edge_type})'
                     if existing:
-                        # Update existing edge
                         existing.properties = properties
                         updated.append(edge_desc)
                     else:
-                        # Create new edge
-                        edge = Edge(
-                            source_id=source_id,
-                            target_id=target_id,
-                            edge_type=edge_type,
-                            properties=properties,
-                        )
+                        edge = Edge(source_id=source_id, target_id=target_id, edge_type=edge_type, properties=properties)
                         session.add(edge)
                         added.append(edge_desc)
-
                 except Exception as e:
-                    logger.error(
-                        f"Error adding/updating edge {edge_data.get('source_id', '?')} -> {edge_data.get('target_id', '?')}: {e}"
-                    )
-                    failed.append(
-                        {
-                            "edge": f"{edge_data.get('source_id', '?')} -> {edge_data.get('target_id', '?')}",
-                            "error": str(e),
-                        }
-                    )
-
-            # Commit all changes at once
+                    logger.error(f"Error adding/updating edge {edge_data.get('source_id', '?')} -> {edge_data.get('target_id', '?')}: {e}")
+                    failed.append({'edge': f"{edge_data.get('source_id', '?')} -> {edge_data.get('target_id', '?')}", 'error': str(e)})
             session.commit()
+        logger.info(f'Bulk add edges: {len(added)} added, {len(updated)} updated, {len(failed)} failed')
+        return {'added': added, 'updated': updated, 'failed': failed, 'total': len(edges)}
 
-        logger.info(
-            f"Bulk add edges: {len(added)} added, {len(updated)} updated, {len(failed)} failed"
-        )
-        return {
-            "added": added,
-            "updated": updated,
-            "failed": failed,
-            "total": len(edges),
-        }
-
-    def append_graph(
-        self,
-        nodes: List[Dict[str, Any]],
-        edges: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+    def append_graph(self, nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Append a subgraph (nodes and edges) to the knowledge graph in a single operation.
 
         This is a convenience method that combines bulk_add_nodes and bulk_add_edges
@@ -1081,35 +658,12 @@ class KnowledgeRepository:
                 - total_nodes: Total number of nodes processed
                 - total_edges: Total number of edges processed
         """
-        # Use the existing bulk operations
         node_result = self.bulk_add_nodes(nodes)
         edge_result = self.bulk_add_edges(edges)
+        logger.info(f"Append graph: nodes ({len(node_result['added'])} added, {len(node_result['updated'])} updated, {len(node_result['failed'])} failed), edges ({len(edge_result['added'])} added, {len(edge_result['updated'])} updated, {len(edge_result['failed'])} failed)")
+        return {'nodes_added': node_result['added'], 'nodes_updated': node_result['updated'], 'nodes_failed': node_result['failed'], 'edges_added': edge_result['added'], 'edges_updated': edge_result['updated'], 'edges_failed': edge_result['failed'], 'total_nodes': node_result['total'], 'total_edges': edge_result['total']}
 
-        logger.info(
-            f"Append graph: nodes ({len(node_result['added'])} added, "
-            f"{len(node_result['updated'])} updated, {len(node_result['failed'])} failed), "
-            f"edges ({len(edge_result['added'])} added, "
-            f"{len(edge_result['updated'])} updated, {len(edge_result['failed'])} failed)"
-        )
-
-        return {
-            "nodes_added": node_result["added"],
-            "nodes_updated": node_result["updated"],
-            "nodes_failed": node_result["failed"],
-            "edges_added": edge_result["added"],
-            "edges_updated": edge_result["updated"],
-            "edges_failed": edge_result["failed"],
-            "total_nodes": node_result["total"],
-            "total_edges": edge_result["total"],
-        }
-
-    def find_similar_nodes(
-        self,
-        node_id: str,
-        similarity_threshold: float = 0.7,
-        limit: int = 20,
-        include_self: bool = False,
-    ) -> List[Dict[str, Any]]:
+    def find_similar_nodes(self, node_id: str, similarity_threshold: float=0.7, limit: int=20, include_self: bool=False) -> List[Dict[str, Any]]:
         """Find nodes similar to a given node using embedding similarity.
 
         Args:
@@ -1125,142 +679,54 @@ class KnowledgeRepository:
             ValueError: If node doesn't exist or has no embedding
         """
         with self.db_manager.get_session() as session:
-            # Get the reference node
             ref_node = session.query(Node).filter(Node.id == node_id).first()
             if not ref_node:
-                raise ValueError(f"Node {node_id} not found")
-
-            is_postgres = self.db_manager.engine.dialect.name == "postgresql"
-
-            # Get embedding for reference node
+                raise ValueError(f'Node {node_id} not found')
+            is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
             if is_postgres:
-                # PostgreSQL: embedding is in the node table
-                if not hasattr(ref_node, "embedding") or ref_node.embedding is None:
-                    raise ValueError(f"Node {node_id} has no embedding")
-
-                # Use the embedding column directly
-                embedding_array = "[" + ",".join(map(str, ref_node.embedding)) + "]"
-
-                base_query = """
-                    SELECT 
-                        n.id,
-                        n.node_type,
-                        n.label,
-                        n.content,
-                        n.properties,
-                        n.created_at,
-                        n.updated_at,
-                        1 - (n.embedding <=> %s::vector) as similarity
-                    FROM nodes n
-                    WHERE n.embedding IS NOT NULL
-                        AND 1 - (n.embedding <=> %s::vector) >= %s
-                """
+                if not hasattr(ref_node, 'embedding') or ref_node.embedding is None:
+                    raise ValueError(f'Node {node_id} has no embedding')
+                embedding_array = '[' + ','.join(map(str, ref_node.embedding)) + ']'
+                base_query = '\n                    SELECT \n                        n.id,\n                        n.node_type,\n                        n.label,\n                        n.content,\n                        n.properties,\n                        n.created_at,\n                        n.updated_at,\n                        1 - (n.embedding <=> %s::vector) as similarity\n                    FROM nodes n\n                    WHERE n.embedding IS NOT NULL\n                        AND 1 - (n.embedding <=> %s::vector) >= %s\n                '
                 if not include_self:
-                    base_query += " AND n.id != %s"
-                base_query += " ORDER BY n.embedding <=> %s::vector LIMIT %s"
-
+                    base_query += ' AND n.id != %s'
+                base_query += ' ORDER BY n.embedding <=> %s::vector LIMIT %s'
                 conn = session.connection()
                 dbapi_conn = conn.connection
                 cursor = dbapi_conn.cursor()
-
                 params = [embedding_array, embedding_array, similarity_threshold]
                 if not include_self:
                     params.append(node_id)
                 params.extend([embedding_array, limit])
-
                 cursor.execute(base_query, params)
                 results = cursor.fetchall()
                 cursor.close()
-
                 similar_nodes = []
                 for row in results:
-                    similar_nodes.append(
-                        {
-                            "id": row[0],
-                            "type": row[1],
-                            "label": row[2],
-                            "content": row[3],
-                            "properties": row[4],
-                            "created_at": row[5].isoformat() if row[5] else None,
-                            "updated_at": row[6].isoformat() if row[6] else None,
-                            "similarity": float(row[7]),
-                        }
-                    )
-
+                    similar_nodes.append({'id': row[0], 'type': row[1], 'label': row[2], 'content': row[3], 'properties': row[4], 'created_at': row[5].isoformat() if row[5] else None, 'updated_at': row[6].isoformat() if row[6] else None, 'similarity': float(row[7])})
             else:
-                # SQLite: embeddings are in nodes_vec table
-                # Get rowid for reference node
-                rowid_result = session.execute(
-                    text("SELECT rowid FROM nodes WHERE id = :node_id"),
-                    {"node_id": node_id},
-                ).fetchone()
-
+                rowid_result = session.execute(text('SELECT rowid FROM nodes WHERE id = :node_id'), {'node_id': node_id}).fetchone()
                 if not rowid_result:
-                    raise ValueError(f"Node {node_id} not found")
-
+                    raise ValueError(f'Node {node_id} not found')
                 ref_rowid = rowid_result[0]
-
-                # Check if embedding exists
-                vec_result = session.execute(
-                    text("SELECT embedding FROM nodes_vec WHERE rowid = :rowid"),
-                    {"rowid": ref_rowid},
-                ).fetchone()
-
+                vec_result = session.execute(text('SELECT embedding FROM nodes_vec WHERE rowid = :rowid'), {'rowid': ref_rowid}).fetchone()
                 if not vec_result:
-                    raise ValueError(f"Node {node_id} has no embedding")
-
-                # Use vec_distance_cosine for similarity search
-                query_sql = """
-                    SELECT 
-                        n.id,
-                        n.node_type,
-                        n.label,
-                        n.content,
-                        n.properties,
-                        n.created_at,
-                        n.updated_at,
-                        1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) as similarity
-                    FROM nodes n
-                    JOIN nodes_vec nv ON nv.rowid = n.rowid
-                    CROSS JOIN nodes_vec ref_vec
-                    WHERE ref_vec.rowid = :ref_rowid
-                        AND 1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) >= :threshold
-                """
+                    raise ValueError(f'Node {node_id} has no embedding')
+                query_sql = '\n                    SELECT \n                        n.id,\n                        n.node_type,\n                        n.label,\n                        n.content,\n                        n.properties,\n                        n.created_at,\n                        n.updated_at,\n                        1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) as similarity\n                    FROM nodes n\n                    JOIN nodes_vec nv ON nv.rowid = n.rowid\n                    CROSS JOIN nodes_vec ref_vec\n                    WHERE ref_vec.rowid = :ref_rowid\n                        AND 1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) >= :threshold\n                '
                 if not include_self:
-                    query_sql += " AND n.id != :node_id"
-                query_sql += " ORDER BY vec_distance_cosine(nv.embedding, ref_vec.embedding) LIMIT :limit"
-
-                params = {
-                    "ref_rowid": ref_rowid,
-                    "threshold": similarity_threshold,
-                    "limit": limit,
-                }
+                    query_sql += ' AND n.id != :node_id'
+                query_sql += ' ORDER BY vec_distance_cosine(nv.embedding, ref_vec.embedding) LIMIT :limit'
+                params = {'ref_rowid': ref_rowid, 'threshold': similarity_threshold, 'limit': limit}
                 if not include_self:
-                    params["node_id"] = node_id
-
+                    params['node_id'] = node_id
                 results = session.execute(text(query_sql), params).fetchall()
-
                 similar_nodes = []
                 for row in results:
-                    similar_nodes.append(
-                        {
-                            "id": row[0],
-                            "type": row[1],
-                            "label": row[2],
-                            "content": row[3],
-                            "properties": row[4],
-                            "created_at": row[5].isoformat() if row[5] else None,
-                            "updated_at": row[6].isoformat() if row[6] else None,
-                            "similarity": float(row[7]),
-                        }
-                    )
-
-            logger.info(f"Found {len(similar_nodes)} similar nodes to {node_id}")
+                    similar_nodes.append({'id': row[0], 'type': row[1], 'label': row[2], 'content': row[3], 'properties': row[4], 'created_at': row[5].isoformat() if row[5] else None, 'updated_at': row[6].isoformat() if row[6] else None, 'similarity': float(row[7])})
+            logger.info(f'Found {len(similar_nodes)} similar nodes to {node_id}')
             return similar_nodes
 
-    def validate_graph_integrity(
-        self, checks: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+    def validate_graph_integrity(self, checks: Optional[List[str]]=None) -> Dict[str, Any]:
         """Run integrity checks on the graph to detect issues.
 
         Args:
@@ -1276,143 +742,50 @@ class KnowledgeRepository:
             Dictionary with check results and issue counts
         """
         if checks is None:
-            checks = [
-                "orphaned_nodes",
-                "dangling_edges",
-                "missing_embeddings",
-                "duplicate_edges",
-                "self_loops",
-            ]
-
-        results = {
-            "checks_run": checks,
-            "issues_found": {},
-            "total_issues": 0,
-            "healthy": True,
-        }
-
+            checks = ['orphaned_nodes', 'dangling_edges', 'missing_embeddings', 'duplicate_edges', 'self_loops']
+        results = {'checks_run': checks, 'issues_found': {}, 'total_issues': 0, 'healthy': True}
         with self.db_manager.get_session() as session:
-            is_postgres = self.db_manager.engine.dialect.name == "postgresql"
-
-            # Check for orphaned nodes (nodes with no edges)
-            if "orphaned_nodes" in checks:
-                orphan_query = """
-                    SELECT n.id, n.node_type, n.label
-                    FROM nodes n
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM edges e WHERE e.source_id = n.id OR e.target_id = n.id
-                    )
-                    AND n.node_type NOT IN ('Memory', 'Session', 'ThinkingPattern', 'Workflow')
-                """
+            is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
+            if 'orphaned_nodes' in checks:
+                orphan_query = "\n                    SELECT n.id, n.node_type, n.label\n                    FROM nodes n\n                    WHERE NOT EXISTS (\n                        SELECT 1 FROM edges e WHERE e.source_id = n.id OR e.target_id = n.id\n                    )\n                    AND n.node_type NOT IN ('Memory', 'Session', 'ThinkingPattern', 'Workflow')\n                "
                 orphaned = session.execute(text(orphan_query)).fetchall()
                 if orphaned:
-                    results["issues_found"]["orphaned_nodes"] = [
-                        {"id": row[0], "type": row[1], "label": row[2]}
-                        for row in orphaned
-                    ]
-                    results["total_issues"] += len(orphaned)
-                    results["healthy"] = False
-
-            # Check for dangling edges (edges pointing to non-existent nodes)
-            if "dangling_edges" in checks:
-                dangling_query = """
-                    SELECT e.id, e.source_id, e.target_id, e.edge_type
-                    FROM edges e
-                    WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.source_id)
-                       OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.target_id)
-                """
+                    results['issues_found']['orphaned_nodes'] = [{'id': row[0], 'type': row[1], 'label': row[2]} for row in orphaned]
+                    results['total_issues'] += len(orphaned)
+                    results['healthy'] = False
+            if 'dangling_edges' in checks:
+                dangling_query = '\n                    SELECT e.id, e.source_id, e.target_id, e.edge_type\n                    FROM edges e\n                    WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.source_id)\n                       OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.target_id)\n                '
                 dangling = session.execute(text(dangling_query)).fetchall()
                 if dangling:
-                    results["issues_found"]["dangling_edges"] = [
-                        {
-                            "edge_id": row[0],
-                            "source_id": row[1],
-                            "target_id": row[2],
-                            "edge_type": row[3],
-                        }
-                        for row in dangling
-                    ]
-                    results["total_issues"] += len(dangling)
-                    results["healthy"] = False
-
-            # Check for nodes without embeddings
-            if "missing_embeddings" in checks:
+                    results['issues_found']['dangling_edges'] = [{'edge_id': row[0], 'source_id': row[1], 'target_id': row[2], 'edge_type': row[3]} for row in dangling]
+                    results['total_issues'] += len(dangling)
+                    results['healthy'] = False
+            if 'missing_embeddings' in checks:
                 if is_postgres:
-                    missing_emb_query = """
-                        SELECT id, node_type, label
-                        FROM nodes
-                        WHERE embedding IS NULL
-                        AND node_type NOT IN ('Session', 'ToolCall', 'Message')
-                        LIMIT 100
-                    """
+                    missing_emb_query = "\n                        SELECT id, node_type, label\n                        FROM nodes\n                        WHERE embedding IS NULL\n                        AND node_type NOT IN ('Session', 'ToolCall', 'Message')\n                        LIMIT 100\n                    "
                 else:
-                    missing_emb_query = """
-                        SELECT n.id, n.node_type, n.label
-                        FROM nodes n
-                        WHERE n.rowid NOT IN (SELECT rowid FROM nodes_vec)
-                        AND n.node_type NOT IN ('Session', 'ToolCall', 'Message')
-                        LIMIT 100
-                    """
+                    missing_emb_query = "\n                        SELECT n.id, n.node_type, n.label\n                        FROM nodes n\n                        WHERE n.rowid NOT IN (SELECT rowid FROM nodes_vec)\n                        AND n.node_type NOT IN ('Session', 'ToolCall', 'Message')\n                        LIMIT 100\n                    "
                 missing_emb = session.execute(text(missing_emb_query)).fetchall()
                 if missing_emb:
-                    results["issues_found"]["missing_embeddings"] = [
-                        {"id": row[0], "type": row[1], "label": row[2]}
-                        for row in missing_emb
-                    ]
-                    results["total_issues"] += len(missing_emb)
-                    # Don't mark as unhealthy for missing embeddings alone
-
-            # Check for duplicate edges
-            if "duplicate_edges" in checks:
-                dup_edges_query = """
-                    SELECT source_id, target_id, edge_type, COUNT(*) as count
-                    FROM edges
-                    GROUP BY source_id, target_id, edge_type
-                    HAVING COUNT(*) > 1
-                """
+                    results['issues_found']['missing_embeddings'] = [{'id': row[0], 'type': row[1], 'label': row[2]} for row in missing_emb]
+                    results['total_issues'] += len(missing_emb)
+            if 'duplicate_edges' in checks:
+                dup_edges_query = '\n                    SELECT source_id, target_id, edge_type, COUNT(*) as count\n                    FROM edges\n                    GROUP BY source_id, target_id, edge_type\n                    HAVING COUNT(*) > 1\n                '
                 duplicates = session.execute(text(dup_edges_query)).fetchall()
                 if duplicates:
-                    results["issues_found"]["duplicate_edges"] = [
-                        {
-                            "source_id": row[0],
-                            "target_id": row[1],
-                            "edge_type": row[2],
-                            "count": row[3],
-                        }
-                        for row in duplicates
-                    ]
-                    results["total_issues"] += len(duplicates)
-                    results["healthy"] = False
-
-            # Check for self-loops
-            if "self_loops" in checks:
-                self_loop_query = """
-                    SELECT id, source_id, edge_type
-                    FROM edges
-                    WHERE source_id = target_id
-                """
+                    results['issues_found']['duplicate_edges'] = [{'source_id': row[0], 'target_id': row[1], 'edge_type': row[2], 'count': row[3]} for row in duplicates]
+                    results['total_issues'] += len(duplicates)
+                    results['healthy'] = False
+            if 'self_loops' in checks:
+                self_loop_query = '\n                    SELECT id, source_id, edge_type\n                    FROM edges\n                    WHERE source_id = target_id\n                '
                 self_loops = session.execute(text(self_loop_query)).fetchall()
                 if self_loops:
-                    results["issues_found"]["self_loops"] = [
-                        {"edge_id": row[0], "node_id": row[1], "edge_type": row[2]}
-                        for row in self_loops
-                    ]
-                    results["total_issues"] += len(self_loops)
-                    # Self-loops might be intentional, don't mark as unhealthy
-
-        logger.info(
-            f"Graph integrity check complete: {results['total_issues']} issues found, "
-            f"healthy={results['healthy']}"
-        )
+                    results['issues_found']['self_loops'] = [{'edge_id': row[0], 'node_id': row[1], 'edge_type': row[2]} for row in self_loops]
+                    results['total_issues'] += len(self_loops)
+        logger.info(f"Graph integrity check complete: {results['total_issues']} issues found, healthy={results['healthy']}")
         return results
 
-    def extract_subgraph(
-        self,
-        root_node_ids: List[str],
-        depth: int = 2,
-        include_node_types: Optional[List[str]] = None,
-        export_format: str = "json",
-    ) -> Dict[str, Any]:
+    def extract_subgraph(self, root_node_ids: List[str], depth: int=2, include_node_types: Optional[List[str]]=None, export_format: str='json') -> Dict[str, Any]:
         """Extract a subgraph around specified root nodes.
 
         Args:
@@ -1425,141 +798,59 @@ class KnowledgeRepository:
             Dictionary with nodes, edges, and formatted export
         """
         with self.db_manager.get_session() as session:
-            # Collect all nodes and edges in the subgraph
             visited_nodes = set()
             all_nodes = []
             all_edges = []
-
-            # BFS to collect nodes
             queue = deque([(node_id, 0) for node_id in root_node_ids])
             visited = set(root_node_ids)
-
             while queue:
                 current_id, current_depth = queue.popleft()
-
-                # Get the node
                 node = session.query(Node).filter(Node.id == current_id).first()
                 if not node:
                     continue
-
-                # Check type filter
                 if include_node_types and node.node_type not in include_node_types:
                     continue
-
                 visited_nodes.add(current_id)
                 all_nodes.append(node)
-
-                # Don't traverse beyond depth
                 if current_depth >= depth:
                     continue
-
-                # Get connected edges
-                edges = (
-                    session.query(Edge)
-                    .filter(
-                        or_(Edge.source_id == current_id, Edge.target_id == current_id)
-                    )
-                    .all()
-                )
-
+                edges = session.query(Edge).filter(or_(Edge.source_id == current_id, Edge.target_id == current_id)).all()
                 for edge in edges:
-                    # Add edge if both ends are in visited nodes or will be visited
-                    if (
-                        edge.source_id in visited_nodes
-                        or edge.target_id in visited_nodes
-                    ):
+                    if edge.source_id in visited_nodes or edge.target_id in visited_nodes:
                         if edge not in all_edges:
                             all_edges.append(edge)
-
-                    # Queue the other end of the edge
-                    other_id = (
-                        edge.target_id
-                        if edge.source_id == current_id
-                        else edge.source_id
-                    )
+                    other_id = edge.target_id if edge.source_id == current_id else edge.source_id
                     if other_id not in visited:
                         visited.add(other_id)
                         queue.append((other_id, current_depth + 1))
-
-            # Convert to dictionaries
             nodes_data = [node.to_dict() for node in all_nodes]
-            edges_data = [
-                {
-                    "source_id": edge.source_id,
-                    "target_id": edge.target_id,
-                    "edge_type": edge.edge_type,
-                    "properties": edge.properties,
-                }
-                for edge in all_edges
-            ]
-
-            result = {
-                "nodes": nodes_data,
-                "edges": edges_data,
-                "stats": {
-                    "node_count": len(nodes_data),
-                    "edge_count": len(edges_data),
-                    "depth": depth,
-                },
-            }
-
-            # Format output
-            if export_format == "json":
-                result["export"] = json.dumps(
-                    {"nodes": nodes_data, "edges": edges_data}, indent=2
-                )
-
-            elif export_format == "cypher":
-                # Generate Cypher CREATE statements
+            edges_data = [{'source_id': edge.source_id, 'target_id': edge.target_id, 'edge_type': edge.edge_type, 'properties': edge.properties} for edge in all_edges]
+            result = {'nodes': nodes_data, 'edges': edges_data, 'stats': {'node_count': len(nodes_data), 'edge_count': len(edges_data), 'depth': depth}}
+            if export_format == 'json':
+                result['export'] = json.dumps({'nodes': nodes_data, 'edges': edges_data}, indent=2)
+            elif export_format == 'cypher':
                 cypher_statements = []
                 for node in nodes_data:
-                    props = json.dumps(node.get("properties", {}))
-                    cypher_statements.append(
-                        f"CREATE (n:{node['type']} {{id: '{node['id']}', "
-                        f"label: '{node['label']}', properties: {props}}})"
-                    )
+                    props = json.dumps(node.get('properties', {}))
+                    cypher_statements.append(f"CREATE (n:{node['type']} {{id: '{node['id']}', label: '{node['label']}', properties: {props}}})")
                 for edge in edges_data:
-                    cypher_statements.append(
-                        f"MATCH (a {{id: '{edge['source_id']}'}}), "
-                        f"(b {{id: '{edge['target_id']}'}}) "
-                        f"CREATE (a)-[:{edge['edge_type']}]->(b)"
-                    )
-                result["export"] = "\n".join(cypher_statements)
-
-            elif export_format == "graphml":
-                # Generate GraphML XML
+                    cypher_statements.append(f"MATCH (a {{id: '{edge['source_id']}'}}), (b {{id: '{edge['target_id']}'}}) CREATE (a)-[:{edge['edge_type']}]->(b)")
+                result['export'] = '\n'.join(cypher_statements)
+            elif export_format == 'graphml':
                 graphml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
-                graphml_parts.append(
-                    '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">'
-                )
+                graphml_parts.append('<graphml xmlns="http://graphml.graphdrawing.org/xmlns">')
                 graphml_parts.append('  <graph id="G" edgedefault="directed">')
-
                 for node in nodes_data:
-                    graphml_parts.append(
-                        f'    <node id="{node["id"]}">'
-                        f'<data key="label">{node["label"]}</data>'
-                        f'<data key="type">{node["type"]}</data></node>'
-                    )
-
+                    graphml_parts.append(f'''    <node id="{node['id']}"><data key="label">{node['label']}</data><data key="type">{node['type']}</data></node>''')
                 for i, edge in enumerate(edges_data):
-                    graphml_parts.append(
-                        f'    <edge id="e{i}" source="{edge["source_id"]}" '
-                        f'target="{edge["target_id"]}">'
-                        f'<data key="type">{edge["edge_type"]}</data></edge>'
-                    )
-
-                graphml_parts.append("  </graph>")
-                graphml_parts.append("</graphml>")
-                result["export"] = "\n".join(graphml_parts)
-
-            logger.info(
-                f"Extracted subgraph: {len(nodes_data)} nodes, {len(edges_data)} edges"
-            )
+                    graphml_parts.append(f'''    <edge id="e{i}" source="{edge['source_id']}" target="{edge['target_id']}"><data key="type">{edge['edge_type']}</data></edge>''')
+                graphml_parts.append('  </graph>')
+                graphml_parts.append('</graphml>')
+                result['export'] = '\n'.join(graphml_parts)
+            logger.info(f'Extracted subgraph: {len(nodes_data)} nodes, {len(edges_data)} edges')
             return result
 
-    def merge_duplicate_nodes(
-        self, node_ids: List[str], keep_node_id: str, merge_strategy: str = "union"
-    ) -> Dict[str, Any]:
+    def merge_duplicate_nodes(self, node_ids: List[str], keep_node_id: str, merge_strategy: str='union') -> Dict[str, Any]:
         """Merge duplicate nodes into a single node.
 
         Args:
@@ -1574,127 +865,57 @@ class KnowledgeRepository:
             Dictionary with merge results and updated node
         """
         if keep_node_id not in node_ids:
-            raise ValueError(f"keep_node_id {keep_node_id} must be in node_ids list")
-
+            raise ValueError(f'keep_node_id {keep_node_id} must be in node_ids list')
         if len(node_ids) < 2:
-            raise ValueError("Need at least 2 nodes to merge")
-
+            raise ValueError('Need at least 2 nodes to merge')
         with self.db_manager.get_session() as session:
-            # Get all nodes
             nodes = session.query(Node).filter(Node.id.in_(node_ids)).all()
             if len(nodes) != len(node_ids):
                 found_ids = {n.id for n in nodes}
                 missing = set(node_ids) - found_ids
-                raise ValueError(f"Some nodes not found: {missing}")
-
-            keep_node = next(n for n in nodes if n.id == keep_node_id)
+                raise ValueError(f'Some nodes not found: {missing}')
+            keep_node = next((n for n in nodes if n.id == keep_node_id))
             merge_nodes = [n for n in nodes if n.id != keep_node_id]
-
-            # Merge properties based on strategy
             merged_props = keep_node.properties.copy() if keep_node.properties else {}
-
-            if merge_strategy == "union":
+            if merge_strategy == 'union':
                 for node in merge_nodes:
                     if node.properties:
                         merged_props.update(node.properties)
-
-            elif merge_strategy == "prefer_newer":
-                all_nodes_sorted = sorted(
-                    nodes, key=lambda n: n.updated_at, reverse=True
-                )
+            elif merge_strategy == 'prefer_newer':
+                all_nodes_sorted = sorted(nodes, key=lambda n: n.updated_at, reverse=True)
                 for node in reversed(all_nodes_sorted):
                     if node.properties:
                         merged_props.update(node.properties)
-
-            # merge_strategy == "keep" - keep existing properties
-
-            # Update keep_node properties
             keep_node.properties = merged_props
             keep_node.updated_at = datetime.now(timezone.utc)
-
-            # Redirect all edges from merge_nodes to keep_node
             edges_updated = 0
             for merge_node in merge_nodes:
-                # Update outgoing edges
-                outgoing = (
-                    session.query(Edge).filter(Edge.source_id == merge_node.id).all()
-                )
+                outgoing = session.query(Edge).filter(Edge.source_id == merge_node.id).all()
                 for edge in outgoing:
-                    # Check if edge already exists with keep_node
-                    existing = (
-                        session.query(Edge)
-                        .filter(
-                            and_(
-                                Edge.source_id == keep_node_id,
-                                Edge.target_id == edge.target_id,
-                                Edge.edge_type == edge.edge_type,
-                            )
-                        )
-                        .first()
-                    )
+                    existing = session.query(Edge).filter(and_(Edge.source_id == keep_node_id, Edge.target_id == edge.target_id, Edge.edge_type == edge.edge_type)).first()
                     if existing:
-                        # Delete duplicate
                         session.delete(edge)
                     else:
                         edge.source_id = keep_node_id
                     edges_updated += 1
-
-                # Update incoming edges
-                incoming = (
-                    session.query(Edge).filter(Edge.target_id == merge_node.id).all()
-                )
+                incoming = session.query(Edge).filter(Edge.target_id == merge_node.id).all()
                 for edge in incoming:
-                    # Check if edge already exists with keep_node
-                    existing = (
-                        session.query(Edge)
-                        .filter(
-                            and_(
-                                Edge.source_id == edge.source_id,
-                                Edge.target_id == keep_node_id,
-                                Edge.edge_type == edge.edge_type,
-                            )
-                        )
-                        .first()
-                    )
+                    existing = session.query(Edge).filter(and_(Edge.source_id == edge.source_id, Edge.target_id == keep_node_id, Edge.edge_type == edge.edge_type)).first()
                     if existing:
-                        # Delete duplicate
                         session.delete(edge)
                     else:
                         edge.target_id = keep_node_id
                     edges_updated += 1
-
-            # Delete merged nodes
             for merge_node in merge_nodes:
                 session.delete(merge_node)
-
             session.commit()
-
-            # Refresh keep_node to get updated data
             session.refresh(keep_node)
             session.expunge(keep_node)
-
-            result = {
-                "kept_node_id": keep_node_id,
-                "merged_node_ids": [n.id for n in merge_nodes],
-                "edges_redirected": edges_updated,
-                "merged_properties": merged_props,
-                "node": keep_node.to_dict(),
-            }
-
-            logger.info(
-                f"Merged {len(merge_nodes)} nodes into {keep_node_id}, "
-                f"redirected {edges_updated} edges"
-            )
+            result = {'kept_node_id': keep_node_id, 'merged_node_ids': [n.id for n in merge_nodes], 'edges_redirected': edges_updated, 'merged_properties': merged_props, 'node': keep_node.to_dict()}
+            logger.info(f'Merged {len(merge_nodes)} nodes into {keep_node_id}, redirected {edges_updated} edges')
             return result
 
-    def get_edges(
-        self,
-        source_id: Optional[str] = None,
-        target_id: Optional[str] = None,
-        edge_type: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: int = 0,
-    ) -> List[Edge]:
+    def get_edges(self, source_id: Optional[str]=None, target_id: Optional[str]=None, edge_type: Optional[str]=None, limit: Optional[int]=None, offset: int=0) -> List[Edge]:
         """Get edges with optional filtering.
 
         Args:
@@ -1709,29 +930,20 @@ class KnowledgeRepository:
         """
         with self.db_manager.get_session() as session:
             query = session.query(Edge)
-
             if source_id:
                 query = query.filter(Edge.source_id == source_id)
             if target_id:
                 query = query.filter(Edge.target_id == target_id)
             if edge_type:
                 query = query.filter(Edge.edge_type == edge_type)
-
             query = query.order_by(Edge.created_at)
-
             if offset:
                 query = query.offset(offset)
             if limit:
                 query = query.limit(limit)
-
             return query.all()
 
-    def get_edges_count(
-        self,
-        source_id: Optional[str] = None,
-        target_id: Optional[str] = None,
-        edge_type: Optional[str] = None,
-    ) -> int:
+    def get_edges_count(self, source_id: Optional[str]=None, target_id: Optional[str]=None, edge_type: Optional[str]=None) -> int:
         """Get count of edges with optional filtering.
 
         Args:
@@ -1744,14 +956,12 @@ class KnowledgeRepository:
         """
         with self.db_manager.get_session() as session:
             query = session.query(func.count(Edge.id))
-
             if source_id:
                 query = query.filter(Edge.source_id == source_id)
             if target_id:
                 query = query.filter(Edge.target_id == target_id)
             if edge_type:
                 query = query.filter(Edge.edge_type == edge_type)
-
             return query.scalar() or 0
 
     def delete_node(self, node_id: str) -> bool:
@@ -1767,10 +977,9 @@ class KnowledgeRepository:
             node = session.query(Node).filter(Node.id == node_id).first()
             if not node:
                 return False
-
             session.delete(node)
             session.commit()
-            logger.info(f"Deleted node {node_id}")
+            logger.info(f'Deleted node {node_id}')
             return True
 
     def bulk_delete_nodes(self, node_ids: List[str]) -> Dict[str, Any]:
@@ -1789,7 +998,6 @@ class KnowledgeRepository:
         deleted = []
         not_found = []
         failed = []
-
         with self.db_manager.get_session() as session:
             for node_id in node_ids:
                 try:
@@ -1797,36 +1005,22 @@ class KnowledgeRepository:
                     if not node:
                         not_found.append(node_id)
                         continue
-
                     session.delete(node)
                     deleted.append(node_id)
                 except Exception as e:
-                    logger.error(f"Error deleting node {node_id}: {e}")
-                    failed.append({"node_id": node_id, "error": str(e)})
-                    # Rollback the current node's deletion but continue with others
+                    logger.error(f'Error deleting node {node_id}: {e}')
+                    failed.append({'node_id': node_id, 'error': str(e)})
                     session.rollback()
-
-            # Commit all successful deletions
             try:
                 session.commit()
-                logger.info(
-                    f"Bulk deleted {len(deleted)} nodes, "
-                    f"{len(not_found)} not found, {len(failed)} failed"
-                )
+                logger.info(f'Bulk deleted {len(deleted)} nodes, {len(not_found)} not found, {len(failed)} failed')
             except Exception as e:
-                logger.error(f"Error committing bulk deletion: {e}")
+                logger.error(f'Error committing bulk deletion: {e}')
                 session.rollback()
-                # Move all deleted to failed
                 for node_id in deleted:
-                    failed.append({"node_id": node_id, "error": "Commit failed"})
+                    failed.append({'node_id': node_id, 'error': 'Commit failed'})
                 deleted = []
-
-        return {
-            "deleted": deleted,
-            "not_found": not_found,
-            "failed": failed,
-            "total": len(node_ids),
-        }
+        return {'deleted': deleted, 'not_found': not_found, 'failed': failed, 'total': len(node_ids)}
 
     def delete_edge(self, edge_id: int) -> bool:
         """Delete an edge by its ID.
@@ -1841,20 +1035,12 @@ class KnowledgeRepository:
             edge = session.query(Edge).filter(Edge.id == edge_id).first()
             if not edge:
                 return False
-
             session.delete(edge)
             session.commit()
-            logger.info(f"Deleted edge {edge_id}")
+            logger.info(f'Deleted edge {edge_id}')
             return True
 
-    def search_nodes(
-        self,
-        query_text: str,
-        node_type: Optional[str] = None,
-        order_by: str = "relevance",
-        limit: int = 10,
-        offset: int = 0,
-    ) -> List[Node]:
+    def search_nodes(self, query_text: str, node_type: Optional[str]=None, order_by: str='relevance', limit: int=10, offset: int=0) -> List[Node]:
         """Search nodes using semantic vector similarity search.
 
         Args:
@@ -1868,71 +1054,40 @@ class KnowledgeRepository:
             List of matching Node instances
         """
         with self.db_manager.get_session() as session:
-            # Handle empty query - use regular SQL query if query is empty
-            query_text = str(query_text).strip() if query_text else ""
-
-            # If query is empty and node_type is specified, use regular query
+            query_text = str(query_text).strip() if query_text else ''
             if not query_text and node_type:
                 query = session.query(Node).filter(Node.node_type == node_type)
-                if order_by == "created_at":
+                if order_by == 'created_at':
                     query = query.order_by(Node.created_at.desc())
                 if offset:
                     query = query.offset(offset)
                 nodes = query.limit(limit).all()
-                # Expunge nodes to detach from session
                 for node in nodes:
+                    session.refresh(node)
                     session.expunge(node)
                 return nodes
-
-            # If query is empty and no node_type, return empty list
             if not query_text:
                 return []
-
-            # Use vector similarity search
-            if order_by == "relevance":
+            if order_by == 'relevance':
                 try:
-                    # Check database type
-                    is_postgres = self.db_manager.engine.dialect.name == "postgresql"
-
-                    # Generate embedding for query text
+                    is_postgres = self.db_manager.engine.dialect.name == 'postgresql'
                     embedding_manager = EmbeddingManager.get_instance()
                     query_embedding = embedding_manager.embed_text(query_text)
-
-                    if not query_embedding or all(v == 0.0 for v in query_embedding):
-                        logger.warning("Generated empty/zero embedding for query")
+                    if not query_embedding or all((v == 0.0 for v in query_embedding)):
+                        logger.warning('Generated empty/zero embedding for query')
                         return []
-
                     if is_postgres:
-                        # PostgreSQL: Use pgvector cosine distance operator
-                        # Convert embedding list to PostgreSQL array format
-                        embedding_array = (
-                            "[" + ",".join(map(str, query_embedding)) + "]"
-                        )
-                        base_query = """
-                            SELECT 
-                                n.id,
-                                n.node_type,
-                                n.label,
-                                n.content,
-                                n.properties,
-                                n.created_at,
-                                n.updated_at,
-                                1 - (n.embedding <=> %s::vector) as similarity
-                            FROM nodes n
-                            WHERE n.embedding IS NOT NULL
-                        """
+                        embedding_array = '[' + ','.join(map(str, query_embedding)) + ']'
+                        base_query = '\n                            SELECT \n                                n.id,\n                                n.node_type,\n                                n.label,\n                                n.content,\n                                n.properties,\n                                n.created_at,\n                                n.updated_at,\n                                1 - (n.embedding <=> %s::vector) as similarity\n                            FROM nodes n\n                            WHERE n.embedding IS NOT NULL\n                        '
                         if node_type:
-                            base_query += " AND n.node_type = %s"
-                        base_query += " ORDER BY n.embedding <=> %s::vector"
+                            base_query += ' AND n.node_type = %s'
+                        base_query += ' ORDER BY n.embedding <=> %s::vector'
                         if offset:
-                            base_query += " OFFSET %s"
-                        base_query += " LIMIT %s"
-
-                        # Use DBAPI connection directly for PostgreSQL with positional parameters
+                            base_query += ' OFFSET %s'
+                        base_query += ' LIMIT %s'
                         conn = session.connection()
                         dbapi_conn = conn.connection
                         cursor = dbapi_conn.cursor()
-
                         params = [embedding_array]
                         if node_type:
                             params.append(node_type)
@@ -1940,129 +1095,54 @@ class KnowledgeRepository:
                         if offset:
                             params.append(offset)
                         params.append(limit)
-
                         cursor.execute(base_query, params)
-                        # Fetch all results and wrap in a list to make it iterable
                         results_list = cursor.fetchall()
                         cursor.close()
 
-                        # Create an iterable wrapper that matches the expected format
                         class ResultWrapper:
+
                             def __init__(self, results):
                                 self.results = results
 
                             def __iter__(self):
                                 return iter(self.results)
-
                         vector_query = ResultWrapper(results_list)
                     else:
-                        # SQLite: Vector similarity search using sqlite-vec
-                        # vec0 requires 'k = ?' constraint in the MATCH clause
-                        # vec0 uses cosine distance (lower is better)
-                        vector_query = session.execute(
-                            text(
-                                """
-                            SELECT 
-                                n.id,
-                                n.node_type,
-                                n.label,
-                                n.content,
-                                n.properties,
-                                n.created_at,
-                                n.updated_at,
-                                (1.0 - distance) as similarity
-                            FROM nodes_vec
-                            JOIN nodes n ON nodes_vec.rowid = n.rowid
-                            WHERE nodes_vec.embedding MATCH json(:embedding) AND k = :k
-                            ORDER BY distance ASC
-                        """
-                            ),
-                            {
-                                "embedding": json.dumps(query_embedding),
-                                "k": limit * 2,  # Fetch more to filter by node_type
-                            },
-                        )
-
-                    # Convert to Node objects and filter by node_type if specified
+                        vector_query = session.execute(text('\n                            SELECT \n                                n.id,\n                                n.node_type,\n                                n.label,\n                                n.content,\n                                n.properties,\n                                n.created_at,\n                                n.updated_at,\n                                (1.0 - distance) as similarity\n                            FROM nodes_vec\n                            JOIN nodes n ON nodes_vec.rowid = n.rowid\n                            WHERE nodes_vec.embedding MATCH json(:embedding) AND k = :k\n                            ORDER BY distance ASC\n                        '), {'embedding': json.dumps(query_embedding), 'k': limit * 2})
                     results = []
                     skipped = 0
                     for row in vector_query:
                         try:
-                            # Convert string datetime values to datetime objects
                             created_at = row[5]
                             updated_at = row[6]
                             if isinstance(created_at, str):
                                 created_at = datetime.fromisoformat(created_at)
                             if isinstance(updated_at, str):
                                 updated_at = datetime.fromisoformat(updated_at)
-
-                            # Filter by node_type if specified
                             if node_type and row[1] != node_type:
                                 continue
-
-                            # Skip offset results
-                            if skipped < offset:
-                                skipped += 1
-                                continue
-
-                            node = Node(
-                                id=row[0],
-                                node_type=row[1],
-                                label=row[2],
-                                content=row[3],
-                                properties=row[4],
-                                created_at=created_at,
-                                updated_at=updated_at,
-                            )
+                            node = Node(id=row[0], node_type=row[1], label=row[2], content=row[3], properties=row[4], created_at=created_at, updated_at=updated_at)
                             results.append(node)
-
-                            # Stop when we have enough results
-                            if len(results) >= limit:
-                                break
-
                         except Exception as e:
-                            logger.error("Error creating Node from row %s: %s", row, e)
+                            logger.error('Error creating Node from row %s: %s', row, e)
                             continue
-
                     return results
-
                 except Exception as e:
-                    logger.error(
-                        "Error in vector search: %s. Returning empty results.", e
-                    )
+                    logger.error('Error in vector search: %s. Returning empty results.', e)
                     return []
-
             else:
-                # Fallback to LIKE search for non-relevance ordering
-                search_pattern = f"%{query_text}%"
-
-                query = session.query(Node).filter(
-                    or_(
-                        Node.label.like(search_pattern),
-                        Node.content.like(search_pattern),
-                        text(self._get_json_search_query("LIKE")).params(
-                            pattern=search_pattern
-                        ),
-                    )
-                )
-
+                search_pattern = f'%{query_text}%'
+                query = session.query(Node).filter(or_(Node.label.like(search_pattern), Node.content.like(search_pattern), text(self._get_json_search_query('LIKE')).params(pattern=search_pattern)))
                 if node_type:
                     query = query.filter(Node.node_type == node_type)
-
                 query = query.order_by(Node.created_at)
                 nodes = query.limit(limit).all()
-                # Expunge nodes to detach from session
                 for node in nodes:
+                    session.refresh(node)
                     session.expunge(node)
                 return nodes
 
-    def get_node_neighbors(
-        self,
-        node_id: str,
-        direction: str = "both",
-        edge_types: Optional[List[str]] = None,
-        limit: Optional[int] = None,
-    ) -> List[Tuple[Edge, Node]]:
+    def get_node_neighbors(self, node_id: str, direction: str='both', edge_types: Optional[List[str]]=None, limit: Optional[int]=None) -> List[Tuple[Edge, Node]]:
         """Get neighbors of a node.
 
         Args:
@@ -2075,50 +1155,33 @@ class KnowledgeRepository:
             List of (Edge, Node) tuples
         """
         with self.db_manager.get_session() as session:
-            if direction in ["outgoing", "both"]:
-                outgoing_query = (
-                    session.query(Edge, Node)
-                    .join(Node, Edge.target_id == Node.id)
-                    .filter(Edge.source_id == node_id)
-                )
-
+            if direction in ['outgoing', 'both']:
+                outgoing_query = session.query(Edge, Node).join(Node, Edge.target_id == Node.id).filter(Edge.source_id == node_id)
                 if edge_types:
-                    outgoing_query = outgoing_query.filter(
-                        Edge.edge_type.in_(edge_types)
-                    )
-
+                    outgoing_query = outgoing_query.filter(Edge.edge_type.in_(edge_types))
                 if limit:
                     outgoing_query = outgoing_query.limit(limit)
-
                 outgoing_results = outgoing_query.all()
             else:
                 outgoing_results = []
-
-            if direction in ["incoming", "both"]:
-                incoming_query = (
-                    session.query(Edge, Node)
-                    .join(Node, Edge.source_id == Node.id)
-                    .filter(Edge.target_id == node_id)
-                )
-
+            if direction in ['incoming', 'both']:
+                incoming_query = session.query(Edge, Node).join(Node, Edge.source_id == Node.id).filter(Edge.target_id == node_id)
                 if edge_types:
-                    incoming_query = incoming_query.filter(
-                        Edge.edge_type.in_(edge_types)
-                    )
-
+                    incoming_query = incoming_query.filter(Edge.edge_type.in_(edge_types))
                 if limit:
-                    # If there's a limit and we're doing "both", split it between incoming/outgoing
-                    remaining_limit = (
-                        limit - len(outgoing_results) if direction == "both" else limit
-                    )
+                    remaining_limit = limit - len(outgoing_results) if direction == 'both' else limit
                     if remaining_limit > 0:
                         incoming_query = incoming_query.limit(remaining_limit)
-
                 incoming_results = incoming_query.all()
             else:
                 incoming_results = []
-
-            return outgoing_results + incoming_results
+            all_results = outgoing_results + incoming_results
+            for edge, node in all_results:
+                session.refresh(edge)
+                session.refresh(node)
+                session.expunge(edge)
+                session.expunge(node)
+            return all_results
 
     def get_graph_stats(self) -> Dict[str, int]:
         """Get basic statistics about the graph.
@@ -2127,29 +1190,11 @@ class KnowledgeRepository:
             Dictionary with node count, edge count, and counts by type
         """
         with self.db_manager.get_session() as session:
-            stats = {
-                "total_nodes": session.query(Node).count(),
-                "total_edges": session.query(Edge).count(),
-            }
-
-            # Count by node type
-            node_types = (
-                session.query(Node.node_type, func.count(Node.id))
-                .group_by(Node.node_type)
-                .all()
-            )
-
-            stats["node_types"] = {nt: count for nt, count in node_types}
-
-            # Count by edge type
-            edge_types = (
-                session.query(Edge.edge_type, func.count(Edge.id))
-                .group_by(Edge.edge_type)
-                .all()
-            )
-
-            stats["edge_types"] = {et: count for et, count in edge_types}
-
+            stats = {'total_nodes': session.query(Node).count(), 'total_edges': session.query(Edge).count()}
+            node_types = session.query(Node.node_type, func.count(Node.id)).group_by(Node.node_type).all()
+            stats['node_types'] = {nt: count for nt, count in node_types}
+            edge_types = session.query(Edge.edge_type, func.count(Edge.id)).group_by(Edge.edge_type).all()
+            stats['edge_types'] = {et: count for et, count in edge_types}
             return stats
 
     def export_to_memory_format(self) -> Dict[str, Any]:
@@ -2161,17 +1206,9 @@ class KnowledgeRepository:
         with self.db_manager.get_session() as session:
             nodes = {node.id: node.to_dict() for node in session.query(Node).all()}
             edges = [edge.to_dict() for edge in session.query(Edge).all()]
+            return {'nodes': nodes, 'edges': edges}
 
-            return {
-                "nodes": nodes,
-                "edges": edges,
-            }
-
-    def find_nodes_by_properties(
-        self,
-        properties: Dict[str, Any],
-        node_type: Optional[str] = None,
-    ) -> List[Node]:
+    def find_nodes_by_properties(self, properties: Dict[str, Any], node_type: Optional[str]=None) -> List[Node]:
         """Find nodes matching property criteria.
 
         Args:
@@ -2183,25 +1220,13 @@ class KnowledgeRepository:
         """
         with self.db_manager.get_session() as session:
             query = session.query(Node)
-
             if node_type:
                 query = query.filter(Node.node_type == node_type)
-
-            # Filter by properties using database-agnostic JSON queries
             for key, value in properties.items():
-                # Use database-agnostic JSON property query
-                query = query.filter(
-                    text(self._get_json_property_query(key, "="))
-                ).params(value=value)
-
+                query = query.filter(text(self._get_json_property_query(key, '='))).params(value=value)
             return query.all()
 
-    def find_shortest_path(
-        self,
-        start_id: str,
-        end_id: str,
-        max_depth: Optional[int] = None,
-    ) -> Optional[List[str]]:
+    def find_shortest_path(self, start_id: str, end_id: str, max_depth: Optional[int]=None) -> Optional[List[str]]:
         """Find shortest path using BFS.
 
         Args:
@@ -2213,46 +1238,29 @@ class KnowledgeRepository:
             List of node IDs forming the path, or None if no path exists
         """
         with self.db_manager.get_session() as session:
-            # Check if both nodes exist
             start_node = session.query(Node).filter(Node.id == start_id).first()
             end_node = session.query(Node).filter(Node.id == end_id).first()
-
             if not start_node or not end_node:
                 return None
-
             if start_id == end_id:
                 return [start_id]
-
-            # BFS using adjacency lists
             queue = deque([(start_id, [start_id])])
             visited = {start_id}
-
             while queue:
                 current, path = queue.popleft()
-
                 if max_depth and len(path) > max_depth:
                     continue
-
                 if current == end_id:
                     return path
-
-                # Get neighbors
-                neighbors = self.get_node_neighbors(current, direction="both")
-
+                neighbors = self.get_node_neighbors(current, direction='both')
                 for _, neighbor_node in neighbors:
                     neighbor_id = neighbor_node.id
                     if neighbor_id not in visited:
                         visited.add(neighbor_id)
                         queue.append((neighbor_id, path + [neighbor_id]))
-
             return None
 
-    def find_all_paths(
-        self,
-        start_id: str,
-        end_id: str,
-        max_depth: int = 5,
-    ) -> List[List[str]]:
+    def find_all_paths(self, start_id: str, end_id: str, max_depth: int=5) -> List[List[str]]:
         """Find all paths using DFS.
 
         Args:
@@ -2264,29 +1272,21 @@ class KnowledgeRepository:
             List of paths, where each path is a list of node IDs
         """
         with self.db_manager.get_session() as session:
-            # Check if both nodes exist
             start_node = session.query(Node).filter(Node.id == start_id).first()
             end_node = session.query(Node).filter(Node.id == end_id).first()
-
             if not start_node or not end_node:
                 return []
-
             if start_id == end_id:
                 return [[start_id]]
-
             all_paths_list = []
 
             def dfs(current: str, target: str, path: List[str], visited: Set[str]):
                 if len(path) > max_depth:
                     return
-
                 if current == target:
                     all_paths_list.append(path.copy())
                     return
-
-                # Get neighbors and explore
-                neighbors = self.get_node_neighbors(current, direction="both")
-
+                neighbors = self.get_node_neighbors(current, direction='both')
                 for _, neighbor_node in neighbors:
                     neighbor_id = neighbor_node.id
                     if neighbor_id not in visited:
@@ -2295,7 +1295,6 @@ class KnowledgeRepository:
                         dfs(neighbor_id, target, path, visited)
                         path.pop()
                         visited.remove(neighbor_id)
-
             dfs(start_id, end_id, [start_id], {start_id})
             return all_paths_list
 
@@ -2306,40 +1305,19 @@ class KnowledgeRepository:
             Dictionary of node_id -> centrality score
         """
         with self.db_manager.get_session() as session:
-            # Get total node count
             total_nodes = session.query(Node).count()
             if total_nodes <= 1:
                 return {}
-
-            # Calculate degree for each node using SQL
             centrality = {}
-
-            # Get all nodes
             nodes = session.query(Node).all()
-
             for node in nodes:
-                # Count incoming edges
-                in_degree = (
-                    session.query(Edge).filter(Edge.target_id == node.id).count()
-                )
-                # Count outgoing edges
-                out_degree = (
-                    session.query(Edge).filter(Edge.source_id == node.id).count()
-                )
-
+                in_degree = session.query(Edge).filter(Edge.target_id == node.id).count()
+                out_degree = session.query(Edge).filter(Edge.source_id == node.id).count()
                 degree = in_degree + out_degree
-                centrality[node.id] = (
-                    degree / (total_nodes - 1) if total_nodes > 1 else 0
-                )
-
+                centrality[node.id] = degree / (total_nodes - 1) if total_nodes > 1 else 0
             return centrality
 
-    def calculate_pagerank(
-        self,
-        damping: float = 0.85,
-        iterations: int = 100,
-        tolerance: float = 1e-6,
-    ) -> Dict[str, float]:
+    def calculate_pagerank(self, damping: float=0.85, iterations: int=100, tolerance: float=1e-06) -> Dict[str, float]:
         """Calculate PageRank centrality.
 
         Args:
@@ -2351,48 +1329,33 @@ class KnowledgeRepository:
             Dictionary of node_id -> pagerank score
         """
         with self.db_manager.get_session() as session:
-            # Get all nodes
             nodes = session.query(Node).all()
             node_ids = [node.id for node in nodes]
             n = len(node_ids)
-
             if n == 0:
                 return {}
-
-            # Build adjacency list
             adjacency_out = defaultdict(list)
             adjacency_in = defaultdict(list)
-
             edges = session.query(Edge).all()
             for edge in edges:
                 adjacency_out[edge.source_id].append(edge.target_id)
                 adjacency_in[edge.target_id].append(edge.source_id)
-
-            # Initialize scores
             scores = {node_id: 1.0 / n for node_id in node_ids}
-
             for _ in range(iterations):
                 new_scores = {}
                 diff = 0.0
-
                 for node_id in node_ids:
-                    # Calculate incoming PageRank contribution
                     rank_sum = 0.0
                     for source in adjacency_in[node_id]:
                         out_degree = len(adjacency_out[source])
                         if out_degree > 0:
                             rank_sum += scores[source] / out_degree
-
                     new_score = (1 - damping) / n + damping * rank_sum
                     new_scores[node_id] = new_score
                     diff += abs(new_score - scores[node_id])
-
                 scores = new_scores
-
-                # Check convergence
                 if diff < tolerance:
                     break
-
             return scores
 
     def find_connected_components(self) -> List[Set[str]]:
@@ -2402,13 +1365,10 @@ class KnowledgeRepository:
             List of sets, where each set contains node IDs in a component
         """
         with self.db_manager.get_session() as session:
-            # Get all nodes
             nodes = session.query(Node).all()
             node_ids = [node.id for node in nodes]
-
             if not node_ids:
                 return []
-
             visited = set()
             components = []
 
@@ -2418,36 +1378,23 @@ class KnowledgeRepository:
                 queue = deque([start])
                 component.add(start)
                 visited.add(start)
-
                 while queue:
                     current = queue.popleft()
-
-                    # Get neighbors
-                    neighbors = self.get_node_neighbors(current, direction="both")
+                    neighbors = self.get_node_neighbors(current, direction='both')
                     for _, neighbor_node in neighbors:
                         neighbor_id = neighbor_node.id
                         if neighbor_id not in visited:
                             visited.add(neighbor_id)
                             component.add(neighbor_id)
                             queue.append(neighbor_id)
-
                 return component
-
             for node_id in node_ids:
                 if node_id not in visited:
                     component = bfs(node_id)
                     components.append(component)
-
             return components
 
-    def traverse_graph(
-        self,
-        start_nodes: List[str],
-        edge_types: Optional[List[str]] = None,
-        node_types: Optional[List[str]] = None,
-        max_depth: int = 3,
-        direction: str = "both",
-    ) -> Dict[str, Any]:
+    def traverse_graph(self, start_nodes: List[str], edge_types: Optional[List[str]]=None, node_types: Optional[List[str]]=None, max_depth: int=3, direction: str='both') -> Dict[str, Any]:
         """Traverse the graph from starting nodes with filters.
 
         Args:
@@ -2461,71 +1408,32 @@ class KnowledgeRepository:
             Dictionary containing traversed subgraph
         """
         with self.db_manager.get_session() as session:
-            # Verify start nodes exist
             valid_start_nodes = []
             for node_id in start_nodes:
                 if session.query(Node).filter(Node.id == node_id).first():
                     valid_start_nodes.append(node_id)
-
             if not valid_start_nodes:
-                return {
-                    "nodes": [],
-                    "edges": [],
-                    "statistics": {"node_count": 0, "edge_count": 0},
-                }
-
-            # BFS traversal with filters
+                return {'nodes': [], 'edges': [], 'statistics': {'node_count': 0, 'edge_count': 0}}
             visited_nodes = set(valid_start_nodes)
             visited_edges = []
             queue = deque([(node_id, 0) for node_id in valid_start_nodes])
-
             while queue:
                 current, depth = queue.popleft()
-
                 if depth >= max_depth:
                     continue
-
-                neighbors = self.get_node_neighbors(
-                    current, direction=direction, edge_types=edge_types
-                )
-
+                neighbors = self.get_node_neighbors(current, direction=direction, edge_types=edge_types)
                 for edge, neighbor_node in neighbors:
-                    # Check node type filter
                     if node_types and neighbor_node.node_type not in node_types:
                         continue
-
-                    # Add edge
                     if edge not in visited_edges:
                         visited_edges.append(edge)
-
-                    # Add node and continue traversal
                     if neighbor_node.id not in visited_nodes:
                         visited_nodes.add(neighbor_node.id)
                         queue.append((neighbor_node.id, depth + 1))
-
-            # Build result subgraph
-            subgraph = {
-                "nodes": [
-                    node.to_dict()
-                    for node in session.query(Node)
-                    .filter(Node.id.in_(visited_nodes))
-                    .all()
-                ],
-                "edges": [edge.to_dict() for edge in visited_edges],
-                "statistics": {
-                    "node_count": len(visited_nodes),
-                    "edge_count": len(visited_edges),
-                    "max_depth_reached": max_depth,
-                },
-            }
-
+            subgraph = {'nodes': [node.to_dict() for node in session.query(Node).filter(Node.id.in_(visited_nodes)).all()], 'edges': [edge.to_dict() for edge in visited_edges], 'statistics': {'node_count': len(visited_nodes), 'edge_count': len(visited_edges), 'max_depth_reached': max_depth}}
             return subgraph
 
-    def get_graph_context(
-        self,
-        node_id: str,
-        depth: int = 1,
-    ) -> Dict[str, Any]:
+    def get_graph_context(self, node_id: str, depth: int=1) -> Dict[str, Any]:
         """Get node and its neighbors up to specified depth.
 
         Args:
@@ -2536,54 +1444,32 @@ class KnowledgeRepository:
             Dictionary containing nodes and edges in context
         """
         with self.db_manager.get_session() as session:
-            # Verify node exists
             node = session.query(Node).filter(Node.id == node_id).first()
             if not node:
-                return {"error": f"Node {node_id} not found"}
-
+                return {'error': f'Node {node_id} not found'}
             nodes_to_visit = {node_id}
-            context = {"nodes": {}, "edges": []}
+            context = {'nodes': {}, 'edges': []}
             current_level = {node_id}
-
             for _ in range(depth):
                 next_level = set()
                 for node_id in current_level:
-                    if node_id not in context["nodes"]:
-                        context["nodes"][node_id] = (
-                            node.to_dict()
-                            if node_id == node.id
-                            else session.query(Node)
-                            .filter(Node.id == node_id)
-                            .first()
-                            .to_dict()
-                        )
-
-                    # Get neighbors
-                    neighbors = self.get_node_neighbors(node_id, direction="both")
+                    if node_id not in context['nodes']:
+                        context['nodes'][node_id] = node.to_dict() if node_id == node.id else session.query(Node).filter(Node.id == node_id).first().to_dict()
+                    neighbors = self.get_node_neighbors(node_id, direction='both')
                     for edge, neighbor_node in neighbors:
                         next_level.add(neighbor_node.id)
-                        if edge not in context["edges"]:
-                            context["edges"].append(edge.to_dict())
-
+                        if edge not in context['edges']:
+                            context['edges'].append(edge.to_dict())
                 nodes_to_visit.update(next_level)
                 current_level = next_level
-
-            # Add any remaining nodes
             for node_id in nodes_to_visit:
-                if node_id not in context["nodes"]:
+                if node_id not in context['nodes']:
                     node = session.query(Node).filter(Node.id == node_id).first()
                     if node:
-                        context["nodes"][node_id] = node.to_dict()
-
+                        context['nodes'][node_id] = node.to_dict()
             return context
 
-    # ============================================================================
-    # MEMORY MANAGEMENT METHODS
-    # ============================================================================
-
-    def save_memory(
-        self, key: str, content: str, overwrite: bool = False
-    ) -> Optional[Node]:
+    def save_memory(self, key: str, content: str, overwrite: bool=False) -> Optional[Node]:
         """Save text content as a Memory node.
 
         Args:
@@ -2597,21 +1483,11 @@ class KnowledgeRepository:
         Raises:
             ValueError: If memory exists and overwrite=False
         """
-        node_id = f"memory:{key}"
+        node_id = f'memory:{key}'
         existing = self.get_node(node_id)
-
-        if existing and not overwrite:
+        if existing and (not overwrite):
             raise ValueError(f"Memory '{key}' already exists (set overwrite=True)")
-
-        # Save memory as graph node with full content
-        node = self.add_node(
-            node_id=node_id,
-            node_type="Memory",
-            label=key,
-            content=content,
-            properties={"key": key, "content_size": len(content)},
-        )
-
+        node = self.add_node(node_id=node_id, node_type='Memory', label=key, content=content, properties={'key': key, 'content_size': len(content)})
         return node
 
     def append_memory(self, key: str, content: str) -> Node:
@@ -2624,24 +1500,13 @@ class KnowledgeRepository:
         Returns:
             The created or updated Node instance
         """
-        node_id = f"memory:{key}"
+        node_id = f'memory:{key}'
         existing = self.get_node(node_id)
-
         if existing and existing.content:
-            # Append to existing content
             new_content = existing.content + content
         else:
-            # Create new
             new_content = content
-
-        node = self.add_node(
-            node_id=node_id,
-            node_type="Memory",
-            label=key,
-            content=new_content,
-            properties={"key": key, "content_size": len(new_content)},
-        )
-
+        node = self.add_node(node_id=node_id, node_type='Memory', label=key, content=new_content, properties={'key': key, 'content_size': len(new_content)})
         return node
 
     def get_memory(self, key: str) -> Optional[str]:
@@ -2653,12 +1518,10 @@ class KnowledgeRepository:
         Returns:
             Content string if found, None otherwise
         """
-        node_id = f"memory:{key}"
+        node_id = f'memory:{key}'
         node = self.get_node(node_id)
-
         if not node:
             return None
-
         return node.content
 
     def delete_memory(self, key: str) -> bool:
@@ -2670,17 +1533,10 @@ class KnowledgeRepository:
         Returns:
             True if deleted, False if not found
         """
-        node_id = f"memory:{key}"
+        node_id = f'memory:{key}'
         return self.delete_node(node_id)
 
-    def list_memories(
-        self,
-        prefix: Optional[str] = None,
-        sort_by_timestamp: bool = False,
-        sort_order: str = "desc",
-        limit: Optional[int] = None,
-        offset: int = 0,
-    ) -> List[Dict[str, Any]]:
+    def list_memories(self, prefix: Optional[str]=None, sort_by_timestamp: bool=False, sort_order: str='desc', limit: Optional[int]=None, offset: int=0) -> List[Dict[str, Any]]:
         """List stored memory keys with metadata.
 
         Args:
@@ -2697,55 +1553,25 @@ class KnowledgeRepository:
             - created_at: Creation timestamp
             - updated_at: Last update timestamp
         """
-        # Get all memory nodes (we need to filter by prefix in Python)
-        all_memories = self.get_nodes(node_type="Memory")
-
-        # Filter by prefix if specified
+        all_memories = self.get_nodes(node_type='Memory')
         if prefix:
-            all_memories = [
-                m
-                for m in all_memories
-                if m.properties.get("key", "").startswith(prefix)
-            ]
-
-        # Convert to list of dictionaries
+            all_memories = [m for m in all_memories if m.properties.get('key', '').startswith(prefix)]
         memory_list = []
         for memory in all_memories:
-            key = memory.properties.get("key")
+            key = memory.properties.get('key')
             if not key:
                 continue
-
-            memory_dict = {
-                "key": key,
-                "content_size": memory.properties.get("content_size", 0),
-                "created_at": (
-                    memory.created_at.isoformat() if memory.created_at else None
-                ),
-                "updated_at": (
-                    memory.updated_at.isoformat() if memory.updated_at else None
-                ),
-            }
+            memory_dict = {'key': key, 'content_size': memory.properties.get('content_size', 0), 'created_at': memory.created_at.isoformat() if memory.created_at else None, 'updated_at': memory.updated_at.isoformat() if memory.updated_at else None}
             memory_list.append(memory_dict)
-
-        # Sort by timestamp if requested
         if sort_by_timestamp:
-            reverse = sort_order.lower() == "desc"
-            memory_list.sort(
-                key=lambda x: x["updated_at"] or x["created_at"] or "",
-                reverse=reverse,
-            )
-
-        # Apply pagination
+            reverse = sort_order.lower() == 'desc'
+            memory_list.sort(key=lambda x: x['updated_at'] or x['created_at'] or '', reverse=reverse)
         if offset or limit:
             end_index = offset + limit if limit else None
             memory_list = memory_list[offset:end_index]
-
         return memory_list
 
-    def get_memories_count(
-        self,
-        prefix: Optional[str] = None,
-    ) -> int:
+    def get_memories_count(self, prefix: Optional[str]=None) -> int:
         """Get count of stored memories with optional filtering.
 
         Args:
@@ -2754,26 +1580,14 @@ class KnowledgeRepository:
         Returns:
             Count of matching memories
         """
-        # Get count of memory nodes
-        total_count = self.get_nodes_count(node_type="Memory")
-
-        # If no prefix filter, return total count
+        total_count = self.get_nodes_count(node_type='Memory')
         if not prefix:
             return total_count
-
-        # If prefix is specified, we need to count with filter
-        # This requires loading and filtering (not ideal, but maintains consistency)
-        all_memories = self.get_nodes(node_type="Memory")
-        count = sum(
-            1
-            for m in all_memories
-            if m.properties and m.properties.get("key", "").startswith(prefix)
-        )
+        all_memories = self.get_nodes(node_type='Memory')
+        count = sum((1 for m in all_memories if m.properties and m.properties.get('key', '').startswith(prefix)))
         return count
 
-    def search_memory(
-        self, query: str, limit: int = 10, offset: int = 0, order_by: str = "relevance"
-    ) -> List[Dict[str, Any]]:
+    def search_memory(self, query: str, limit: int=10, offset: int=0, order_by: str='relevance') -> List[Dict[str, Any]]:
         """Search Memory nodes using semantic vector similarity search.
 
         Args:
@@ -2790,35 +1604,17 @@ class KnowledgeRepository:
             - created_at: Creation timestamp
             - updated_at: Last update timestamp
         """
-        # Use search_nodes with node_type="Memory"
-        search_results = self.search_nodes(
-            query, node_type="Memory", limit=limit, offset=offset, order_by=order_by
-        )
-
-        # Convert Node instances to memory result dictionaries
+        search_results = self.search_nodes(query, node_type='Memory', limit=limit, offset=offset, order_by=order_by)
         memory_results = []
         for node in search_results:
-            key = node.properties.get("key") if node.properties else None
+            key = node.properties.get('key') if node.properties else None
             if not key:
                 continue
-
-            memory_dict = {
-                "key": key,
-                "content": node.content,
-                "created_at": node.created_at.isoformat() if node.created_at else None,
-                "updated_at": node.updated_at.isoformat() if node.updated_at else None,
-            }
-
-            # Add similarity if available (for vector search results)
-            # Note: search_nodes doesn't return similarity scores directly,
-            # but we could enhance this in the future
+            memory_dict = {'key': key, 'content': node.content, 'created_at': node.created_at.isoformat() if node.created_at else None, 'updated_at': node.updated_at.isoformat() if node.updated_at else None}
             memory_results.append(memory_dict)
-
         return memory_results
 
-    def calculate_betweenness_centrality(
-        self, normalized: bool = True
-    ) -> Dict[str, float]:
+    def calculate_betweenness_centrality(self, normalized: bool=True) -> Dict[str, float]:
         """Calculate betweenness centrality for all nodes using Brandes' algorithm (unweighted, treated as undirected).
 
         Args:
@@ -2828,26 +1624,18 @@ class KnowledgeRepository:
             Dictionary of node_id -> betweenness score
         """
         with self.db_manager.get_session() as session:
-            # Collect nodes and edges
             nodes = session.query(Node).all()
             node_ids = [node.id for node in nodes]
             n = len(node_ids)
             if n == 0:
                 return {}
-
             edges = session.query(Edge).all()
-
-            # Build undirected adjacency list
             adjacency: Dict[str, List[str]] = defaultdict(list)
             for e in edges:
                 if e.source_id != e.target_id:
                     adjacency[e.source_id].append(e.target_id)
                     adjacency[e.target_id].append(e.source_id)
-
-            # Initialize betweenness scores
             betweenness: Dict[str, float] = {v: 0.0 for v in node_ids}
-
-            # Brandes' algorithm
             for s in node_ids:
                 stack: List[str] = []
                 predecessors: Dict[str, List[str]] = {v: [] for v in node_ids}
@@ -2855,39 +1643,30 @@ class KnowledgeRepository:
                 sigma[s] = 1.0
                 distance: Dict[str, int] = {v: -1 for v in node_ids}
                 distance[s] = 0
-
-                # BFS
                 queue = deque([s])
                 while queue:
                     v = queue.popleft()
                     stack.append(v)
                     for w in adjacency.get(v, []):
-                        # Path discovery
                         if distance[w] < 0:
                             distance[w] = distance[v] + 1
                             queue.append(w)
-                        # Path counting
                         if distance[w] == distance[v] + 1:
                             sigma[w] += sigma[v]
                             predecessors[w].append(v)
-
-                # Accumulation
                 delta: Dict[str, float] = {v: 0.0 for v in node_ids}
                 while stack:
                     w = stack.pop()
                     for v in predecessors[w]:
                         if sigma[w] > 0:
-                            delta_contrib = (sigma[v] / sigma[w]) * (1.0 + delta[w])
+                            delta_contrib = sigma[v] / sigma[w] * (1.0 + delta[w])
                             delta[v] += delta_contrib
                     if w != s:
                         betweenness[w] += delta[w]
-
-            # Normalize for undirected graphs
             if normalized and n > 2:
                 scale = 1.0 / ((n - 1) * (n - 2) / 2.0)
                 for v in betweenness:
                     betweenness[v] *= scale
-
             return betweenness
 
     def calculate_clustering_coefficient(self) -> Dict[str, float]:
@@ -2901,16 +1680,12 @@ class KnowledgeRepository:
             node_ids = [node.id for node in nodes]
             if not node_ids:
                 return {}
-
             edges = session.query(Edge).all()
-
-            # Build undirected adjacency set for quick neighbor checks
             neighbors: Dict[str, Set[str]] = {v: set() for v in node_ids}
             for e in edges:
                 if e.source_id != e.target_id:
                     neighbors.setdefault(e.source_id, set()).add(e.target_id)
                     neighbors.setdefault(e.target_id, set()).add(e.source_id)
-
             clustering: Dict[str, float] = {}
             for v in node_ids:
                 nbrs = list(neighbors.get(v, set()))
@@ -2918,8 +1693,6 @@ class KnowledgeRepository:
                 if k < 2:
                     clustering[v] = 0.0
                     continue
-                # Count edges among neighbors
-                # For efficiency, use neighbor sets
                 neighbor_sets = neighbors
                 links = 0
                 for i in range(k):
@@ -2928,23 +1701,11 @@ class KnowledgeRepository:
                         w = nbrs[j]
                         if w in neighbor_sets.get(u, set()):
                             links += 1
-                # Number of possible edges among neighbors
                 possible = k * (k - 1) / 2.0
                 clustering[v] = links / possible if possible > 0 else 0.0
-
             return clustering
 
-    # ========================================================================
-    # WORKFLOW MANAGEMENT
-    # ========================================================================
-
-    def save_workflow(
-        self,
-        name: str,
-        description: str,
-        steps: List[Dict[str, Any]],
-        version: Optional[int] = None,
-    ) -> Node:
+    def save_workflow(self, name: str, description: str, steps: List[Dict[str, Any]], version: Optional[int]=None) -> Node:
         """Save or update a workflow definition.
 
         Args:
@@ -2957,63 +1718,20 @@ class KnowledgeRepository:
             The created/updated workflow node
         """
         with self.db_manager.get_session() as session:
-            # Find latest version if not specified
             if version is None:
-                # Query for existing workflow versions using text() for JSONB access
-                existing = (
-                    session.query(Node)
-                    .filter(
-                        Node.node_type == "Workflow",
-                        text(self._get_json_property_query("name")).bindparams(
-                            value=name
-                        ),
-                    )
-                    .order_by(text("CAST(properties->>'version' AS INTEGER) DESC"))
-                    .first()
-                )
-                version = (
-                    int(existing.properties.get("version", 0)) + 1 if existing else 1
-                )
-
-            # Create workflow node
-            workflow_id = f"workflow:{name}:{version}"
-            properties = {
-                "name": name,
-                "version": version,
-                "steps": json.dumps(steps),
-                "execution_count": 0,
-                "success_count": 0,
-                "failure_count": 0,
-            }
-
-            node = self.add_node(
-                node_id=workflow_id,
-                node_type="Workflow",
-                label=f"{name} (v{version})",
-                content=description,
-                properties=properties,
-            )
-
-            # Link to concept:workflow
-            self.add_edge(
-                source_id=workflow_id,
-                target_id="concept:workflow",
-                edge_type="INSTANCE_OF",
-            )
-
-            # Link to previous version if exists
+                existing = session.query(Node).filter(Node.node_type == 'Workflow', text(self._get_json_property_query('name')).bindparams(value=name)).order_by(text("CAST(properties->>'version' AS INTEGER) DESC")).first()
+                version = int(existing.properties.get('version', 0)) + 1 if existing else 1
+            workflow_id = f'workflow:{name}:{version}'
+            properties = {'name': name, 'version': version, 'steps': json.dumps(steps), 'execution_count': 0, 'success_count': 0, 'failure_count': 0}
+            node = self.add_node(node_id=workflow_id, node_type='Workflow', label=f'{name} (v{version})', content=description, properties=properties)
+            self.add_edge(source_id=workflow_id, target_id='concept:workflow', edge_type='INSTANCE_OF')
             if version > 1:
-                prev_workflow_id = f"workflow:{name}:{version - 1}"
+                prev_workflow_id = f'workflow:{name}:{version - 1}'
                 if self.get_node(prev_workflow_id):
-                    self.add_edge(
-                        source_id=workflow_id,
-                        target_id=prev_workflow_id,
-                        edge_type="VERSION_OF",
-                    )
-
+                    self.add_edge(source_id=workflow_id, target_id=prev_workflow_id, edge_type='VERSION_OF')
             return node
 
-    def get_workflow(self, name: str, version: Optional[int] = None) -> Optional[Node]:
+    def get_workflow(self, name: str, version: Optional[int]=None) -> Optional[Node]:
         """Get a workflow by name and version.
 
         Args:
@@ -3024,31 +1742,16 @@ class KnowledgeRepository:
             Workflow node or None if not found
         """
         if version is not None:
-            # Get specific version
-            workflow_id = f"workflow:{name}:{version}"
+            workflow_id = f'workflow:{name}:{version}'
             return self.get_node(workflow_id)
-
-        # Get latest version
         with self.db_manager.get_session() as session:
-            node = (
-                session.query(Node)
-                .filter(
-                    Node.node_type == "Workflow",
-                    text(self._get_json_property_query("name")).bindparams(value=name),
-                )
-                .order_by(text("CAST(properties->>'version' AS INTEGER) DESC"))
-                .first()
-            )
+            node = session.query(Node).filter(Node.node_type == 'Workflow', text(self._get_json_property_query('name')).bindparams(value=name)).order_by(text("CAST(properties->>'version' AS INTEGER) DESC")).first()
             if node:
+                session.refresh(node)
                 session.expunge(node)
             return node
 
-    def list_workflows(
-        self,
-        include_versions: bool = False,
-        limit: Optional[int] = None,
-        offset: int = 0,
-    ) -> List[Node]:
+    def list_workflows(self, include_versions: bool=False, limit: Optional[int]=None, offset: int=0) -> List[Node]:
         """List all workflows.
 
         Args:
@@ -3061,54 +1764,30 @@ class KnowledgeRepository:
         """
         with self.db_manager.get_session() as session:
             if include_versions:
-                # Return all versions
-                query = (
-                    session.query(Node)
-                    .filter(Node.node_type == "Workflow")
-                    .order_by(
-                        text("properties->>'name'"),
-                        text("CAST(properties->>'version' AS INTEGER) DESC"),
-                    )
-                )
+                query = session.query(Node).filter(Node.node_type == 'Workflow').order_by(text("properties->>'name'"), text("CAST(properties->>'version' AS INTEGER) DESC"))
                 if offset:
                     query = query.offset(offset)
                 if limit:
                     query = query.limit(limit)
                 workflows = query.all()
             else:
-                # Return only latest version of each workflow
-                # Use simpler approach: get all workflows and filter in Python
-                all_workflows = (
-                    session.query(Node)
-                    .filter(Node.node_type == "Workflow")
-                    .order_by(text("properties->>'name'"))
-                    .all()
-                )
-
-                # Group by name and keep only latest version
+                all_workflows = session.query(Node).filter(Node.node_type == 'Workflow').order_by(text("properties->>'name'")).all()
                 latest_by_name = {}
                 for wf in all_workflows:
-                    wf_name = wf.properties.get("name")
-                    wf_version = int(wf.properties.get("version", 0))
-
-                    if wf_name not in latest_by_name or wf_version > int(
-                        latest_by_name[wf_name].properties.get("version", 0)
-                    ):
+                    wf_name = wf.properties.get('name')
+                    wf_version = int(wf.properties.get('version', 0))
+                    if wf_name not in latest_by_name or wf_version > int(latest_by_name[wf_name].properties.get('version', 0)):
                         latest_by_name[wf_name] = wf
-
                 workflows = list(latest_by_name.values())
-
-                # Apply pagination to latest versions
                 if offset or limit:
                     end_index = offset + limit if limit else None
                     workflows = workflows[offset:end_index]
-
-            # Expunge all nodes to detach from session
             for wf in workflows:
+                session.refresh(wf)
                 session.expunge(wf)
             return workflows
 
-    def get_workflows_count(self, include_versions: bool = False) -> int:
+    def get_workflows_count(self, include_versions: bool=False) -> int:
         """Get count of workflows.
 
         Args:
@@ -3119,31 +1798,17 @@ class KnowledgeRepository:
         """
         with self.db_manager.get_session() as session:
             if include_versions:
-                # Count all versions
-                return (
-                    session.query(func.count(Node.id))
-                    .filter(Node.node_type == "Workflow")
-                    .scalar()
-                    or 0
-                )
+                return session.query(func.count(Node.id)).filter(Node.node_type == 'Workflow').scalar() or 0
             else:
-                # Count unique workflow names (latest version only)
-                all_workflows = (
-                    session.query(Node).filter(Node.node_type == "Workflow").all()
-                )
-
-                # Group by name and count unique names
+                all_workflows = session.query(Node).filter(Node.node_type == 'Workflow').all()
                 unique_names = set()
                 for wf in all_workflows:
-                    wf_name = wf.properties.get("name")
+                    wf_name = wf.properties.get('name')
                     if wf_name:
                         unique_names.add(wf_name)
-
                 return len(unique_names)
 
-    def get_workflow_execution_history(
-        self, workflow_name: str, limit: int = 50
-    ) -> List[Node]:
+    def get_workflow_execution_history(self, workflow_name: str, limit: int=50) -> List[Node]:
         """Get execution history for a workflow.
 
         Args:
@@ -3154,24 +1819,13 @@ class KnowledgeRepository:
             List of WorkflowExecution nodes
         """
         with self.db_manager.get_session() as session:
-            executions = (
-                session.query(Node)
-                .filter(
-                    Node.node_type == "WorkflowExecution",
-                    text(self._get_json_property_query("workflow_name")).bindparams(
-                        value=workflow_name
-                    ),
-                )
-                .order_by(Node.created_at.desc())
-                .limit(limit)
-                .all()
-            )
-            # Expunge all nodes to detach from session
+            executions = session.query(Node).filter(Node.node_type == 'WorkflowExecution', text(self._get_json_property_query('workflow_name')).bindparams(value=workflow_name)).order_by(Node.created_at.desc()).limit(limit).all()
             for node in executions:
+                session.refresh(node)
                 session.expunge(node)
             return executions
 
-    def delete_workflow(self, name: str, version: Optional[int] = None) -> bool:
+    def delete_workflow(self, name: str, version: Optional[int]=None) -> bool:
         """Delete a workflow.
 
         Args:
@@ -3182,32 +1836,17 @@ class KnowledgeRepository:
             True if deleted, False if not found
         """
         if version is not None:
-            # Delete specific version
-            workflow_id = f"workflow:{name}:{version}"
+            workflow_id = f'workflow:{name}:{version}'
             return self.delete_node(workflow_id)
-
-        # Delete all versions
         with self.db_manager.get_session() as session:
-            workflows = (
-                session.query(Node)
-                .filter(
-                    Node.node_type == "Workflow",
-                    text(self._get_json_property_query("name")).bindparams(value=name),
-                )
-                .all()
-            )
-
+            workflows = session.query(Node).filter(Node.node_type == 'Workflow', text(self._get_json_property_query('name')).bindparams(value=name)).all()
             if not workflows:
                 return False
-
             for workflow in workflows:
                 self.delete_node(workflow.id)
-
             return True
 
-    def increment_workflow_stats(
-        self, workflow_name: str, version: int, success: bool
-    ) -> None:
+    def increment_workflow_stats(self, workflow_name: str, version: int, success: bool) -> None:
         """Increment execution statistics for a workflow.
 
         Args:
@@ -3215,38 +1854,28 @@ class KnowledgeRepository:
             version: Workflow version
             success: Whether the execution was successful
         """
-        workflow_id = f"workflow:{workflow_name}:{version}"
+        workflow_id = f'workflow:{workflow_name}:{version}'
         node = self.get_node(workflow_id)
         if not node:
             return
-
+        session.refresh(node)
+        session.refresh(node)
+        session.refresh(node)
         with self.db_manager.get_session() as session:
             db_node = session.query(Node).filter(Node.id == workflow_id).first()
             if not db_node:
                 return
-
             props = db_node.properties or {}
-            props["execution_count"] = props.get("execution_count", 0) + 1
+            props['execution_count'] = props.get('execution_count', 0) + 1
             if success:
-                props["success_count"] = props.get("success_count", 0) + 1
+                props['success_count'] = props.get('success_count', 0) + 1
             else:
-                props["failure_count"] = props.get("failure_count", 0) + 1
-
+                props['failure_count'] = props.get('failure_count', 0) + 1
             db_node.properties = props
             db_node.updated_at = datetime.utcnow()
             session.commit()
 
-    # ========================================================================
-    # SEQUENTIAL THINKING
-    # ========================================================================
-
-    def save_thinking_pattern(
-        self,
-        name: str,
-        description: str,
-        steps: List[str],
-        applicable_to: List[str],
-    ) -> Node:
+    def save_thinking_pattern(self, name: str, description: str, steps: List[str], applicable_to: List[str]) -> Node:
         """Save a thinking pattern.
 
         Args:
@@ -3258,39 +1887,13 @@ class KnowledgeRepository:
         Returns:
             The created thinking pattern node
         """
-        pattern_id = f"pattern:{name}"
-        properties = {
-            "name": name,
-            "steps": json.dumps(steps),
-            "applicable_to": json.dumps(applicable_to),
-            "usage_count": 0,
-            "success_rate": 0.0,
-        }
-
-        node = self.add_node(
-            node_id=pattern_id,
-            node_type="ThinkingPattern",
-            label=name,
-            content=description,
-            properties=properties,
-        )
-
-        # Link to concept:reasoning
-        self.add_edge(
-            source_id=pattern_id,
-            target_id="concept:reasoning",
-            edge_type="INSTANCE_OF",
-        )
-
+        pattern_id = f'pattern:{name}'
+        properties = {'name': name, 'steps': json.dumps(steps), 'applicable_to': json.dumps(applicable_to), 'usage_count': 0, 'success_rate': 0.0}
+        node = self.add_node(node_id=pattern_id, node_type='ThinkingPattern', label=name, content=description, properties=properties)
+        self.add_edge(source_id=pattern_id, target_id='concept:reasoning', edge_type='INSTANCE_OF')
         return node
 
-    def get_thinking_patterns(
-        self,
-        query: str,
-        problem_type: Optional[str] = None,
-        limit: int = 5,
-        offset: int = 0,
-    ) -> List[Node]:
+    def get_thinking_patterns(self, query: str, problem_type: Optional[str]=None, limit: int=5, offset: int=0) -> List[Node]:
         """Get thinking patterns similar to a query.
 
         Args:
@@ -3302,38 +1905,20 @@ class KnowledgeRepository:
         Returns:
             List of thinking pattern nodes
         """
-        # Use semantic search to find similar patterns
-        # Fetch more to account for filtering by problem_type
-        results = self.search_nodes(
-            query_text=query,
-            node_type="ThinkingPattern",
-            limit=limit * 2,
-            offset=offset,
-        )
-
-        # Filter by problem_type if specified
+        results = self.search_nodes(query_text=query, node_type='ThinkingPattern', limit=limit * 2, offset=offset)
         if problem_type:
             filtered = []
             for node in results:
                 if node.properties:
-                    applicable = json.loads(node.properties.get("applicable_to", "[]"))
+                    applicable = json.loads(node.properties.get('applicable_to', '[]'))
                     if problem_type in applicable:
                         filtered.append(node)
             results = filtered[:limit]
         else:
             results = results[:limit]
-
-        # Note: search_nodes already expunges nodes
         return results
 
-    def save_problem_solution(
-        self,
-        problem: str,
-        approach_steps: List[str],
-        outcome: str,
-        lessons_learned: str,
-        session_id: Optional[str] = None,
-    ) -> Node:
+    def save_problem_solution(self, problem: str, approach_steps: List[str], outcome: str, lessons_learned: str, session_id: Optional[str]=None) -> Node:
         """Save a successful problem solution.
 
         Args:
@@ -3347,56 +1932,20 @@ class KnowledgeRepository:
             The created problem solution node
         """
         timestamp = datetime.utcnow().isoformat()
-        # Create a simple hash of the problem for the ID
         import hashlib
-
         problem_hash = hashlib.md5(problem.encode()).hexdigest()[:8]
-        solution_id = f"solution:{timestamp}:{problem_hash}"
-
-        properties = {
-            "problem": problem,
-            "approach_steps": json.dumps(approach_steps),
-            "outcome": outcome,
-            "lessons_learned": lessons_learned,
-        }
-
-        # Create a summary for the label
-        problem_summary = problem[:50] + "..." if len(problem) > 50 else problem
-
-        node = self.add_node(
-            node_id=solution_id,
-            node_type="ProblemSolution",
-            label=f"Solution to {problem_summary}",
-            content=f"{problem}\n\nOutcome: {outcome}\n\nLessons: {lessons_learned}",
-            properties=properties,
-        )
-
-        # Link to concept:reasoning
-        self.add_edge(
-            source_id=solution_id,
-            target_id="concept:reasoning",
-            edge_type="INSTANCE_OF",
-        )
-
-        # Link to session if provided
+        solution_id = f'solution:{timestamp}:{problem_hash}'
+        properties = {'problem': problem, 'approach_steps': json.dumps(approach_steps), 'outcome': outcome, 'lessons_learned': lessons_learned}
+        problem_summary = problem[:50] + '...' if len(problem) > 50 else problem
+        node = self.add_node(node_id=solution_id, node_type='ProblemSolution', label=f'Solution to {problem_summary}', content=f'{problem}\n\nOutcome: {outcome}\n\nLessons: {lessons_learned}', properties=properties)
+        self.add_edge(source_id=solution_id, target_id='concept:reasoning', edge_type='INSTANCE_OF')
         if session_id:
-            session_node_id = f"session:{session_id}"
+            session_node_id = f'session:{session_id}'
             if self.get_node(session_node_id):
-                self.add_edge(
-                    source_id=session_node_id,
-                    target_id=solution_id,
-                    edge_type="PRODUCED",
-                )
-
+                self.add_edge(source_id=session_node_id, target_id=solution_id, edge_type='PRODUCED')
         return node
 
-    def create_thinking_session(
-        self,
-        problem: str,
-        session_id: str,
-        steps: List[str],
-        pattern_name: Optional[str] = None,
-    ) -> Node:
+    def create_thinking_session(self, problem: str, session_id: str, steps: List[str], pattern_name: Optional[str]=None) -> Node:
         """Create a thinking session node.
 
         Args:
@@ -3409,61 +1958,20 @@ class KnowledgeRepository:
             The created thinking session node
         """
         timestamp = datetime.utcnow().isoformat()
-        thinking_id = f"thinking:{timestamp}:{session_id}"
-
-        properties = {
-            "problem": problem,
-            "steps_generated": json.dumps(steps),
-            "pattern_used": pattern_name or "",
-        }
-
-        node = self.add_node(
-            node_id=thinking_id,
-            node_type="ThinkingSession",
-            label="Problem-solving session",
-            content=problem,
-            properties=properties,
-        )
-
-        # Link to concept:reasoning
-        self.add_edge(
-            source_id=thinking_id,
-            target_id="concept:reasoning",
-            edge_type="INSTANCE_OF",
-        )
-
-        # Link to session
-        session_node_id = f"session:{session_id}"
+        thinking_id = f'thinking:{timestamp}:{session_id}'
+        properties = {'problem': problem, 'steps_generated': json.dumps(steps), 'pattern_used': pattern_name or ''}
+        node = self.add_node(node_id=thinking_id, node_type='ThinkingSession', label='Problem-solving session', content=problem, properties=properties)
+        self.add_edge(source_id=thinking_id, target_id='concept:reasoning', edge_type='INSTANCE_OF')
+        session_node_id = f'session:{session_id}'
         if self.get_node(session_node_id):
-            self.add_edge(
-                source_id=session_node_id,
-                target_id=thinking_id,
-                edge_type="PERFORMED",
-            )
-
-        # Link to pattern if used
+            self.add_edge(source_id=session_node_id, target_id=thinking_id, edge_type='PERFORMED')
         if pattern_name:
-            pattern_id = f"pattern:{pattern_name}"
+            pattern_id = f'pattern:{pattern_name}'
             if self.get_node(pattern_id):
-                self.add_edge(
-                    source_id=thinking_id,
-                    target_id=pattern_id,
-                    edge_type="USES_PATTERN",
-                )
-
+                self.add_edge(source_id=thinking_id, target_id=pattern_id, edge_type='USES_PATTERN')
         return node
 
-    # ========================================================================
-    # CHAT MANAGEMENT
-    # ========================================================================
-
-    def get_user_chats(
-        self,
-        user_id: str,
-        limit: Optional[int] = None,
-        offset: int = 0,
-        include_archived: bool = False,
-    ) -> List[Dict[str, Any]]:
+    def get_user_chats(self, user_id: str, limit: Optional[int]=None, offset: int=0, include_archived: bool=False) -> List[Dict[str, Any]]:
         """Get all chats for a user, directly linked or via sessions (for backward compatibility).
 
         Args:
@@ -3475,141 +1983,45 @@ class KnowledgeRepository:
         Returns:
             List of chat dictionaries with metadata (deduplicated)
         """
-        user_node_id = f"user:{user_id}"
-
+        user_node_id = f'user:{user_id}'
         with self.db_manager.get_session() as session:
-            # Check if user exists
             user_node = session.query(Node).filter(Node.id == user_node_id).first()
             if not user_node:
                 return []
-
-            # Get chats directly linked to user: Chat -[:BELONGS_TO]-> User
             direct_chat_edge = aliased(Edge)
-            direct_chats_query = (
-                session.query(Node, direct_chat_edge)
-                .join(
-                    direct_chat_edge,
-                    and_(
-                        direct_chat_edge.source_id == Node.id,
-                        direct_chat_edge.target_id == user_node_id,
-                        direct_chat_edge.edge_type == "BELONGS_TO"
-                    )
-                )
-                .filter(Node.node_type == "Chat")
-                .distinct(Node.id)
-            )
-
-            # Also get chats linked via sessions (for backward compatibility during migration)
-            # Chat -[:BELONGS_TO_SESSION]-> Session -[:BELONGS_TO]-> User
+            direct_chats_query = session.query(Node, direct_chat_edge).join(direct_chat_edge, and_(direct_chat_edge.source_id == Node.id, direct_chat_edge.target_id == user_node_id, direct_chat_edge.edge_type == 'BELONGS_TO')).filter(Node.node_type == 'Chat').distinct(Node.id)
             chat_to_session_edge = aliased(Edge)
             session_to_user_edge = aliased(Edge)
-            
-            session_chats_query = (
-                session.query(Node, chat_to_session_edge)
-                .join(
-                    chat_to_session_edge,
-                    and_(
-                        chat_to_session_edge.source_id == Node.id,
-                        chat_to_session_edge.edge_type == "BELONGS_TO_SESSION"
-                    )
-                )
-                .join(
-                    session_to_user_edge,
-                    and_(
-                        session_to_user_edge.source_id == chat_to_session_edge.target_id,  # Session ID
-                        session_to_user_edge.target_id == user_node_id,  # User ID
-                        session_to_user_edge.edge_type == "BELONGS_TO"
-                    )
-                )
-                .filter(Node.node_type == "Chat")
-                .distinct(Node.id)
-            )
-
-            # Combine both queries
+            session_chats_query = session.query(Node, chat_to_session_edge).join(chat_to_session_edge, and_(chat_to_session_edge.source_id == Node.id, chat_to_session_edge.edge_type == 'BELONGS_TO_SESSION')).join(session_to_user_edge, and_(session_to_user_edge.source_id == chat_to_session_edge.target_id, session_to_user_edge.target_id == user_node_id, session_to_user_edge.edge_type == 'BELONGS_TO')).filter(Node.node_type == 'Chat').distinct(Node.id)
             direct_results = direct_chats_query.all()
             session_results = session_chats_query.all()
-            
-            # Combine and deduplicate by chat ID
             all_results = {}
             for chat_node, edge in direct_results + session_results:
-                chat_id = (
-                    chat_node.properties.get("chat_id")
-                    if chat_node.properties
-                    else chat_node.id.replace("chat:", "")
-                )
+                chat_id = chat_node.properties.get('chat_id') if chat_node.properties else chat_node.id.replace('chat:', '')
                 if chat_id not in all_results:
                     all_results[chat_id] = (chat_node, edge)
-
             results = list(all_results.values())
-
-            # Build chat list with metadata, filtering archived if needed
             chats = []
-            seen_chat_ids = set()  # Additional deduplication in Python
-
+            seen_chat_ids = set()
             for chat_node, edge in results:
-                # Extract chat_id
-                chat_id = (
-                    chat_node.properties.get("chat_id")
-                    if chat_node.properties
-                    else chat_node.id.replace("chat:", "")
-                )
-
-                # Skip duplicates
+                chat_id = chat_node.properties.get('chat_id') if chat_node.properties else chat_node.id.replace('chat:', '')
                 if chat_id in seen_chat_ids:
                     continue
                 seen_chat_ids.add(chat_id)
-
-                # Filter archived chats unless explicitly included
                 if not include_archived:
-                    is_archived = (
-                        chat_node.properties.get("archived", False)
-                        if chat_node.properties
-                        else False
-                    )
+                    is_archived = chat_node.properties.get('archived', False) if chat_node.properties else False
                     if is_archived:
                         continue
-
-                chat_dict = {
-                    "chat_id": chat_id,
-                    "chat_name": (
-                        chat_node.properties.get("chat_name")
-                        if chat_node.properties
-                        else chat_node.label
-                    ),
-                    "created_at": (
-                        chat_node.created_at.isoformat()
-                        if chat_node.created_at
-                        else None
-                    ),
-                    "updated_at": (
-                        chat_node.updated_at.isoformat()
-                        if chat_node.updated_at
-                        else None
-                    ),
-                    "archived": (
-                        chat_node.properties.get("archived", False)
-                        if chat_node.properties
-                        else False
-                    ),
-                }
+                chat_dict = {'chat_id': chat_id, 'chat_name': chat_node.properties.get('chat_name') if chat_node.properties else chat_node.label, 'created_at': chat_node.created_at.isoformat() if chat_node.created_at else None, 'updated_at': chat_node.updated_at.isoformat() if chat_node.updated_at else None, 'archived': chat_node.properties.get('archived', False) if chat_node.properties else False}
                 chats.append(chat_dict)
-
-            # Sort by updated_at after deduplication
-            chats.sort(
-                key=lambda x: x["updated_at"] or x["created_at"] or "", reverse=True
-            )
-
-            # Apply offset and limit after deduplication and filtering
+            chats.sort(key=lambda x: x['updated_at'] or x['created_at'] or '', reverse=True)
             if offset:
                 chats = chats[offset:]
             if limit:
                 chats = chats[:limit]
-
             return chats
 
-    def create_chat(
-        self, chat_id: str, chat_name: str, user_id: str
-    ) -> Optional[Node]:
+    def create_chat(self, chat_id: str, chat_name: str, user_id: str) -> Optional[Node]:
         """Create a chat node and link it directly to a user.
 
         Args:
@@ -3620,36 +2032,15 @@ class KnowledgeRepository:
         Returns:
             Created Chat node or None if user doesn't exist
         """
-        # Verify user exists
-        user_node_id = f"user:{user_id}"
+        user_node_id = f'user:{user_id}'
         user_node = self.get_node(user_node_id)
         if not user_node:
-            logger.warning(f"Cannot create chat: user {user_id} not found")
+            logger.warning(f'Cannot create chat: user {user_id} not found')
             return None
-
-        chat_node_id = f"chat:{chat_id}"
-
-        # Create chat node
-        chat_node = self.add_node(
-            node_id=chat_node_id,
-            node_type="Chat",
-            label=chat_name,
-            content=f"Chat created at {datetime.utcnow().isoformat()}",
-            properties={
-                "chat_id": chat_id,
-                "chat_name": chat_name,
-                "user_id": user_id,
-            },
-        )
-
-        # Link chat directly to user
-        self.add_edge(
-            source_id=chat_node_id,
-            target_id=user_node_id,
-            edge_type="BELONGS_TO",
-        )
-
-        logger.info(f"Created chat {chat_node_id} for user {user_id}")
+        chat_node_id = f'chat:{chat_id}'
+        chat_node = self.add_node(node_id=chat_node_id, node_type='Chat', label=chat_name, content=f'Chat created at {datetime.utcnow().isoformat()}', properties={'chat_id': chat_id, 'chat_name': chat_name, 'user_id': user_id})
+        self.add_edge(source_id=chat_node_id, target_id=user_node_id, edge_type='BELONGS_TO')
+        logger.info(f'Created chat {chat_node_id} for user {user_id}')
         return chat_node
 
     def get_chat(self, chat_id: str) -> Optional[Node]:
@@ -3661,12 +2052,10 @@ class KnowledgeRepository:
         Returns:
             Chat node if found, None otherwise
         """
-        chat_node_id = f"chat:{chat_id}"
+        chat_node_id = f'chat:{chat_id}'
         return self.get_node(chat_node_id)
 
-    def get_session_messages(
-        self, session_id: str, limit: Optional[int] = None, offset: int = 0
-    ) -> List[Node]:
+    def get_session_messages(self, session_id: str, limit: Optional[int]=None, offset: int=0) -> List[Node]:
         """Get all messages linked to a session.
 
         Args:
@@ -3678,46 +2067,23 @@ class KnowledgeRepository:
             List of ChatMessage nodes ordered by creation time
         """
         with self.db_manager.get_session() as session:
-            # Check if session exists
             session_node = session.query(Node).filter(Node.id == session_id).first()
             if not session_node:
-                logger.warning(f"Session {session_id} not found")
+                logger.warning(f'Session {session_id} not found')
                 return []
-
-            # Get messages linked to the session
-            # Session -[:CONTAINS]-> ChatMessage
-            query = (
-                session.query(Node)
-                .join(Edge, Edge.target_id == Node.id)
-                .filter(
-                    Edge.source_id == session_id,
-                    Edge.edge_type == "CONTAINS",
-                    Node.node_type == "ChatMessage",
-                )
-                .order_by(Node.created_at.asc())
-            )
-
+            query = session.query(Node).join(Edge, Edge.target_id == Node.id).filter(Edge.source_id == session_id, Edge.edge_type == 'CONTAINS', Node.node_type == 'ChatMessage').order_by(Node.created_at.asc())
             if offset:
                 query = query.offset(offset)
             if limit:
                 query = query.limit(limit)
-
             messages = query.all()
-            # Expunge to detach from session
             for msg in messages:
+                session.refresh(msg)
                 session.expunge(msg)
-
-            logger.debug(
-                f"Retrieved {len(messages)} messages from session {session_id}"
-            )
+            logger.debug(f'Retrieved {len(messages)} messages from session {session_id}')
             return messages
 
-    def get_chat_messages(
-        self,
-        chat_id: str,
-        limit: Optional[int] = None,
-        offset: int = 0,
-    ) -> List[Node]:
+    def get_chat_messages(self, chat_id: str, limit: Optional[int]=None, offset: int=0) -> List[Node]:
         """Get messages for a chat.
 
         Args:
@@ -3728,57 +2094,30 @@ class KnowledgeRepository:
         Returns:
             List of ChatMessage nodes ordered by creation time
         """
-        chat_node_id = f"chat:{chat_id}"
-
+        chat_node_id = f'chat:{chat_id}'
         with self.db_manager.get_session() as session:
-            # Check if chat exists
             chat_node = session.query(Node).filter(Node.id == chat_node_id).first()
             if not chat_node:
-                logger.warning(f"Chat {chat_id} not found")
+                logger.warning(f'Chat {chat_id} not found')
                 return []
-
-            # Get messages directly linked to the chat
-            # Chat -[:CONTAINS]-> ChatMessage
-            chat_query = (
-                session.query(Node)
-                .join(Edge, Edge.target_id == Node.id)
-                .filter(
-                    Edge.source_id == chat_node_id,
-                    Edge.edge_type == "CONTAINS",
-                    Node.node_type == "ChatMessage",
-                )
-            )
-
+            chat_query = session.query(Node).join(Edge, Edge.target_id == Node.id).filter(Edge.source_id == chat_node_id, Edge.edge_type == 'CONTAINS', Node.node_type == 'ChatMessage')
             chat_messages = chat_query.all()
-            logger.debug(
-                f"Found {len(chat_messages)} messages directly linked to chat {chat_id}"
-            )
+            logger.debug(f'Found {len(chat_messages)} messages directly linked to chat {chat_id}')
 
-            # Apply ordering, offset, and limit
-            # Sort by message number extracted from node ID (chat:chat_id:message_num)
-            # This ensures correct order even if timestamps are out of order
             def get_message_num(node):
                 try:
-                    # Extract message number from node ID: chat:chat_id:message_num
-                    parts = node.id.split(":")
+                    parts = node.id.split(':')
                     return int(parts[-1]) if parts else 0
                 except (ValueError, IndexError):
-                    # Fallback to timestamp if ID format is unexpected
-                    return (
-                        node.created_at or datetime.min.replace(tzinfo=timezone.utc)
-                    ).timestamp()
-
+                    return (node.created_at or datetime.min.replace(tzinfo=timezone.utc)).timestamp()
             chat_messages.sort(key=get_message_num)
-
             if offset:
                 chat_messages = chat_messages[offset:]
             if limit:
                 chat_messages = chat_messages[:limit]
-
-            # Expunge to detach from session
             for msg in chat_messages:
+                session.refresh(msg)
                 session.expunge(msg)
-
             return chat_messages
 
     def update_chat_name(self, chat_id: str, new_name: str) -> Optional[Node]:
@@ -3791,36 +2130,25 @@ class KnowledgeRepository:
         Returns:
             Updated Chat node or None if not found
         """
-        chat_node_id = f"chat:{chat_id}"
+        chat_node_id = f'chat:{chat_id}'
         chat_node = self.get_node(chat_node_id)
-
         if not chat_node:
-            logger.warning(f"Cannot update chat name: chat {chat_id} not found")
+            logger.warning(f'Cannot update chat name: chat {chat_id} not found')
             return None
-
-        # Update the chat node with new name
         with self.db_manager.get_session() as session:
             db_node = session.query(Node).filter(Node.id == chat_node_id).first()
             if not db_node:
                 return None
-
-            # Update label and properties
             db_node.label = new_name
             if db_node.properties:
-                db_node.properties["chat_name"] = new_name
+                db_node.properties['chat_name'] = new_name
             else:
-                db_node.properties = {"chat_name": new_name}
-
-            # Flag the JSON field as modified for SQLAlchemy to detect the change
-            flag_modified(db_node, "properties")
-
+                db_node.properties = {'chat_name': new_name}
+            flag_modified(db_node, 'properties')
             db_node.updated_at = datetime.now(timezone.utc)
             session.commit()
-
-            # Refresh and expunge
             session.refresh(db_node)
             session.expunge(db_node)
-
             logger.info(f"Updated chat {chat_id} name to '{new_name}'")
             return db_node
 
@@ -3833,14 +2161,12 @@ class KnowledgeRepository:
         Returns:
             True if deleted, False if not found
         """
-        chat_node_id = f"chat:{chat_id}"
+        chat_node_id = f'chat:{chat_id}'
         result = self.delete_node(chat_node_id)
-
         if result:
-            logger.info(f"Deleted chat {chat_id} and all its messages")
+            logger.info(f'Deleted chat {chat_id} and all its messages')
         else:
-            logger.warning(f"Cannot delete chat: chat {chat_id} not found")
-
+            logger.warning(f'Cannot delete chat: chat {chat_id} not found')
         return result
 
     def archive_chat(self, chat_id: str) -> Optional[Node]:
@@ -3852,35 +2178,25 @@ class KnowledgeRepository:
         Returns:
             Updated Chat node or None if not found
         """
-        chat_node_id = f"chat:{chat_id}"
+        chat_node_id = f'chat:{chat_id}'
         chat_node = self.get_node(chat_node_id)
-
         if not chat_node:
-            logger.warning(f"Cannot archive chat: chat {chat_id} not found")
+            logger.warning(f'Cannot archive chat: chat {chat_id} not found')
             return None
-
-        # Update properties to mark as archived
         with self.db_manager.get_session() as session:
             db_node = session.query(Node).filter(Node.id == chat_node_id).first()
             if not db_node:
                 return None
-
-            # Update properties
             if not db_node.properties:
                 db_node.properties = {}
-
-            db_node.properties["archived"] = True
-            db_node.properties["archived_at"] = datetime.now(timezone.utc).isoformat()
+            db_node.properties['archived'] = True
+            db_node.properties['archived_at'] = datetime.now(timezone.utc).isoformat()
             db_node.updated_at = datetime.now(timezone.utc)
-
-            # Mark properties as modified for SQLAlchemy to detect changes
-            flag_modified(db_node, "properties")
-
+            flag_modified(db_node, 'properties')
             session.commit()
             session.refresh(db_node)
             session.expunge(db_node)
-
-            logger.info(f"Archived chat {chat_id}")
+            logger.info(f'Archived chat {chat_id}')
             return db_node
 
     def unarchive_chat(self, chat_id: str) -> Optional[Node]:
@@ -3892,34 +2208,23 @@ class KnowledgeRepository:
         Returns:
             Updated Chat node or None if not found
         """
-        chat_node_id = f"chat:{chat_id}"
+        chat_node_id = f'chat:{chat_id}'
         chat_node = self.get_node(chat_node_id)
-
         if not chat_node:
-            logger.warning(f"Cannot unarchive chat: chat {chat_id} not found")
+            logger.warning(f'Cannot unarchive chat: chat {chat_id} not found')
             return None
-
-        # Update properties to remove archived status
         with self.db_manager.get_session() as session:
             db_node = session.query(Node).filter(Node.id == chat_node_id).first()
             if not db_node:
                 return None
-
-            # Update properties
             if not db_node.properties:
                 db_node.properties = {}
-
-            # Remove archived flags
-            db_node.properties.pop("archived", None)
-            db_node.properties.pop("archived_at", None)
+            db_node.properties.pop('archived', None)
+            db_node.properties.pop('archived_at', None)
             db_node.updated_at = datetime.now(timezone.utc)
-
-            # Mark properties as modified for SQLAlchemy to detect changes
-            flag_modified(db_node, "properties")
-
+            flag_modified(db_node, 'properties')
             session.commit()
             session.refresh(db_node)
             session.expunge(db_node)
-
-            logger.info(f"Unarchived chat {chat_id}")
+            logger.info(f'Unarchived chat {chat_id}')
             return db_node
