@@ -117,17 +117,13 @@ Acknowledged. I will independently complete background tasks using all resources
 I will avoid duplicating prior work, and I will update my knowledge graph upon completion to reflect task outcomes.
         """
 
-        # Cache identity at session level (loaded once, reused for all tasks)
-        self._identity_memory: Optional[str] = None
-        self._identity_summary: Optional[str] = None
-
         # Track WebSocket forwarders per chat_id for reused bot instances
         self._chat_websocket_forwarders: Dict[str, Any] = {}
 
         logger.info("Agent loop initialized with TaskService")
 
-    async def _load_and_cache_identity(self, bot: AgentOrchestrator) -> tuple[str, str]:
-        """Load identity once and cache it for all tasks in this session.
+    async def _load_identity(self, bot: AgentOrchestrator) -> tuple[str, str]:
+        """Load identity for task execution.
 
         Args:
             bot: Bot instance to use for loading and summarizing identity
@@ -135,14 +131,7 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
         Returns:
             Tuple of (identity_memory, identity_summary)
         """
-        # Return cached identity if available
-        if self._identity_memory and self._identity_summary:
-            logger.info(f"[{self.session_id}] Using cached identity for task")
-            return self._identity_memory, self._identity_summary
-
-        logger.info(
-            f"[{self.session_id}] Loading identity for task server session (first time)"
-        )
+        logger.info(f"[{self.session_id}] Loading identity for task")
 
         # Load identity using the identity service
         from services import IdentityService
@@ -150,11 +139,11 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
         # Get knowledge instance from the bot
         if not bot.knowledge or not bot.knowledge.repository:
             logger.warning("No knowledge repository available, using default identity")
-            self._identity_memory = (
+            identity_memory = (
                 "## Task Server Identity\n\nBackground task processing agent."
             )
-            self._identity_summary = "You are a background task processing agent."
-            return self._identity_memory, self._identity_summary
+            identity_summary = "You are a background task processing agent."
+            return identity_memory, identity_summary
 
         identity_service = IdentityService(
             repository=bot.knowledge.repository,
@@ -162,27 +151,23 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
 
         # Load identity
         try:
-            self._identity_memory = await identity_service.get_identity_memory()
+            identity_memory = await identity_service.get_identity_memory()
         except Exception as e:
             logger.error(f"Failed to load identity: {e}")
-            self._identity_memory = (
-                "## Identity Loading Failed\n\nCannot load identity."
-            )
+            identity_memory = "## Identity Loading Failed\n\nCannot load identity."
 
         # Summarize identity
         try:
-            self._identity_summary = await identity_service.summarize_identity(
-                self._identity_memory, bot.generate
+            identity_summary = await identity_service.summarize_identity(
+                identity_memory, bot.generate
             )
         except Exception as e:
             logger.error(f"Failed to summarize identity: {e}")
-            identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{self._identity_memory}"
-            self._identity_summary = await bot.generate(identity_summary_prompt)
+            identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
+            identity_summary = await bot.generate(identity_summary_prompt)
 
-        logger.info(
-            f"[{self.session_id}] Identity loaded and cached for task server session"
-        )
-        return self._identity_memory, self._identity_summary
+        logger.info(f"[{self.session_id}] Identity loaded successfully")
+        return identity_memory, identity_summary
 
     async def _on_task_added(self, task: Dict[str, Any]):
         """Handle TASK_ADDED event."""
@@ -330,12 +315,7 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
                         )
                     self.task_service.bot_instances[chat_id] = bot
 
-                # Load and cache identity (only happens once per session)
-                identity_memory, identity_summary = await self._load_and_cache_identity(
-                    bot
-                )
-
-                # Start chat for this task with appropriate user_id and pre-loaded identity
+                # Start chat for this task (identity will be loaded during start_chat)
                 logger.info(
                     f"Starting chat for task {task_id} with chat_id={chat_id}, user={task_user_id}"
                 )
@@ -343,8 +323,6 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
                     user_id=task_user_id,  # Use task's user_id (from chat or default to agent)
                     chat_id=chat_id,
                     chat_name=chat_name,
-                    preloaded_identity=identity_memory,
-                    preloaded_identity_summary=identity_summary,
                 )
 
                 # Add initial system messages for this task
@@ -562,7 +540,9 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
             # Subscribe to task queue events now that it's initialized
             self.task_queue.events.subscribe(TaskEvents.TASK_ADDED, self._on_task_added)
             self._task_queue_initialized = True
-            logger.info("Task queue and task service initialized and connected to database")
+            logger.info(
+                "Task queue and task service initialized and connected to database"
+            )
 
         try:
             while self.running:

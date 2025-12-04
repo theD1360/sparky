@@ -690,18 +690,16 @@ class AgentOrchestrator:
         """
         # Delegate to message service if available
         if self.message_service and self._session_id:
-            self._run_async(
-                self.message_service.save_message(
-                    content=message,
-                    role=role,
-                    session_id=self._session_id,
-                    chat_id=self._chat_id,
-                    internal=internal,
-                    message_type=message_type,
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    file_node_id=file_node_id,
-                )
+            await self.message_service.save_message(
+                content=message,
+                role=role,
+                session_id=self._session_id,
+                chat_id=self._chat_id,
+                internal=internal,
+                message_type=message_type,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                file_node_id=file_node_id,
             )
             return
 
@@ -795,8 +793,6 @@ class AgentOrchestrator:
         user_id: Optional[str] = None,
         chat_id: Optional[str] = None,
         chat_name: Optional[str] = None,
-        preloaded_identity: Optional[str] = None,
-        preloaded_identity_summary: Optional[str] = None,
     ):
         """Asynchronously initializes the chat.
 
@@ -806,8 +802,6 @@ class AgentOrchestrator:
             user_id: User identifier for this chat. If None, uses 'default'.
             chat_id: Optional chat identifier. If provided, creates a Chat node.
             chat_name: Optional chat name. Used when creating a Chat node.
-            preloaded_identity: Optional pre-loaded identity memory (to avoid reloading)
-            preloaded_identity_summary: Optional pre-loaded identity summary (to avoid re-summarizing)
         """
         # Store chat_id for linking messages to the chat node
         self._chat_id = chat_id
@@ -981,80 +975,98 @@ class AgentOrchestrator:
 
         history = history or []
 
-        # Use preloaded identity if provided, otherwise load it
-        if preloaded_identity and preloaded_identity_summary:
-            logger.info("Using pre-loaded identity from session cache")
-            identity_memory = preloaded_identity
-            identity_summary = preloaded_identity_summary
-        else:
-            # Load identity and session context in parallel using services
-            if self.identity_service:
-                # Use IdentityService for loading identity
-                identity_memory = await self.identity_service.get_identity_memory()
-            elif self.knowledge:
-                # Fallback to identity service if service not available
-                identity_memory = await self.identity_service.get_identity_memory()
-            else:
-                identity_memory = "Error: No knowledge module available"
+        # Load identity using services
+        identity_memory = None
+        identity_summary = None
 
-            # Handle exceptions
-            if isinstance(identity_memory, Exception):
-                logger.error("Failed to load identity: %s", identity_memory)
-                identity_memory = "## Identity Loading Failed\n\nCannot load identity."
-
-            # Summarize the identity to reduce token usage using IdentityService
-            if self.identity_service:
-                identity_summary = await self.identity_service.summarize_identity(
-                    identity_memory, self.generate
+        if self.identity_service:
+            # Use IdentityService for loading identity
+            try:
+                identity_memory = await self.identity_service.get_identity_memory()
+                logger.info(
+                    f"Identity loaded successfully: {len(identity_memory)} chars"
                 )
+            except Exception as e:
+                logger.error(f"Failed to load identity: {e}", exc_info=True)
+                identity_memory = "## Identity Loading Failed\n\nCannot load identity."
+        elif self.knowledge and self.knowledge.repository:
+            # Fallback: create identity service from knowledge repository
+            try:
+                identity_service = IdentityService(repository=self.knowledge.repository)
+                identity_memory = await identity_service.get_identity_memory()
+                logger.info(
+                    f"Identity loaded via fallback: {len(identity_memory)} chars"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to load identity via fallback: {e}", exc_info=True
+                )
+                identity_memory = "## Identity Loading Failed\n\nCannot load identity."
+        else:
+            logger.warning("No identity service or knowledge repository available")
+            identity_memory = (
+                "## Identity Loading Failed\n\nNo knowledge repository available."
+            )
+
+        # Summarize the identity to reduce token usage using IdentityService
+        if identity_memory and not identity_memory.startswith(
+            "## Identity Loading Failed"
+        ):
+            if self.identity_service:
+                try:
+                    identity_summary = await self.identity_service.summarize_identity(
+                        identity_memory, self.generate
+                    )
+                    logger.info(f"Identity summarized: {len(identity_summary)} chars")
+                except Exception as e:
+                    logger.error(f"Failed to summarize identity: {e}", exc_info=True)
+                    # Fallback to direct summarization
+                    identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
+                    identity_summary = await self.generate(identity_summary_prompt)
             else:
                 # Fallback to direct summarization
-                identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
-                identity_summary = await self.generate(identity_summary_prompt)
-
-        # Load session context (always fresh per chat)
-        if self.identity_service:
-            session_context = await self.identity_service.get_session_context(
-                self._session_id
-            )
-        elif self.knowledge:
-            session_context = await self.identity_service.get_session_context(
-                self._session_id
-            )
+                try:
+                    identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
+                    identity_summary = await self.generate(identity_summary_prompt)
+                    logger.info(
+                        f"Identity summarized via fallback: {len(identity_summary)} chars"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to summarize identity via fallback: {e}", exc_info=True
+                    )
+                    identity_summary = "Identity summary unavailable."
         else:
-            session_context = None
-
-        # Handle session context exceptions
-        if isinstance(session_context, Exception):
-            logger.warning("Failed to load session context: %s", session_context)
-            session_context = None
+            identity_summary = "Identity unavailable."
 
         # Format identity instruction
-        if self.identity_service:
-            identity_instruction = self.identity_service.format_identity_instruction(
-                identity_summary
+        if identity_summary and not identity_summary.startswith("Identity unavailable"):
+            if self.identity_service:
+                identity_instruction = (
+                    self.identity_service.format_identity_instruction(identity_summary)
+                )
+            else:
+                identity_instruction = f"# Your Identity\n\n{identity_summary}\n\nPlease remember this is who you are and act accordingly in all responses."
+
+            logger.info(
+                f"Adding identity instruction to chat: {len(identity_instruction)} chars"
             )
         else:
-            identity_instruction = f"# Your Identity\n\n{identity_summary}\n\nPlease remember this is who you are and act accordingly in all responses."
+            logger.warning(
+                "No identity summary available, skipping identity instruction"
+            )
+            identity_instruction = None
 
         if not self.initial_context_added:
-            await self._add_message_with_chat_node(
-                identity_instruction, "user", internal=True, message_type="internal"
-            )
+            if identity_instruction:
+                await self._add_message_with_chat_node(
+                    identity_instruction, "user", internal=True, message_type="internal"
+                )
+                logger.info("Identity instruction added to chat")
+            else:
+                logger.warning("Skipping identity instruction - no identity available")
             await self._add_message_with_chat_node(
                 "I understand my identity and purpose. I'm ready to help you.",
-                "model",
-                internal=True,
-                message_type="internal",
-            )
-            await self._add_message_with_chat_node(
-                f"# Session Context\n\n{session_context}",
-                "user",
-                internal=True,
-                message_type="internal",
-            )
-            await self._add_message_with_chat_node(
-                "I understand my session context. I'm ready to help you.",
                 "model",
                 internal=True,
                 message_type="internal",
@@ -1068,6 +1080,37 @@ class AgentOrchestrator:
 
         # Get truncated history from the graph (last N messages)
         truncated_history = await self._get_recent_messages()
+
+        # Ensure identity is included in history if it was added
+        # (messages might not be visible in graph query yet due to transaction timing)
+        if identity_instruction and truncated_history:
+            # Check if identity is already in history
+            has_identity = any(
+                msg.get("role") == "user"
+                and isinstance(msg.get("parts"), list)
+                and len(msg.get("parts", [])) > 0
+                and "Your Identity" in str(msg.get("parts", [])[0])
+                for msg in truncated_history
+            )
+            if not has_identity:
+                # Prepend identity instruction to history
+                identity_msg = {"role": "user", "parts": [identity_instruction]}
+                truncated_history = [identity_msg] + truncated_history
+                logger.info(
+                    "Added identity instruction to history (not found in graph query)"
+                )
+        elif identity_instruction and not truncated_history:
+            # No history yet, create initial history with identity
+            truncated_history = [
+                {"role": "user", "parts": [identity_instruction]},
+                {
+                    "role": "model",
+                    "parts": [
+                        "I understand my identity and purpose. I'm ready to help you."
+                    ],
+                },
+            ]
+            logger.info("Created initial history with identity instruction")
 
         # Estimate tokens for initial history and dispatch estimate event
         if truncated_history and hasattr(self, "token_service"):

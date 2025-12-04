@@ -110,8 +110,6 @@ class ConnectionManager:
         self.active_connections: Dict[str, WebSocket] = {}
         # user_id -> tools initialized flag
         self.tools_initialized: Dict[str, bool] = {}
-        # user_id -> (identity_memory, identity_summary) cached at user level
-        self.user_identity_cache: Dict[str, Tuple[str, str]] = {}
         self.session_timeout = timedelta(minutes=session_timeout_minutes)
         self.toolchain = toolchain
 
@@ -238,13 +236,13 @@ class ConnectionManager:
             logger.error(f"Failed to start agent loop: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
 
-    async def load_and_cache_identity(
+    async def load_identity(
         self,
         user_id: str,
         knowledge: KnowledgeService,
         generate_fn: Any,
     ) -> Tuple[str, str]:
-        """Load identity and cache it at user level.
+        """Load identity for a user.
 
         Args:
             user_id: User identifier
@@ -254,12 +252,7 @@ class ConnectionManager:
         Returns:
             Tuple of (identity_memory, identity_summary)
         """
-        # Check if identity is already cached for this user
-        if user_id in self.user_identity_cache:
-            logger.info(f"[{user_id}] Using cached identity from user")
-            return self.user_identity_cache[user_id]
-
-        logger.info(f"[{user_id}] Loading identity for user (first time)")
+        logger.info(f"[{user_id}] Loading identity for user")
 
         # Load identity using the identity service
         from services import IdentityService
@@ -285,9 +278,7 @@ class ConnectionManager:
             identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
             identity_summary = await generate_fn(identity_summary_prompt)
 
-        # Cache for this user
-        self.user_identity_cache[user_id] = (identity_memory, identity_summary)
-        logger.info(f"[{user_id}] Identity loaded and cached for user")
+        logger.info(f"[{user_id}] Identity loaded successfully")
 
         return identity_memory, identity_summary
 
@@ -567,20 +558,11 @@ class ConnectionManager:
         # Store bot instance for this chat
         self.bot_sessions[user_id][chat_id] = bot
 
-        # Load and cache identity at user level (only loads once per user)
-        identity_memory, identity_summary = await self.load_and_cache_identity(
-            user_id=user_id,
-            knowledge=knowledge,
-            generate_fn=bot.generate,
-        )
-
-        # Start the chat for this bot with pre-loaded identity
+        # Start the chat for this bot (identity will be loaded during start_chat)
         await bot.start_chat(
             user_id=user_id,
             chat_id=chat_id,
             chat_name=chat_name or f"Chat {chat_id[:8]}",
-            preloaded_identity=identity_memory,
-            preloaded_identity_summary=identity_summary,
         )
 
         # Update current chat tracking

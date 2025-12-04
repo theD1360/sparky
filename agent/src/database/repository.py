@@ -1413,7 +1413,7 @@ class KnowledgeRepository:
             List of Edge instances
         """
         async with self.db_manager.get_session() as session:
-            query = session.query(Edge)
+            query = select(Edge)
             if source_id:
                 query = query.filter(Edge.source_id == source_id)
             if target_id:
@@ -1425,7 +1425,8 @@ class KnowledgeRepository:
                 query = query.offset(offset)
             if limit:
                 query = query.limit(limit)
-            edges = query.all()
+            result = await session.execute(query)
+            edges = result.scalars().all()
             # Refresh and expunge all edges to detach from session
             for edge in edges:
                 await session.refresh(edge)
@@ -1593,6 +1594,7 @@ class KnowledgeRepository:
                             "[" + ",".join(map(str, query_embedding)) + "]"
                         )
                         # Build query with proper parameter binding for async
+                        # Use CAST instead of ::vector syntax for parameter binding
                         query_parts = [
                             "SELECT",
                             "n.id,",
@@ -1602,7 +1604,7 @@ class KnowledgeRepository:
                             "n.properties,",
                             "n.created_at,",
                             "n.updated_at,",
-                            "1 - (n.embedding <=> :embedding::vector) as similarity",
+                            "1 - (n.embedding <=> CAST(:embedding AS vector)) as similarity",
                             "FROM nodes n",
                             "WHERE n.embedding IS NOT NULL",
                         ]
@@ -1611,7 +1613,7 @@ class KnowledgeRepository:
                             query_parts.append("AND n.node_type = :node_type")
                             query_params["node_type"] = node_type
                         query_parts.append(
-                            "ORDER BY n.embedding <=> :embedding::vector"
+                            "ORDER BY n.embedding <=> CAST(:embedding AS vector)"
                         )
                         if offset:
                             query_parts.append("OFFSET :offset")

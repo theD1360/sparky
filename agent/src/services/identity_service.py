@@ -1,6 +1,6 @@
-"""Identity service for handling agent identity and session context.
+"""Identity service for handling agent identity.
 
-Handles identity loading, session context management, and identity summarization.
+Handles identity loading and identity summarization.
 """
 
 import logging
@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 class IdentityService:
     """Service for managing agent identity and sentience.
 
-    Provides methods for loading identity from the knowledge graph,
-    managing session context, and formatting identity for the LLM.
+    Provides methods for loading identity from the knowledge graph
+    and formatting identity for the LLM.
     """
 
     def __init__(
@@ -67,7 +67,22 @@ class IdentityService:
 
         try:
             if use_discover_concept_prompt:
-                return await self._load_identity_with_prompt()
+                try:
+                    return await self._load_identity_with_prompt()
+                except ValueError as e:
+                    # If prompt method fails, try legacy as fallback
+                    logger.warning(
+                        f"Prompt-based identity loading failed: {e}. "
+                        "Falling back to legacy method."
+                    )
+                    try:
+                        return await self._load_identity_legacy()
+                    except Exception as legacy_error:
+                        logger.error(
+                            f"Legacy identity loading also failed: {legacy_error}",
+                            exc_info=True,
+                        )
+                        raise e  # Raise original error
             else:
                 return await self._load_identity_legacy()
 
@@ -106,6 +121,17 @@ Cannot proceed without identity."""
             f"Found {len(core_results)} core identity nodes from semantic search"
         )
 
+        # Log details about found nodes for debugging
+        if core_results:
+            for node in core_results[:3]:  # Log first 3
+                has_content = bool(node.content and node.content.strip())
+                logger.debug(
+                    f"  - {node.id} ({node.node_type}): '{node.label}' "
+                    f"content={has_content} props={bool(node.properties)}"
+                )
+        else:
+            logger.warning("Semantic search returned no results for identity query")
+
         # Add core results first
         for node in core_results:
             if node.id not in seen_ids:
@@ -115,16 +141,21 @@ Cannot proceed without identity."""
         # Step 2: Get direct neighbors only for concept:self (the most important node)
         self_node = await self.repository.get_node("concept:self")
         if self_node:
+            logger.debug(
+                f"Found concept:self node: {self_node.id} "
+                f"content={bool(self_node.content and self_node.content.strip())} "
+                f"label='{self_node.label}'"
+            )
             if self_node.id not in seen_ids:
                 identity_nodes.append(self_node)
                 seen_ids.add(self_node.id)
+        else:
+            logger.warning("concept:self node not found in knowledge graph")
 
             # Get its direct neighbors only (depth 1), with a limit
             try:
                 neighbors = await self.repository.get_node_neighbors(
-                    "concept:self", 
-                    direction="both", 
-                    limit=50
+                    "concept:self", direction="both", limit=50
                 )
                 for edge, neighbor in neighbors:
                     if neighbor.id not in seen_ids:
@@ -138,7 +169,8 @@ Cannot proceed without identity."""
         # Step 3: Organize by type and identify relationships (only between collected nodes)
         identity_parts = {}
         relationships = []
-        
+        nodes_without_content = []
+
         # Build a quick lookup for node labels
         # node_lookup = {n.id: n for n in identity_nodes}
 
@@ -148,16 +180,40 @@ Cannot proceed without identity."""
             if isinstance(content, str):
                 content = content.strip()
 
-            if not content:
-                continue
-
             label = node.label or "Unknown"
             node_type = node.node_type or "Unknown"
+
+            if not content:
+                # Track nodes without content for debugging
+                nodes_without_content.append(f"{node.id} ({node_type}: {label})")
+                # If node has properties, try to use those as content
+                if node.properties:
+                    # Extract meaningful properties as content
+                    props_content = []
+                    for key, value in node.properties.items():
+                        if key not in ["created_at", "updated_at", "embedding"]:
+                            if isinstance(value, (str, int, float, bool)):
+                                props_content.append(f"{key}: {value}")
+                    if props_content:
+                        content = ", ".join(props_content)
+                        logger.debug(
+                            f"Using properties as content for {node.id}: {content[:100]}"
+                        )
+                    else:
+                        continue
+                else:
+                    continue
 
             if node_type not in identity_parts:
                 identity_parts[node_type] = []
 
             identity_parts[node_type].append(f"### {label}\n\n{content}")
+
+        # Log nodes without content for debugging
+        if nodes_without_content:
+            logger.debug(
+                f"Found {len(nodes_without_content)} nodes without content: {nodes_without_content[:5]}"
+            )
 
         # Track relationships only between collected nodes (limit to avoid expensive lookups)
         # Only check relationships for up to 20 most important nodes
@@ -176,8 +232,33 @@ Cannot proceed without identity."""
                 logger.debug(f"Could not get relationships for {node.id}: {e}")
 
         if not identity_parts:
-            logger.error("No identity nodes with content found")
-            raise ValueError("No identity nodes with content found")
+            logger.error(
+                f"No identity nodes with content found. "
+                f"Total nodes collected: {len(identity_nodes)}, "
+                f"Nodes without content: {len(nodes_without_content)}"
+            )
+            # Provide a fallback message instead of raising
+            if identity_nodes:
+                # At least we found some nodes, even if they don't have content
+                fallback_parts = {}
+                for node in identity_nodes[:10]:  # Limit to first 10
+                    node_type = node.node_type or "Unknown"
+                    label = node.label or node.id
+                    if node_type not in fallback_parts:
+                        fallback_parts[node_type] = []
+                    fallback_parts[node_type].append(
+                        f"### {label}\n\n(No content available)"
+                    )
+
+                if fallback_parts:
+                    logger.warning(
+                        "Using fallback identity with nodes that have no content"
+                    )
+                    identity_parts = fallback_parts
+                else:
+                    raise ValueError("No identity nodes with content found")
+            else:
+                raise ValueError("No identity nodes found at all")
 
         # Step 4: Build comprehensive identity with gap analysis
         final_identity = "# IDENTITY KNOWLEDGE\n\n"
@@ -198,9 +279,7 @@ Cannot proceed without identity."""
         # Add coverage summary
         final_identity += "## IDENTITY COVERAGE\n\n"
         final_identity += f"- Total knowledge nodes: {len(identity_nodes)}\n"
-        final_identity += (
-            f"- Node types: {', '.join(sorted(identity_parts.keys()))}\n"
-        )
+        final_identity += f"- Node types: {', '.join(sorted(identity_parts.keys()))}\n"
         final_identity += f"- Relationships mapped: {len(relationships)}\n"
 
         logger.info(
@@ -293,171 +372,6 @@ Cannot proceed without identity."""
 
         return final_identity
 
-    async def get_session_context(
-        self,
-        session_id: str,
-        preview_chars: int = 200,
-        max_properties: int = 3,
-        max_related: int = 8,
-    ) -> Optional[str]:
-        """Load session-related context from the knowledge graph.
-
-        Returns the most relevant session-related content including
-        related nodes, workflows, and thinking sessions.
-
-        Args:
-            session_id: Session identifier
-            preview_chars: Maximum characters for content previews
-            max_properties: Maximum number of properties to show per node
-            max_related: Maximum number of related nodes to include
-
-        Returns:
-            Formatted session context string, or None if not available
-        """
-        if not self.repository or not session_id:
-            return None
-
-        try:
-            # Directly load the session node to avoid unrelated sessions
-            session_node_id = session_id if session_id.startswith("session:") else f"session:{session_id}"
-            logger.info("Loading session context for node: %s", session_node_id)
-
-            node = await self.repository.get_node(session_node_id)
-            if not node:
-                logger.debug("Session node not found: %s", session_node_id)
-                return None
-
-            node_type = node.node_type or "Session"
-            label = node.label or session_node_id
-            content = node.content or ""
-            properties = node.properties or {}
-
-            def _truncate(text: str, limit: int) -> str:
-                text = (text or "").strip()
-                text = re.sub(r"\s+", " ", text)
-                return text if len(text) <= limit else text[:limit].rstrip() + "..."
-
-            # Build primary session context block
-            context_lines = [
-                f"## SESSION CONTEXT ({session_id[:8]}...)",
-                f"**Source:** {label} ({node_type})",
-            ]
-
-            primary_parts = []
-            if content:
-                primary_parts.append(_truncate(content, preview_chars))
-            if properties:
-                # Include a few simple scalar properties only
-                kvs = []
-                for k, v in (properties or {}).items():
-                    if (
-                        isinstance(v, (str, int, float, bool))
-                        and len(kvs) < max_properties
-                    ):
-                        vs = str(v)
-                        if len(vs) > 60:
-                            vs = vs[:60].rstrip() + "..."
-                        kvs.append(f"{k}={vs}")
-                    if len(kvs) >= max_properties:
-                        break
-                if kvs:
-                    primary_parts.append("Properties: " + ", ".join(kvs))
-
-            if primary_parts:
-                context_lines.append("")
-                context_lines.append("\n".join(primary_parts))
-
-            # Load directly related nodes (neighbors) and present previews
-            try:
-                neighbors = await self.repository.get_node_neighbors(
-                    node_id=session_node_id, direction="both", limit=max_related
-                )
-            except Exception as e:
-                logger.warning("Failed to load session neighbors: %s", e)
-                neighbors = []
-
-            if neighbors:
-                context_lines.append("")
-                context_lines.append("### Related")
-                related_lines = []
-
-                # Deduplicate by neighbor id and cap count
-                seen_ids = set()
-                for _, neighbor in neighbors:
-                    if neighbor.id in seen_ids:
-                        continue
-                    seen_ids.add(neighbor.id)
-
-                    n_label = neighbor.label or neighbor.id
-                    n_type = neighbor.node_type or "Node"
-                    n_preview = _truncate(neighbor.content or "", preview_chars)
-
-                    # Select a few properties
-                    n_props = neighbor.properties or {}
-                    kvs = []
-                    for k, v in (n_props or {}).items():
-                        if (
-                            isinstance(v, (str, int, float, bool))
-                            and len(kvs) < max_properties
-                        ):
-                            vs = str(v)
-                            if len(vs) > 60:
-                                vs = vs[:60].rstrip() + "..."
-                            kvs.append(f"{k}={vs}")
-                        if len(kvs) >= max_properties:
-                            break
-                    prop_suffix = (" | " + ", ".join(kvs)) if kvs else ""
-
-                    line = f"- {n_label} ({n_type}) — {neighbor.id}{prop_suffix}"
-                    if n_preview:
-                        line += f"\n  Preview: {n_preview}"
-                    related_lines.append(line)
-
-                    if len(related_lines) >= max_related:
-                        break
-
-                if related_lines:
-                    context_lines.append("\n".join(related_lines))
-
-            # Add workflow execution statistics if any
-            try:
-                workflow_execs = [
-                    n for _, n in neighbors if n.node_type == "WorkflowExecution"
-                ]
-                if workflow_execs:
-                    context_lines.append("")
-                    context_lines.append("### Recent Workflows")
-                    success = sum(
-                        1
-                        for w in workflow_execs
-                        if w.properties and w.properties.get("status") == "success"
-                    )
-                    context_lines.append(
-                        f"- Executed {len(workflow_execs)} workflows ({success} successful)"
-                    )
-            except Exception as e:
-                logger.debug("Failed to load workflow stats: %s", e)
-
-            # Add thinking session statistics if any
-            try:
-                thinking_sessions = [
-                    n for _, n in neighbors if n.node_type == "ThinkingSession"
-                ]
-                if thinking_sessions:
-                    context_lines.append("")
-                    context_lines.append("### Sequential Thinking")
-                    context_lines.append(
-                        f"- {len(thinking_sessions)} problem-solving sessions recorded"
-                    )
-            except Exception as e:
-                logger.debug("Failed to load thinking session stats: %s", e)
-
-            return "\n".join(context_lines)
-
-        except Exception as e:
-            logger.warning("Failed to load session context: %s", e)
-            return None
-
     async def summarize_identity(
         self, identity_text: str, llm_generate_fn: Callable[[str], Any]
     ) -> str:
@@ -503,15 +417,3 @@ Cannot proceed without identity."""
             f"# Your Identity\n\n{identity_summary}\n\n"
             f"Please remember this is who you are and act accordingly in all responses."
         )
-
-    def format_session_context_instruction(self, session_context: str) -> str:
-        """Format session context as an instruction for the LLM.
-
-        Args:
-            session_context: Session context text
-
-        Returns:
-            Formatted session context instruction
-        """
-        return f"# Session Context\n\n{session_context}"
-

@@ -207,9 +207,11 @@ class MessageService:
         try:
             # Get all messages from the graph
             nodes = await self.repository.get_chat_messages(chat_id=chat_id, limit=None)
-            logger.debug(
-                f"Retrieved {len(nodes)} total messages for chat {chat_id} (including session fallback)"
+            logger.info(
+                f"Retrieved {len(nodes)} total messages for chat {chat_id} from graph"
             )
+            if nodes:
+                logger.debug(f"First message: {nodes[0].id}, Last message: {nodes[-1].id}")
 
             if prefer_summaries:
                 # Find the most recent summary
