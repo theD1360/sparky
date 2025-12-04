@@ -51,7 +51,7 @@ class MessageService:
 
         self.file_service = file_service
 
-    def save_message(
+    async def save_message(
         self,
         content: str,
         role: str,
@@ -88,9 +88,7 @@ class MessageService:
         try:
             # Get current message count from graph for this chat
             # Get messages for accurate count
-            current_messages = self.repository.get_chat_messages(
-                chat_id=chat_id
-            )
+            current_messages = await self.repository.get_chat_messages(chat_id=chat_id)
             message_num = len(current_messages) + 1
             logger.debug(
                 f"Calculated message_num={message_num} for chat {chat_id} "
@@ -118,7 +116,7 @@ class MessageService:
             if tool_args:
                 properties["tool_args"] = tool_args
 
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id=chat_node_id,
                 node_type="ChatMessage",
                 label=f"Chat Message {message_num}",
@@ -131,9 +129,9 @@ class MessageService:
             chat_node_full_id = f"chat:{chat_id}"
             try:
                 # Verify chat node exists before linking
-                chat_node = self.repository.get_node(chat_node_full_id)
+                chat_node = await self.repository.get_node(chat_node_full_id)
                 if chat_node:
-                    self.repository.add_edge(
+                    await self.repository.add_edge(
                         source_id=chat_node_full_id,
                         target_id=chat_node_id,
                         edge_type="CONTAINS",
@@ -157,9 +155,11 @@ class MessageService:
                 )
                 # Use file service if available, otherwise use direct repository
                 if self.file_service:
-                    self.file_service.link_file_to_message(file_node_id, chat_node_id)
+                    await self.file_service.link_file_to_message(
+                        file_node_id, chat_node_id
+                    )
                 else:
-                    self.repository.add_edge(
+                    await self.repository.add_edge(
                         source_id=chat_node_id,
                         target_id=file_node_id,
                         edge_type="HAS_ATTACHMENT",
@@ -178,7 +178,7 @@ class MessageService:
             )
             return None
 
-    def get_recent_messages(
+    async def get_recent_messages(
         self,
         chat_id: Optional[str],
         limit: Optional[int] = None,
@@ -206,9 +206,7 @@ class MessageService:
 
         try:
             # Get all messages from the graph
-            nodes = self.repository.get_chat_messages(
-                chat_id=chat_id, limit=None
-            )
+            nodes = await self.repository.get_chat_messages(chat_id=chat_id, limit=None)
             logger.debug(
                 f"Retrieved {len(nodes)} total messages for chat {chat_id} (including session fallback)"
             )
@@ -254,7 +252,9 @@ class MessageService:
             logger.error(f"Failed to retrieve messages from graph: {e}", exc_info=True)
             return []
 
-    def format_for_summary(self, chat_id: str, since_last_summary: bool = True) -> str:
+    async def format_for_summary(
+        self, chat_id: str, since_last_summary: bool = True
+    ) -> str:
         """Create a concise text dump of conversation for summarization.
 
         Only summarizes messages since the last summary to avoid re-summarizing
@@ -270,9 +270,7 @@ class MessageService:
         """
         try:
             # Get all messages for the chat
-            nodes = self.repository.get_chat_messages(
-                chat_id=chat_id
-            )
+            nodes = await self.repository.get_chat_messages(chat_id=chat_id)
             logger.debug(
                 f"Retrieved {len(nodes)} messages for summary formatting (chat {chat_id})"
             )
@@ -318,7 +316,7 @@ class MessageService:
         """
         return self.token_estimator.estimate_messages_tokens(messages)
 
-    def get_messages_within_token_limit(
+    async def get_messages_within_token_limit(
         self, chat_id: str, max_tokens: int, prefer_summaries: bool = True
     ) -> List[Dict[str, Any]]:
         """Retrieve messages that fit within a token limit.
@@ -336,7 +334,7 @@ class MessageService:
             List of messages in LLM format that fit within the token limit
         """
         # Get recent messages (with summary preference and session fallback enabled)
-        messages = self.get_recent_messages(
+        messages = await self.get_recent_messages(
             chat_id=chat_id, limit=None, prefer_summaries=prefer_summaries
         )
         logger.debug(

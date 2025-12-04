@@ -299,7 +299,8 @@ def test_fix_indentation_negative_difference():
 
 
 def test_fix_indentation_inconsistent():
-    """Test that inconsistent indentation differences don't get fixed."""
+    """Test that inconsistent indentation differences don't get fixed.
+    """
     matched_lines = ["    foo", "        bar"]
     searched_lines = ["  foo", "    bar"]
     replaced_lines = ["spam", "ham"]

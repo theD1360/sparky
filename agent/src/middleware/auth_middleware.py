@@ -2,11 +2,11 @@
 
 import logging
 from functools import wraps
-from typing import Callable, Generator, List, Optional
+from typing import AsyncGenerator, Callable, List, Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.database import get_database_manager
 from services.auth_service import (
@@ -22,23 +22,20 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer()
 
 
-def get_db() -> Generator[Session, None, None]:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Get database session dependency."""
     db_manager = get_database_manager()
     # Ensure connection is established (only connects once)
     if not db_manager.engine:
-        db_manager.connect()
+        await db_manager.connect()
     # Create session from the already-connected manager
-    session = db_manager.SessionLocal()
-    try:
+    async with db_manager.get_session() as session:
         yield session
-    finally:
-        session.close()
 
 
-def get_current_user(
+async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> "User":  # type: ignore
     """Dependency to get current authenticated user from JWT token.
 
@@ -66,7 +63,7 @@ def get_current_user(
         )
 
     # Check if token is revoked
-    if is_token_revoked(token, db):
+    if await is_token_revoked(token, db):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked",
@@ -74,7 +71,7 @@ def get_current_user(
         )
 
     # Get user from token
-    user = get_user_from_token(token, db)
+    user = await get_user_from_token(token, db)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -127,14 +124,14 @@ def require_roles(*required_roles: str):
         @wraps(func)
         async def wrapper(
             current_user: "User" = Depends(get_current_user),  # type: ignore
-            db: Session = Depends(get_db),
+            db: AsyncSession = Depends(get_db),
             *args,
             **kwargs,
         ):
             from services.user_management_service import UserManagementService
 
             user_service = UserManagementService(db)
-            user_roles = user_service.get_user_roles(current_user.id)
+            user_roles = await user_service.get_user_roles(current_user.id)
 
             # Check if user has any of the required roles
             if not any(role in user_roles for role in required_roles):
@@ -162,7 +159,7 @@ def require_admin(func: Callable) -> Callable:
     return require_roles("admin")(func)
 
 
-def get_user_from_websocket_token(token: Optional[str]) -> Optional["User"]:  # type: ignore
+async def get_user_from_websocket_token(token: Optional[str]) -> Optional["User"]:  # type: ignore
     """Get user from JWT token for WebSocket connections.
 
     Args:
@@ -177,25 +174,22 @@ def get_user_from_websocket_token(token: Optional[str]) -> Optional["User"]:  # 
     try:
         db_manager = get_database_manager()
         if not db_manager.engine:
-            db_manager.connect()
-        db = db_manager.SessionLocal()
+            await db_manager.connect()
         
-        try:
+        async with db_manager.get_session() as db:
             payload = decode_token(token)
             if payload is None:
                 return None
 
             # Check if token is revoked
-            if is_token_revoked(token, db):
+            if await is_token_revoked(token, db):
                 return None
 
-            user = get_user_from_token(token, db)
+            user = await get_user_from_token(token, db)
             if user and user.is_active:
                 return user
 
             return None
-        finally:
-            db.close()
     except Exception as e:
         logger.error(f"Error validating WebSocket token: {e}", exc_info=True)
         return None

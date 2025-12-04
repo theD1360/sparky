@@ -38,6 +38,7 @@ import json
 import logging
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from database.database import DatabaseManager, get_database_manager
@@ -103,7 +104,7 @@ def _truncate_node_content(
     return node_dict
 
 
-def _load_graph():
+async def _load_graph():
     """Load or initialize database using KnowledgeRepository."""
     global _kb_repository, _db_manager  # pylint: disable=global-statement
 
@@ -119,13 +120,13 @@ def _load_graph():
     logger.info(f"Connecting to PostgreSQL database: ...@{safe_db_url}")
 
     _db_manager = get_database_manager(db_url=db_url)
-    _db_manager.connect()  # Connect to database first
+    await _db_manager.connect()  # Connect to database first
 
     # Create or connect to database using repository
     _kb_repository = KnowledgeRepository(_db_manager)
 
     # Get graph statistics
-    stats = _kb_repository.get_graph_stats()
+    stats = await _kb_repository.get_graph_stats()
     node_count = stats["total_nodes"]
     edge_count = stats["total_edges"]
 
@@ -151,7 +152,7 @@ def _load_graph():
 
 # Graph CRUD Tools
 @mcp.tool()
-def add_node(
+async def add_node(
     node_id: str,
     node_type: str,
     label: str,
@@ -185,8 +186,10 @@ def add_node(
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        existing = _kb_repository.get_node(node_id)
-        _kb_repository.add_node(node_id, node_type, label, content, properties or {})
+        existing = await _kb_repository.get_node(node_id)
+        await _kb_repository.add_node(
+            node_id, node_type, label, content, properties or {}
+        )
 
         action = "updated" if existing else "added"
         result_msg = f"Successfully {action} node '{node_id}'"
@@ -199,7 +202,7 @@ def add_node(
 
 
 @mcp.tool()
-def update_node(
+async def update_node(
     node_id: str,
     node_type: str = None,
     label: str = None,
@@ -237,7 +240,7 @@ def update_node(
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        updated_node = _kb_repository.update_node(
+        updated_node = await _kb_repository.update_node(
             node_id=node_id,
             node_type=node_type,
             label=label,
@@ -258,7 +261,7 @@ def update_node(
 
 
 @mcp.tool()
-def add_edge(
+async def add_edge(
     source_id: str, target_id: str, edge_type: str, properties: dict = None
 ) -> dict:
     """Add a directional relationship (edge) between two nodes in the knowledge graph.
@@ -285,8 +288,8 @@ def add_edge(
 
     try:
         # Check if nodes exist
-        source_node = _kb_repository.get_node(source_id)
-        target_node = _kb_repository.get_node(target_id)
+        source_node = await _kb_repository.get_node(source_id)
+        target_node = await _kb_repository.get_node(target_id)
         if not source_node or not target_node:
             missing = []
             if not source_node:
@@ -297,7 +300,7 @@ def add_edge(
                 f"Cannot create edge. Node(s) not found: {missing}"
             ).to_dict()
 
-        _kb_repository.add_edge(source_id, target_id, edge_type, properties or {})
+        await _kb_repository.add_edge(source_id, target_id, edge_type, properties or {})
 
         result_msg = f"Successfully added edge from '{source_id}' to '{target_id}'"
         return MCPResponse.success(
@@ -314,7 +317,7 @@ def add_edge(
 
 
 @mcp.tool()
-def bulk_add_nodes(nodes: list[dict]) -> dict:
+async def bulk_add_nodes(nodes: list[dict]) -> dict:
     """Add or update multiple nodes in the knowledge graph in a single operation.
 
     This is an optimized version of add_node for batch operations. All nodes are processed
@@ -358,7 +361,7 @@ def bulk_add_nodes(nodes: list[dict]) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        result = _kb_repository.bulk_add_nodes(nodes)
+        result = await _kb_repository.bulk_add_nodes(nodes)
 
         summary = (
             f"Bulk operation completed: {len(result['added'])} added, "
@@ -372,7 +375,7 @@ def bulk_add_nodes(nodes: list[dict]) -> dict:
 
 
 @mcp.tool()
-def bulk_add_edges(edges: list[dict]) -> dict:
+async def bulk_add_edges(edges: list[dict]) -> dict:
     """Add or update multiple edges (relationships) in the knowledge graph in a single operation.
 
     This is an optimized version of add_edge for batch operations. All edges are processed
@@ -413,7 +416,7 @@ def bulk_add_edges(edges: list[dict]) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        result = _kb_repository.bulk_add_edges(edges)
+        result = await _kb_repository.bulk_add_edges(edges)
 
         summary = (
             f"Bulk operation completed: {len(result['added'])} added, "
@@ -427,7 +430,7 @@ def bulk_add_edges(edges: list[dict]) -> dict:
 
 
 @mcp.tool()
-def append_graph(nodes: list[dict], edges: list[dict]) -> dict:
+async def append_graph(nodes: list[dict], edges: list[dict]) -> dict:
     """Append a complete subgraph (nodes and edges together) to the knowledge graph.
 
     This is a convenience tool for adding a collection of related nodes and their
@@ -504,7 +507,7 @@ def append_graph(nodes: list[dict], edges: list[dict]) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        result = _kb_repository.append_graph(nodes, edges)
+        result = await _kb_repository.append_graph(nodes, edges)
 
         summary = (
             f"Graph appended: {len(result['nodes_added'])} nodes added, "
@@ -526,7 +529,7 @@ def append_graph(nodes: list[dict], edges: list[dict]) -> dict:
 
 
 @mcp.tool()
-def find_similar_nodes(
+async def find_similar_nodes(
     node_id: str,
     similarity_threshold: float = 0.7,
     limit: int = 20,
@@ -558,7 +561,7 @@ def find_similar_nodes(
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        similar_nodes = _kb_repository.find_similar_nodes(
+        similar_nodes = await _kb_repository.find_similar_nodes(
             node_id=node_id,
             similarity_threshold=similarity_threshold,
             limit=limit,
@@ -575,7 +578,7 @@ def find_similar_nodes(
 
 
 @mcp.tool()
-def validate_graph_integrity(checks: list[str] = None) -> dict:
+async def validate_graph_integrity(checks: list[str] = None) -> dict:
     """Run comprehensive health checks on the knowledge graph.
 
     Detects various issues like orphaned nodes, dangling edges, missing embeddings,
@@ -605,7 +608,7 @@ def validate_graph_integrity(checks: list[str] = None) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        results = _kb_repository.validate_graph_integrity(checks=checks)
+        results = await _kb_repository.validate_graph_integrity(checks=checks)
 
         status = "healthy" if results["healthy"] else "issues detected"
         message = (
@@ -620,7 +623,7 @@ def validate_graph_integrity(checks: list[str] = None) -> dict:
 
 
 @mcp.tool()
-def extract_subgraph(
+async def extract_subgraph(
     root_node_ids: list[str],
     depth: int = 2,
     include_node_types: list[str] = None,
@@ -663,7 +666,7 @@ def extract_subgraph(
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        result = _kb_repository.extract_subgraph(
+        result = await _kb_repository.extract_subgraph(
             root_node_ids=root_node_ids,
             depth=depth,
             include_node_types=include_node_types,
@@ -682,7 +685,7 @@ def extract_subgraph(
 
 
 @mcp.tool()
-def merge_duplicate_nodes(
+async def merge_duplicate_nodes(
     node_ids: list[str], keep_node_id: str, merge_strategy: str = "union"
 ) -> dict:
     """Merge duplicate or redundant nodes into a single consolidated node.
@@ -721,7 +724,7 @@ def merge_duplicate_nodes(
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        result = _kb_repository.merge_duplicate_nodes(
+        result = await _kb_repository.merge_duplicate_nodes(
             node_ids=node_ids, keep_node_id=keep_node_id, merge_strategy=merge_strategy
         )
 
@@ -739,34 +742,86 @@ def merge_duplicate_nodes(
 
 
 @mcp.tool()
-def get_node_by_id(node_id: str) -> dict:
+async def get_node_by_id(node_id: str) -> dict:
     """Retrieve a single node by its unique identifier.
 
     Use this to fetch complete information about a specific node when you know its ID.
     Returns all node data including ID, type, label, content, and properties.
 
+    IMPORTANT: For memory content, prefer using `get_memory(key)` which automatically
+    handles the key-to-node-ID conversion. This tool requires the full node ID.
+
+    Memory nodes use a specific naming convention: memory keys are prefixed with "memory:"
+    when stored as node IDs. For example:
+    - Memory key: "user_prefs" → Node ID: "memory:user_prefs"
+    - Memory key: "chat:session:123:transcript" → Node ID: "memory:chat:session:123:transcript"
+
     Args:
-        node_id: The unique identifier of the node to retrieve
+        node_id: The unique identifier of the node to retrieve (e.g., "concept:python",
+                "memory:user_preferences", "session:12345")
 
     Returns:
         Complete node data including id, type, label, content, properties, created_at, updated_at
 
-    Example:
+    Examples:
+        # Regular concept node
         get_node_by_id("concept:python")
+
+        # Memory node (requires "memory:" prefix)
         get_node_by_id("memory:user_preferences")
+
+        # Session node
+        get_node_by_id("session:20240101-120000")
+
+    Note: If you have a memory key from `list_memories()`, use `get_memory(key)` instead,
+    or prefix the key with "memory:" to form the node ID.
     """
     if not _kb_repository:
         return MCPResponse.error("Database not initialized").to_dict()
 
-    node = _kb_repository.get_node(node_id)
+    node = await _kb_repository.get_node(node_id)
     if node:
         return MCPResponse.success(result=node.to_dict()).to_dict()
     else:
-        return MCPResponse.error(f"Node with id '{node_id}' not found").to_dict()
+        # Check if this looks like a memory key that's missing the "memory:" prefix
+        # Memory keys typically contain colons (e.g., "chat:session:123:transcript")
+        # or are simple strings (e.g., "user_prefs")
+        # If it doesn't start with a known prefix and doesn't contain ":", it might be a memory key
+        error_msg = f"Node with id '{node_id}' not found"
+
+        # Heuristic: if node_id doesn't start with common prefixes and doesn't contain ":",
+        # or if it looks like a memory key pattern, suggest using get_memory()
+        common_prefixes = (
+            "concept:",
+            "memory:",
+            "session:",
+            "toolcall:",
+            "file:",
+            "symbol:",
+            "module:",
+        )
+        is_memory_key_candidate = (
+            not any(node_id.startswith(prefix) for prefix in common_prefixes)
+            and ":"
+            in node_id  # Memory keys often have colons (e.g., "chat:session:123:transcript")
+        ) or (
+            not any(node_id.startswith(prefix) for prefix in common_prefixes)
+            and ":" not in node_id  # Simple memory keys without colons
+            and not node_id.startswith("temp:")
+        )
+
+        if is_memory_key_candidate:
+            error_msg += (
+                f"\n\nTip: '{node_id}' looks like it might be a memory key. "
+                f"Try using get_memory('{node_id}') instead, or use get_node_by_id('memory:{node_id}') "
+                f"if you're certain this is a memory node ID."
+            )
+
+        return MCPResponse.error(error_msg).to_dict()
 
 
 @mcp.tool()
-def delete_node(node_id: str) -> dict:
+async def delete_node(node_id: str) -> dict:
     """Delete a node and all its connected edges from the knowledge graph.
 
     WARNING: This permanently removes the node and ALL edges connected to it (both incoming
@@ -785,7 +840,7 @@ def delete_node(node_id: str) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        deleted = _kb_repository.delete_node(node_id)
+        deleted = await _kb_repository.delete_node(node_id)
         if deleted:
             return MCPResponse.success(
                 result={"node_id": node_id},
@@ -799,7 +854,7 @@ def delete_node(node_id: str) -> dict:
 
 
 @mcp.tool()
-def bulk_delete_nodes(node_ids: list[str]) -> dict:
+async def bulk_delete_nodes(node_ids: list[str]) -> dict:
     """Delete multiple nodes and all their connected edges from the knowledge graph in a single operation.
 
     WARNING: This permanently removes all specified nodes and ALL edges connected to them
@@ -830,7 +885,7 @@ def bulk_delete_nodes(node_ids: list[str]) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        result = _kb_repository.bulk_delete_nodes(node_ids)
+        result = await _kb_repository.bulk_delete_nodes(node_ids)
 
         summary = (
             f"Bulk deletion completed: {len(result['deleted'])} deleted, "
@@ -844,7 +899,7 @@ def bulk_delete_nodes(node_ids: list[str]) -> dict:
 
 
 @mcp.tool()
-def get_connected_nodes(node_id: str, limit: int = 50, offset: int = 0) -> dict:
+async def get_connected_nodes(node_id: str, limit: int = 50, offset: int = 0) -> dict:
     """Finds all nodes directly connected to a given node.
 
     Args:
@@ -858,7 +913,7 @@ def get_connected_nodes(node_id: str, limit: int = 50, offset: int = 0) -> dict:
         logger.error("Database not initialized")
         return MCPResponse.error("Database not initialized").to_dict()
 
-    node = _kb_repository.get_node(node_id)
+    node = await _kb_repository.get_node(node_id)
     if not node:
         logger.warning("Node with id '%s' not found", node_id)
         return MCPResponse.empty(f"Node '{node_id}' not found").to_dict()
@@ -866,7 +921,7 @@ def get_connected_nodes(node_id: str, limit: int = 50, offset: int = 0) -> dict:
     # Use repository for neighbor lookup
     connected = []
     try:
-        neighbors = _kb_repository.get_node_neighbors(node_id, direction="both")
+        neighbors = await _kb_repository.get_node_neighbors(node_id, direction="both")
 
         for edge, neighbor_node in neighbors:
             direction = "outgoing" if edge.source_id == node_id else "incoming"
@@ -902,7 +957,7 @@ def get_connected_nodes(node_id: str, limit: int = 50, offset: int = 0) -> dict:
 
 
 @mcp.tool()
-def get_graph_context(node_id: str, depth: int = 1) -> dict:
+async def get_graph_context(node_id: str, depth: int = 1) -> dict:
     """Retrieve a node and its surrounding neighborhood up to a specified depth.
 
     This tool provides local context around a node by fetching it and all connected nodes
@@ -923,7 +978,7 @@ def get_graph_context(node_id: str, depth: int = 1) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        context = _kb_repository.get_graph_context(node_id, depth)
+        context = await _kb_repository.get_graph_context(node_id, depth)
         if not context:
             return MCPResponse.empty(
                 f"Node '{node_id}' not found or has no context"
@@ -935,7 +990,7 @@ def get_graph_context(node_id: str, depth: int = 1) -> dict:
 
 
 @mcp.tool()
-def get_graph_map(
+async def get_graph_map(
     include_details: bool = False,
     group_by_type: bool = True,
     nodes_limit: int = 50,  # Reduced from 100 to prevent large results
@@ -958,7 +1013,7 @@ def get_graph_map(
 
     try:
         # Get statistics from repository
-        stats = _kb_repository.get_graph_stats()
+        stats = await _kb_repository.get_graph_stats()
 
         # Build the map
         graph_map = {
@@ -976,7 +1031,7 @@ def get_graph_map(
             for node_type, count in stats["node_types"].items():
                 nodes_by_type[node_type] = []
                 # Limit each type to avoid overwhelming response
-                nodes = _kb_repository.get_nodes(node_type=node_type, limit=100)
+                nodes = await _kb_repository.get_nodes(node_type=node_type, limit=100)
 
                 for node in nodes:
                     if include_details:
@@ -991,7 +1046,9 @@ def get_graph_map(
             graph_map["nodes_by_type"] = nodes_by_type
         else:
             # Apply pagination when not grouping by type
-            all_nodes = _kb_repository.get_nodes(limit=nodes_limit, offset=nodes_offset)
+            all_nodes = await _kb_repository.get_nodes(
+                limit=nodes_limit, offset=nodes_offset
+            )
             if include_details:
                 # Truncate large content to prevent massive results
                 graph_map["nodes"] = [
@@ -1010,7 +1067,9 @@ def get_graph_map(
             }
 
         # Add edges information with pagination
-        all_edges = _kb_repository.get_edges(limit=edges_limit, offset=edges_offset)
+        all_edges = await _kb_repository.get_edges(
+            limit=edges_limit, offset=edges_offset
+        )
         graph_map["edges"] = [
             {
                 "source": edge.source_id,
@@ -1039,7 +1098,7 @@ def get_graph_map(
 
 # Graph Analytics Tools
 @mcp.tool()
-def query_graph(
+async def query_graph(
     query: str, parameters: Optional[dict] = None, limit: int = 50, offset: int = 0
 ) -> dict:
     """Execute an openCypher-like query on the knowledge graph. Supports MATCH, WHERE, RETURN, ORDER BY, and LIMIT clauses.
@@ -1065,7 +1124,7 @@ def query_graph(
         if not query:
             return MCPResponse.error("Query string cannot be empty").to_dict()
 
-        results = _kb_repository.query_graph(query=query, parameters=parameters)
+        results = await _kb_repository.query_graph(query=query, parameters=parameters)
 
         # Ensure we always return a list
         if results is None:
@@ -1111,7 +1170,7 @@ def query_graph(
 
 
 @mcp.tool()
-def find_path(
+async def find_path(
     start_id: str, end_id: str, max_depth: int = 5, algorithm: str = "shortest"
 ) -> dict:
     """Find connection paths between two nodes in the knowledge graph.
@@ -1137,7 +1196,7 @@ def find_path(
 
     try:
         if algorithm == "shortest":
-            path = _kb_repository.find_shortest_path(start_id, end_id, max_depth)
+            path = await _kb_repository.find_shortest_path(start_id, end_id, max_depth)
             if path:
                 result = {"path": path, "length": len(path)}
                 return MCPResponse.success(
@@ -1148,7 +1207,7 @@ def find_path(
                     f"No path found between '{start_id}' and '{end_id}'"
                 ).to_dict()
         elif algorithm == "all":
-            paths = _kb_repository.find_all_paths(start_id, end_id, max_depth)
+            paths = await _kb_repository.find_all_paths(start_id, end_id, max_depth)
             result = {"paths": paths, "count": len(paths)}
             if paths:
                 return MCPResponse.success(
@@ -1168,7 +1227,7 @@ def find_path(
 
 
 @mcp.tool()
-def analyze_graph(analysis_type: str, parameters: Optional[dict] = None) -> dict:
+async def analyze_graph(analysis_type: str, parameters: Optional[dict] = None) -> dict:
     """Run graph analytics algorithms to discover structural insights and important nodes.
 
     Performs various graph analysis algorithms to understand the structure and importance of nodes.
@@ -1201,7 +1260,7 @@ def analyze_graph(analysis_type: str, parameters: Optional[dict] = None) -> dict
 
     try:
         if analysis_type == "centrality":
-            centrality_scores = _kb_repository.calculate_degree_centrality()
+            centrality_scores = await _kb_repository.calculate_degree_centrality()
             # Sort by score descending
             sorted_scores = sorted(
                 centrality_scores.items(), key=lambda x: x[1], reverse=True
@@ -1216,7 +1275,7 @@ def analyze_graph(analysis_type: str, parameters: Optional[dict] = None) -> dict
         elif analysis_type == "pagerank":
             damping = parameters.get("damping", 0.85)
             iterations = parameters.get("iterations", 100)
-            pr_scores = _kb_repository.calculate_pagerank(damping, iterations)
+            pr_scores = await _kb_repository.calculate_pagerank(damping, iterations)
             sorted_scores = sorted(pr_scores.items(), key=lambda x: x[1], reverse=True)
             result = {
                 "type": "pagerank",
@@ -1226,7 +1285,7 @@ def analyze_graph(analysis_type: str, parameters: Optional[dict] = None) -> dict
             return MCPResponse.success(result=result).to_dict()
 
         elif analysis_type == "components":
-            components = _kb_repository.find_connected_components()
+            components = await _kb_repository.find_connected_components()
             result = {
                 "type": "connected_components",
                 "component_count": len(components),
@@ -1239,9 +1298,9 @@ def analyze_graph(analysis_type: str, parameters: Optional[dict] = None) -> dict
 
         elif analysis_type == "summary":
             # Comprehensive graph summary
-            components = _kb_repository.find_connected_components()
-            centrality_scores = _kb_repository.calculate_degree_centrality()
-            stats = _kb_repository.get_graph_stats()
+            components = await _kb_repository.find_connected_components()
+            centrality_scores = await _kb_repository.calculate_degree_centrality()
+            stats = await _kb_repository.get_graph_stats()
 
             result = {
                 "type": "summary",
@@ -1261,7 +1320,7 @@ def analyze_graph(analysis_type: str, parameters: Optional[dict] = None) -> dict
 
         elif analysis_type == "betweenness":
             normalized = parameters.get("normalized", True)
-            bc_scores = _kb_repository.calculate_betweenness_centrality(
+            bc_scores = await _kb_repository.calculate_betweenness_centrality(
                 normalized=normalized
             )
             sorted_scores = sorted(bc_scores.items(), key=lambda x: x[1], reverse=True)
@@ -1274,7 +1333,7 @@ def analyze_graph(analysis_type: str, parameters: Optional[dict] = None) -> dict
             return MCPResponse.success(result=result).to_dict()
 
         elif analysis_type == "clustering":
-            coeffs = _kb_repository.calculate_clustering_coefficient()
+            coeffs = await _kb_repository.calculate_clustering_coefficient()
             sorted_scores = sorted(coeffs.items(), key=lambda x: x[1], reverse=True)
             result = {
                 "type": "clustering_coefficient",
@@ -1294,7 +1353,7 @@ def analyze_graph(analysis_type: str, parameters: Optional[dict] = None) -> dict
 
 
 @mcp.tool()
-def filter_traverse(
+async def filter_traverse(
     start_nodes: List[str],
     edge_types: List[str] = None,
     node_types: List[str] = None,
@@ -1318,7 +1377,7 @@ def filter_traverse(
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        result = _kb_repository.traverse_graph(
+        result = await _kb_repository.traverse_graph(
             start_nodes, edge_types, node_types, max_depth, direction
         )
 
@@ -1409,7 +1468,7 @@ Use the `add_task` tool to create the task, including the purpose and details in
 
 
 @mcp.tool()
-def search_nodes(
+async def search_nodes(
     query: str,
     node_type: str = None,
     top_k: int = 5,  # Reduced from 10 to prevent large results
@@ -1448,7 +1507,7 @@ def search_nodes(
     # Vector-based natural language search
     try:
         # Get total count for the search (fetch extra to get accurate count)
-        all_results = _kb_repository.search_nodes(
+        all_results = await _kb_repository.search_nodes(
             query,
             node_type=node_type,
             limit=top_k + offset + 100,  # Fetch extra for accurate count
@@ -1457,7 +1516,7 @@ def search_nodes(
         total_count = len(all_results)
 
         # Apply offset and limit
-        search_results = _kb_repository.search_nodes(
+        search_results = await _kb_repository.search_nodes(
             query,
             node_type=node_type,
             limit=top_k,
@@ -1596,7 +1655,7 @@ def search_nodes(
 
 # Memory Management Tools
 @mcp.tool()
-def save_memory(name: str, content: str, overwrite: bool = False) -> dict:
+async def save_memory(name: str, content: str, overwrite: bool = False) -> dict:
     """Save persistent text content under a named key in the knowledge graph.
 
     This is the primary tool for storing information you want to remember across sessions.
@@ -1628,8 +1687,8 @@ def save_memory(name: str, content: str, overwrite: bool = False) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        existing = _kb_repository.get_node(f"memory:{memory_key}")
-        _kb_repository.save_memory(memory_key, content, overwrite=overwrite)
+        existing = await _kb_repository.get_node(f"memory:{memory_key}")
+        await _kb_repository.save_memory(memory_key, content, overwrite=overwrite)
         action = "updated" if existing else "saved"
         return MCPResponse.success(
             result={"key": memory_key, "action": action},
@@ -1643,7 +1702,7 @@ def save_memory(name: str, content: str, overwrite: bool = False) -> dict:
 
 
 @mcp.tool()
-def append_memory(name: str, content: str) -> dict:
+async def append_memory(name: str, content: str) -> dict:
     """Append text content to an existing memory or create a new one.
 
     Use this to add information to a memory without replacing existing content.
@@ -1671,8 +1730,8 @@ def append_memory(name: str, content: str) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        existing = _kb_repository.get_node(f"memory:{memory_key}")
-        node = _kb_repository.append_memory(memory_key, content)
+        existing = await _kb_repository.get_node(f"memory:{memory_key}")
+        node = await _kb_repository.append_memory(memory_key, content)
         action = "appended" if existing and existing.content else "created"
         content_size = len(node.content) if node.content else 0
         return MCPResponse.success(
@@ -1685,21 +1744,39 @@ def append_memory(name: str, content: str) -> dict:
 
 
 @mcp.tool()
-def get_memory(name: str) -> dict:
+async def get_memory(name: str) -> dict:
     """Retrieve the text content stored under a memory key.
 
-    Use this to recall information you've previously saved. Returns the full text
-    content of the memory. If the memory doesn't exist, an error is returned.
+    **RECOMMENDED TOOL FOR ACCESSING MEMORY CONTENT**
+
+    This is the preferred tool for accessing memory content. It automatically converts
+    memory keys to node IDs (adding the "memory:" prefix) and returns the text content
+    directly. Use this instead of `get_node_by_id()` when working with memories.
+
+    Memory keys can be obtained from `list_memories()` and used directly with this tool.
+    The tool handles the internal conversion from key (e.g., "user_prefs") to node ID
+    (e.g., "memory:user_prefs") automatically.
 
     Args:
-        name: Key of the memory to retrieve
+        name: Memory key to retrieve (e.g., "user_preferences", "chat:session:123:transcript").
+              This is the key as returned by `list_memories()`, NOT the full node ID.
 
     Returns:
-        The text content of the memory
+        The text content of the memory as a string
 
-    Example:
+    Examples:
+        # Simple memory key
         get_memory("user_preferences")
-        get_memory("project_status")
+
+        # Session transcript key
+        get_memory("chat:session:123:transcript")
+
+        # Core identity memory
+        get_memory("core:identity")
+
+    Note: If you need the full node data (properties, timestamps, etc.) rather than just
+    the content, use `get_node_by_id("memory:{key}")` instead. However, for most use cases,
+    this tool is simpler and more convenient.
     """
     memory_key = str(name).strip()
 
@@ -1707,10 +1784,15 @@ def get_memory(name: str) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        content = _kb_repository.get_memory(memory_key)
+        content = await _kb_repository.get_memory(memory_key)
 
         if content is None:
-            return MCPResponse.error(f"memory '{memory_key}' not found").to_dict()
+            error_msg = f"Memory '{memory_key}' not found"
+            error_msg += (
+                f"\n\nTip: Use list_memories() to see all available memory keys. "
+                f"Make sure you're using the exact key as returned by list_memories()."
+            )
+            return MCPResponse.error(error_msg).to_dict()
 
         # If content is empty, return an error (memory exists but is empty)
         if content == "":
@@ -1727,23 +1809,63 @@ def get_memory(name: str) -> dict:
 
 
 @mcp.tool()
-def list_memories(
+async def list_memories(
     prefix: str = None,
     sort_by_timestamp: bool = False,
     sort_order: str = "desc",
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
-    """List stored memory keys, optionally filtered by prefix and sorted by update time."""
+    """List stored memory keys, optionally filtered by prefix and sorted by update time.
+
+    Returns a list of memory keys that can be used with other memory tools. The keys
+    returned here are in their "raw" format (e.g., "user_prefs", "chat:session:123:transcript")
+    and can be used directly with `get_memory(key)`.
+
+    IMPORTANT - Key Format and Usage:
+    - Keys returned by this tool can be used directly with `get_memory(key)` - no conversion needed
+    - To use a key with `get_node_by_id()`, you must prefix it with "memory:" to form the node ID
+      Example: key "user_prefs" → use `get_node_by_id("memory:user_prefs")`
+    - For most use cases, prefer `get_memory(key)` which handles the conversion automatically
+
+    Args:
+        prefix: Optional filter to only return keys starting with this prefix
+                (e.g., "chat:" to get only chat-related memories)
+        sort_by_timestamp: If True, sort by last update time (default: False)
+        sort_order: "asc" or "desc" - only used if sort_by_timestamp=True (default: "desc")
+        limit: Maximum number of keys to return (default: 50)
+        offset: Number of keys to skip for pagination (default: 0)
+
+    Returns:
+        Paginated list of memory keys (strings)
+
+    Examples:
+        # List all memories
+        list_memories()
+
+        # List only chat session memories
+        list_memories(prefix="chat:session:")
+
+        # Get recent memories, sorted by update time
+        list_memories(sort_by_timestamp=True, sort_order="desc", limit=10)
+
+    Usage with other tools:
+        # Get a key from list_memories() and use it
+        keys = list_memories()  # Returns ["user_prefs", "chat:session:123:transcript"]
+        content = get_memory("user_prefs")  # ✅ Direct usage - recommended
+
+        # Or use with get_node_by_id (requires prefix)
+        node = get_node_by_id("memory:user_prefs")  # ✅ Requires "memory:" prefix
+    """
     if not _kb_repository:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
         # Get total count for pagination
-        total_count = _kb_repository.get_memories_count(prefix=prefix)
+        total_count = await _kb_repository.get_memories_count(prefix=prefix)
 
         # Get paginated results
-        memory_list = _kb_repository.list_memories(
+        memory_list = await _kb_repository.list_memories(
             prefix=prefix,
             sort_by_timestamp=sort_by_timestamp,
             sort_order=sort_order,
@@ -1770,7 +1892,7 @@ def list_memories(
 
 
 @mcp.tool()
-def search_memory(
+async def search_memory(
     query: str,
     top_k: int = 10,
     offset: int = 0,
@@ -1805,13 +1927,13 @@ def search_memory(
 
     try:
         # Get total count (fetch extra to get accurate count)
-        all_results = _kb_repository.search_memory(
+        all_results = await _kb_repository.search_memory(
             query, limit=top_k + offset + 100, order_by=order_by
         )
         total_count = len(all_results)
 
         # Get paginated results
-        memory_results = _kb_repository.search_memory(
+        memory_results = await _kb_repository.search_memory(
             query, limit=top_k, offset=offset, order_by=order_by
         )
 
@@ -1837,7 +1959,7 @@ def search_memory(
 
 
 @mcp.tool()
-def delete_memory(name: str) -> dict:
+async def delete_memory(name: str) -> dict:
     """Delete stored memories matching a pattern. Supports SQL LIKE patterns: use '%' for wildcard (e.g., 'temp_%' for all memories starting with 'temp_'), or provide an exact name. Returns count of deleted memories."""
     pattern = str(name).strip()
 
@@ -1846,7 +1968,7 @@ def delete_memory(name: str) -> dict:
 
     try:
         # Get all memory nodes matching pattern
-        all_memories = _kb_repository.list_memories()
+        all_memories = await _kb_repository.list_memories()
 
         import fnmatch
 
@@ -1873,7 +1995,7 @@ def delete_memory(name: str) -> dict:
         # Delete all matching
         deleted_count = 0
         for key in matching_keys:
-            if _kb_repository.delete_memory(key):
+            if await _kb_repository.delete_memory(key):
                 deleted_count += 1
 
         names_list = ", ".join(matching_keys[:10])
@@ -1895,7 +2017,7 @@ def delete_memory(name: str) -> dict:
 
 
 @mcp.tool()
-def clear_memories() -> dict:
+async def clear_memories() -> dict:
     """Delete ALL stored memories from the knowledge graph.
 
     WARNING: This permanently deletes ALL memory nodes. This operation cannot be undone.
@@ -1910,12 +2032,12 @@ def clear_memories() -> dict:
 
     try:
         # Get all memory keys
-        all_memories = _kb_repository.list_memories()
+        all_memories = await _kb_repository.list_memories()
         deleted_count = 0
 
         for memory in all_memories:
             key = memory.get("key")
-            if key and _kb_repository.delete_memory(key):
+            if key and await _kb_repository.delete_memory(key):
                 deleted_count += 1
 
         if deleted_count == 0:
@@ -1932,7 +2054,7 @@ def clear_memories() -> dict:
 
 # Tool Tracking Tools
 @mcp.tool()
-def get_tool_usage_history(
+async def get_tool_usage_history(
     session_id: str = None, tool_name: str = None, limit: int = 20, offset: int = 0
 ) -> dict:
     """Get history of tool calls made during sessions with their arguments, results, and success/failure status. Useful for understanding tool usage patterns."""
@@ -1941,7 +2063,7 @@ def get_tool_usage_history(
 
     try:
         # Get all ToolCall nodes
-        all_tool_calls = _kb_repository.get_nodes(node_type="ToolCall")
+        all_tool_calls = await _kb_repository.get_nodes(node_type="ToolCall")
         # Convert SQLAlchemy models to dictionaries
         all_tool_calls = [tc.to_dict() for tc in all_tool_calls]
 
@@ -1954,7 +2076,7 @@ def get_tool_usage_history(
             # Filter by session_id if specified
             if session_id:
                 # Find the session node connected to this tool call
-                edges = _kb_repository.get_edges(target_id=tc["id"])
+                edges = await _kb_repository.get_edges(target_id=tc["id"])
                 session_match = False
                 for edge in edges:
                     if (
@@ -2028,7 +2150,7 @@ def get_tool_usage_history(
 
 
 @mcp.tool()
-def get_failed_tool_calls(
+async def get_failed_tool_calls(
     session_id: str = None, limit: int = 20, offset: int = 0
 ) -> dict:
     """Get tool calls that resulted in errors. Useful for learning from failures and debugging issues."""
@@ -2037,7 +2159,7 @@ def get_failed_tool_calls(
 
     try:
         # Get all ToolCall nodes
-        all_tool_calls = _kb_repository.get_nodes(node_type="ToolCall")
+        all_tool_calls = await _kb_repository.get_nodes(node_type="ToolCall")
         # Convert SQLAlchemy models to dictionaries
         all_tool_calls = [tc.to_dict() for tc in all_tool_calls]
 
@@ -2052,7 +2174,7 @@ def get_failed_tool_calls(
 
             # Filter by session_id if specified
             if session_id:
-                edges = _kb_repository.get_edges(target_id=tc["id"])
+                edges = await _kb_repository.get_edges(target_id=tc["id"])
                 session_match = False
                 for edge in edges:
                     if (
@@ -2108,14 +2230,14 @@ def get_failed_tool_calls(
 
 
 @mcp.tool()
-def get_tool_usage_stats(session_id: str = None) -> dict:
+async def get_tool_usage_stats(session_id: str = None) -> dict:
     """Get statistics about tool usage including most used tools, success/failure rates, and recent patterns."""
     if not _kb_repository:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
         # Get all ToolCall nodes
-        all_tool_calls = _kb_repository.get_nodes(node_type="ToolCall")
+        all_tool_calls = await _kb_repository.get_nodes(node_type="ToolCall")
         # Convert SQLAlchemy models to dictionaries
         all_tool_calls = [tc.to_dict() for tc in all_tool_calls]
 
@@ -2123,7 +2245,7 @@ def get_tool_usage_stats(session_id: str = None) -> dict:
         filtered_calls = []
         for tc in all_tool_calls:
             if session_id:
-                edges = _kb_repository.get_edges(target_id=tc["id"])
+                edges = await _kb_repository.get_edges(target_id=tc["id"])
                 session_match = False
                 for edge in edges:
                     if (
@@ -2265,7 +2387,7 @@ async def list_tasks(limit: int = 50, offset: int = 0) -> dict:
         task_queue = TaskQueue(_kb_repository)
 
         # Get total count for pagination
-        total_count = task_queue.get_tasks_count()
+        total_count = await task_queue.get_tasks_count()
 
         # Get paginated results
         tasks = await task_queue.get_all_tasks(limit=limit, offset=offset)
@@ -2379,7 +2501,7 @@ async def get_task_stats() -> dict:
 
 
 @mcp.tool()
-def save_workflow(
+async def save_workflow(
     name: str, description: str, steps: List[dict], version: int = None
 ) -> dict:
     """Save or update a workflow definition as a versioned graph node.
@@ -2419,19 +2541,19 @@ def save_workflow(
                 ).to_dict()
 
         # Save workflow using repository
-        node = _kb_repository.save_workflow(
+        node = await _kb_repository.save_workflow(
             name=name, description=description, steps=steps, version=version
         )
 
         # Ensure concept:workflow exists
-        _kb_repository.add_node(
+        await _kb_repository.add_node(
             node_id="concept:workflow",
             node_type="Concept",
             label="Workflow",
             properties={"description": "Sequential tool execution patterns"},
         )
         # Link to self
-        _kb_repository.add_edge(
+        await _kb_repository.add_edge(
             source_id="concept:workflow",
             target_id="concept:self",
             edge_type="ASPECT_OF",
@@ -2453,7 +2575,7 @@ def save_workflow(
 
 
 @mcp.tool()
-def list_workflows(
+async def list_workflows(
     include_versions: bool = False, limit: int = 50, offset: int = 0
 ) -> dict:
     """List all available workflows.
@@ -2471,12 +2593,12 @@ def list_workflows(
 
     try:
         # Get total count for pagination
-        total_count = _kb_repository.get_workflows_count(
+        total_count = await _kb_repository.get_workflows_count(
             include_versions=include_versions
         )
 
         # Get paginated results
-        workflows = _kb_repository.list_workflows(
+        workflows = await _kb_repository.list_workflows(
             include_versions=include_versions, limit=limit, offset=offset
         )
 
@@ -2514,7 +2636,7 @@ def list_workflows(
 
 
 @mcp.tool()
-def get_workflow(workflow_name: str, version: int = None) -> dict:
+async def get_workflow(workflow_name: str, version: int = None) -> dict:
     """Get a workflow definition by name and optional version.
 
     Args:
@@ -2528,7 +2650,7 @@ def get_workflow(workflow_name: str, version: int = None) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        workflow = _kb_repository.get_workflow(workflow_name, version)
+        workflow = await _kb_repository.get_workflow(workflow_name, version)
 
         if not workflow:
             return MCPResponse.error(f"Workflow '{workflow_name}' not found").to_dict()
@@ -2557,7 +2679,7 @@ def get_workflow(workflow_name: str, version: int = None) -> dict:
 
 
 @mcp.tool()
-def delete_workflow(workflow_name: str, version: int = None) -> dict:
+async def delete_workflow(workflow_name: str, version: int = None) -> dict:
     """Delete a workflow and optionally specific versions.
 
     Args:
@@ -2571,7 +2693,7 @@ def delete_workflow(workflow_name: str, version: int = None) -> dict:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
-        deleted = _kb_repository.delete_workflow(workflow_name, version)
+        deleted = await _kb_repository.delete_workflow(workflow_name, version)
 
         if not deleted:
             return MCPResponse.error(f"Workflow '{workflow_name}' not found").to_dict()
@@ -2596,7 +2718,7 @@ def delete_workflow(workflow_name: str, version: int = None) -> dict:
 
 
 @mcp.tool()
-def create_thinking_pattern(
+async def create_thinking_pattern(
     name: str, description: str, steps: List[str], applicable_to: List[str]
 ) -> dict:
     """Store a reusable thinking pattern for problem-solving.
@@ -2624,12 +2746,12 @@ def create_thinking_pattern(
             return MCPResponse.error("applicable_to must be a list").to_dict()
 
         # Save pattern using repository
-        node = _kb_repository.save_thinking_pattern(
+        node = await _kb_repository.save_thinking_pattern(
             name=name, description=description, steps=steps, applicable_to=applicable_to
         )
 
         # Ensure concept:reasoning exists
-        _kb_repository.add_node(
+        await _kb_repository.add_node(
             node_id="concept:reasoning",
             node_type="Concept",
             label="Reasoning",
@@ -2638,7 +2760,7 @@ def create_thinking_pattern(
             },
         )
         # Link to self
-        _kb_repository.add_edge(
+        await _kb_repository.add_edge(
             source_id="concept:reasoning",
             target_id="concept:self",
             edge_type="ASPECT_OF",
@@ -2656,7 +2778,7 @@ def create_thinking_pattern(
 
 
 @mcp.tool()
-def apply_sequential_thinking(
+async def apply_sequential_thinking(
     problem: str, context: str = None, session_id: str = None
 ) -> dict:
     """Break down a problem using learned thinking patterns.
@@ -2678,7 +2800,7 @@ def apply_sequential_thinking(
     try:
         # Search for similar problems and patterns
         search_query = f"{problem} {context or ''}"
-        patterns = _kb_repository.get_thinking_patterns(search_query, limit=3)
+        patterns = await _kb_repository.get_thinking_patterns(search_query, limit=3)
 
         # Generate steps based on patterns
         if patterns:
@@ -2707,7 +2829,7 @@ def apply_sequential_thinking(
 
         # Create thinking session node if session_id provided
         if session_id:
-            _kb_repository.create_thinking_session(
+            await _kb_repository.create_thinking_session(
                 problem=problem,
                 session_id=session_id,
                 steps=steps,
@@ -2742,7 +2864,7 @@ def apply_sequential_thinking(
 
 
 @mcp.tool()
-def get_thinking_patterns(
+async def get_thinking_patterns(
     query: str, problem_type: str = None, limit: int = 5, offset: int = 0
 ) -> dict:
     """Retrieve thinking patterns similar to a query.
@@ -2764,13 +2886,13 @@ def get_thinking_patterns(
 
     try:
         # Get extra patterns for total count
-        all_patterns = _kb_repository.get_thinking_patterns(
+        all_patterns = await _kb_repository.get_thinking_patterns(
             query, problem_type, limit + offset + 20
         )
         total_count = len(all_patterns)
 
         # Get paginated patterns
-        patterns = _kb_repository.get_thinking_patterns(
+        patterns = await _kb_repository.get_thinking_patterns(
             query, problem_type, limit, offset
         )
 
@@ -2804,7 +2926,7 @@ def get_thinking_patterns(
 
 
 @mcp.tool()
-def save_problem_solution(
+async def save_problem_solution(
     problem: str,
     approach_steps: List[str],
     outcome: str,
@@ -2837,7 +2959,7 @@ def save_problem_solution(
             ).to_dict()
 
         # Save solution using repository
-        node = _kb_repository.save_problem_solution(
+        node = await _kb_repository.save_problem_solution(
             problem=problem,
             approach_steps=approach_steps,
             outcome=outcome,
@@ -2990,13 +3112,13 @@ def request_feature(prompt: str) -> str:
 
 
 @mcp.resource("knowledge://stats")
-def resource_graph_stats() -> str:
+async def resource_graph_stats() -> str:
     """Provides current knowledge graph statistics."""
     if not _kb_repository:
         return json.dumps({"error": "Database not initialized"})
 
     try:
-        stats = _kb_repository.get_graph_stats()
+        stats = await _kb_repository.get_graph_stats()
         return json.dumps(stats, indent=2)
     except Exception as e:
         logger.error("Error getting graph stats resource: %s", e)
@@ -3004,13 +3126,13 @@ def resource_graph_stats() -> str:
 
 
 @mcp.resource("knowledge://memories")
-def resource_all_memories() -> str:
+async def resource_all_memories() -> str:
     """Lists all stored memory keys with metadata."""
     if not _kb_repository:
         return json.dumps({"error": "Database not initialized"})
 
     try:
-        memories = _kb_repository.list_memories(limit=100)
+        memories = await _kb_repository.list_memories(limit=100)
         memory_list = [
             {
                 "key": m.get("key"),
@@ -3028,13 +3150,13 @@ def resource_all_memories() -> str:
 
 
 @mcp.resource("knowledge://memory/{memory_key}")
-def resource_memory_content(memory_key: str) -> str:
+async def resource_memory_content(memory_key: str) -> str:
     """Provides content of a specific memory by key."""
     if not _kb_repository:
         return json.dumps({"error": "Database not initialized"})
 
     try:
-        content = _kb_repository.get_memory(memory_key)
+        content = await _kb_repository.get_memory(memory_key)
         if content is None:
             return json.dumps({"error": f"Memory '{memory_key}' not found"})
         return json.dumps({"key": memory_key, "content": content}, indent=2)
@@ -3044,13 +3166,15 @@ def resource_memory_content(memory_key: str) -> str:
 
 
 @mcp.resource("knowledge://workflows")
-def resource_workflows() -> str:
+async def resource_workflows() -> str:
     """Lists all available workflows with metadata."""
     if not _kb_repository:
         return json.dumps({"error": "Database not initialized"})
 
     try:
-        workflows = _kb_repository.list_workflows(include_versions=False, limit=50)
+        workflows = await _kb_repository.list_workflows(
+            include_versions=False, limit=50
+        )
         workflow_list = [
             {
                 "name": w.properties.get("name"),
@@ -3069,13 +3193,13 @@ def resource_workflows() -> str:
 
 
 @mcp.resource("knowledge://workflow/{workflow_name}")
-def resource_workflow_definition(workflow_name: str) -> str:
+async def resource_workflow_definition(workflow_name: str) -> str:
     """Provides complete workflow definition by name."""
     if not _kb_repository:
         return json.dumps({"error": "Database not initialized"})
 
     try:
-        workflow = _kb_repository.get_workflow(workflow_name, version=None)
+        workflow = await _kb_repository.get_workflow(workflow_name, version=None)
         if not workflow:
             return json.dumps({"error": f"Workflow '{workflow_name}' not found"})
 
@@ -3093,13 +3217,13 @@ def resource_workflow_definition(workflow_name: str) -> str:
 
 
 @mcp.resource("knowledge://thinking-patterns")
-def resource_thinking_patterns() -> str:
+async def resource_thinking_patterns() -> str:
     """Lists available thinking patterns for problem-solving."""
     if not _kb_repository:
         return json.dumps({"error": "Database not initialized"})
 
     try:
-        patterns = _kb_repository.get_thinking_patterns(
+        patterns = await _kb_repository.get_thinking_patterns(
             query="problem solving reasoning", limit=20
         )
         pattern_list = []
@@ -3137,13 +3261,13 @@ def resource_thinking_patterns() -> str:
 
 
 @mcp.resource("knowledge://node/{node_id}/context")
-def resource_node_context(node_id: str) -> str:
+async def resource_node_context(node_id: str) -> str:
     """Provides a node and its immediate context (depth 1)."""
     if not _kb_repository:
         return json.dumps({"error": "Database not initialized"})
 
     try:
-        context = _kb_repository.get_graph_context(node_id, depth=1)
+        context = await _kb_repository.get_graph_context(node_id, depth=1)
         if not context:
             return json.dumps({"error": f"Node '{node_id}' not found"})
         return json.dumps(context, indent=2)
@@ -3153,14 +3277,14 @@ def resource_node_context(node_id: str) -> str:
 
 
 @mcp.resource("knowledge://tool-usage/recent")
-def resource_recent_tool_usage() -> str:
+async def resource_recent_tool_usage() -> str:
     """Provides statistics on recent tool usage and failures."""
     if not _kb_repository:
         return json.dumps({"error": "Database not initialized"})
 
     try:
         # Get recent tool calls
-        all_tool_calls = _kb_repository.get_nodes(node_type="ToolCall")
+        all_tool_calls = await _kb_repository.get_nodes(node_type="ToolCall")
         all_tool_calls = [tc.to_dict() for tc in all_tool_calls]
 
         # Sort by timestamp and get recent 20
@@ -3242,27 +3366,34 @@ def resource_plans() -> str:
 # ============================================================================
 
 
-def _cleanup_graph():
+async def _cleanup_graph():
     """Close database connection and clean up resources."""
     global _kb_repository  # pylint: disable=global-statement
     if _kb_repository:
         logger.debug("Closing database connection...")
-        _db_manager.close()
+        if _db_manager:
+            await _db_manager.close()
         _kb_repository = None
         logger.debug("Database connection closed")
 
 
 def main():
     """Run the FastMCP server."""
+    import asyncio
     import signal
 
-    _load_graph()
+    asyncio.run(_load_graph())
 
     # Register cleanup handlers
     def signal_handler(signum, _frame):
         """Handle shutdown signals."""
         logger.info("Received signal %s, cleaning up...", signum)
-        _cleanup_graph()
+        import asyncio
+
+        try:
+            asyncio.run(_cleanup_graph())
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
         # Re-raise to allow normal shutdown
         raise SystemExit(0)
 
@@ -3274,7 +3405,12 @@ def main():
         mcp.run()
     finally:
         # Ensure cleanup happens even if server crashes
-        _cleanup_graph()
+        import asyncio
+
+        try:
+            asyncio.run(_cleanup_graph())
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
 
 
 if __name__ == "__main__":

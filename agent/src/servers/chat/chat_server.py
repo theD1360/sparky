@@ -334,7 +334,7 @@ class ConnectionManager:
         else:
             try:
                 db_manager = get_database_manager(db_url=db_url)
-                db_manager.connect()
+                await db_manager.connect()
                 repository = KnowledgeRepository(db_manager)
 
                 # Use chat_id as the session identifier for Knowledge (each chat has its own memory context)
@@ -1159,7 +1159,7 @@ async def upload_file(chat_id: str, user_id: str, file: UploadFile = File(...)):
             )
 
         try:
-            knowledge.repository.add_node(
+            await knowledge.repository.add_node(
                 node_id=file_node_id,
                 node_type="File",
                 label=safe_original_name,
@@ -1169,14 +1169,14 @@ async def upload_file(chat_id: str, user_id: str, file: UploadFile = File(...)):
 
             # 5. Associate the file node with user and chat
             user_node_id = f"user:{user_id}"
-            knowledge.repository.add_edge(
+            await knowledge.repository.add_edge(
                 source_id=user_node_id, target_id=file_node_id, edge_type="UPLOADED"
             )
             chat_node_id = f"chat:{chat_id}"
-            knowledge.repository.add_edge(
+            await knowledge.repository.add_edge(
                 source_id=chat_node_id, target_id=file_node_id, edge_type="CONTAINS"
             )
-            knowledge.repository.add_edge(
+            await knowledge.repository.add_edge(
                 source_id=f"chat:{chat_id}",
                 target_id=file_node_id,
                 edge_type="HAS_FILE",
@@ -1190,7 +1190,7 @@ async def upload_file(chat_id: str, user_id: str, file: UploadFile = File(...)):
             if file_description:
                 # Update node with description
                 file_node_properties["ai_description"] = file_description
-                knowledge.repository.add_node(
+                await knowledge.repository.add_node(
                     node_id=file_node_id,
                     node_type="File",
                     label=safe_original_name,
@@ -1304,7 +1304,7 @@ async def websocket_endpoint(
         user_id = None
 
         if jwt_token:
-            authenticated_user = get_user_from_websocket_token(jwt_token)
+            authenticated_user = await get_user_from_websocket_token(jwt_token)
             if authenticated_user:
                 user_id = authenticated_user.id
                 logger.info(
@@ -1414,10 +1414,10 @@ async def websocket_endpoint(
 
                         db_manager = get_database_manager()
                         if not db_manager.engine:
-                            db_manager.connect()
+                            await db_manager.connect()
                         repository = KnowledgeRepository(db_manager)
 
-                        chat_node = repository.get_chat(current_chat_id)
+                        chat_node = await repository.get_chat(current_chat_id)
                         if chat_node:
                             # Check if chat has a name
                             current_name = (
@@ -1492,13 +1492,13 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
 
                                 db_manager = get_database_manager()
                                 if not db_manager.engine:
-                                    db_manager.connect()
+                                    await db_manager.connect()
                                 repository = KnowledgeRepository(db_manager)
 
                                 # Check if chat exists first
-                                chat_node = repository.get_chat(current_chat_id)
+                                chat_node = await repository.get_chat(current_chat_id)
                                 if chat_node:
-                                    repository.update_chat_name(
+                                    await repository.update_chat_name(
                                         current_chat_id, auto_name
                                     )
                                     logger.info(

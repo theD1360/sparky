@@ -69,12 +69,12 @@ async def get_user_chats(
         # Get database manager and connect
         db_manager = get_database_manager()
         if not db_manager.engine:
-            db_manager.connect()
+            await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
 
         # Use the repository method to get user chats
-        chats = repository.get_user_chats(
+        chats = await repository.get_user_chats(
             user_id=user_id,
             limit=limit,
             offset=offset,
@@ -83,7 +83,7 @@ async def get_user_chats(
 
         if not chats and offset == 0:
             # Check if user exists
-            user_node = repository.get_node(f"user:{user_id}")
+            user_node = await repository.get_node(f"user:{user_id}")
             if not user_node:
                 raise HTTPException(
                     status_code=404, detail=f"User '{user_id}' not found"
@@ -142,12 +142,12 @@ async def update_chat_name(
         # Get database manager and connect
         db_manager = get_database_manager()
         if not db_manager.engine:
-            db_manager.connect()
+            await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
 
         # Update chat name
-        updated_chat = repository.update_chat_name(chat_id, request.chat_name)
+        updated_chat = await repository.update_chat_name(chat_id, request.chat_name)
 
         if not updated_chat:
             raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
@@ -195,12 +195,12 @@ async def delete_chat(
         # Get database manager and connect
         db_manager = get_database_manager()
         if not db_manager.engine:
-            db_manager.connect()
+            await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
 
         # Delete chat
-        result = repository.delete_chat(chat_id)
+        result = await repository.delete_chat(chat_id)
 
         if not result:
             raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
@@ -242,12 +242,12 @@ async def archive_chat(
         # Get database manager and connect
         db_manager = get_database_manager()
         if not db_manager.engine:
-            db_manager.connect()
+            await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
 
         # Archive chat
-        archived_chat = repository.archive_chat(chat_id)
+        archived_chat = await repository.archive_chat(chat_id)
 
         if not archived_chat:
             raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
@@ -297,12 +297,12 @@ async def unarchive_chat(
         # Get database manager and connect
         db_manager = get_database_manager()
         if not db_manager.engine:
-            db_manager.connect()
+            await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
 
         # Unarchive chat
-        unarchived_chat = repository.unarchive_chat(chat_id)
+        unarchived_chat = await repository.unarchive_chat(chat_id)
 
         if not unarchived_chat:
             raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")

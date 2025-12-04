@@ -23,7 +23,9 @@ class UserService:
     Integrates with the new user management system for authentication.
     """
 
-    def __init__(self, repository: KnowledgeRepository, db_session: Optional[Session] = None):
+    def __init__(
+        self, repository: KnowledgeRepository, db_session: Optional[Session] = None
+    ):
         """Initialize the user service.
 
         Args:
@@ -33,9 +35,7 @@ class UserService:
         self.repository = repository
         self.db_session = db_session
 
-    def create_user(
-        self, user_id: str, **properties: Any
-    ) -> Optional[str]:
+    async def create_user(self, user_id: str, **properties: Any) -> Optional[str]:
         """Create a new user node in the knowledge graph.
 
         Args:
@@ -49,7 +49,7 @@ class UserService:
 
         try:
             # Check if user already exists
-            existing_user = self.repository.get_node(user_node_id)
+            existing_user = await self.repository.get_node(user_node_id)
             if existing_user:
                 logger.info(f"User {user_node_id} already exists, skipping creation")
                 return user_node_id
@@ -60,6 +60,7 @@ class UserService:
             if self.db_session:
                 try:
                     from services.user_management_service import UserManagementService
+
                     user_service = UserManagementService(self.db_session)
                     db_user = user_service.get_user_by_id(user_id)
                     if db_user:
@@ -77,7 +78,7 @@ class UserService:
             user_properties.update(properties)
 
             # Create user node
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id=user_node_id,
                 node_type="User",
                 label=f"User {username}",
@@ -92,7 +93,7 @@ class UserService:
             logger.error(f"Failed to create user {user_id}: {e}", exc_info=True)
             return None
 
-    def get_user(self, user_id: str) -> Optional[Node]:
+    async def get_user(self, user_id: str) -> Optional[Node]:
         """Retrieve a user node from the knowledge graph.
 
         Args:
@@ -104,7 +105,7 @@ class UserService:
         user_node_id = f"user:{user_id}"
 
         try:
-            user_node = self.repository.get_node(user_node_id)
+            user_node = await self.repository.get_node(user_node_id)
             if user_node:
                 logger.debug(f"Retrieved user: {user_node_id}")
             else:
@@ -115,9 +116,7 @@ class UserService:
             logger.error(f"Failed to retrieve user {user_id}: {e}", exc_info=True)
             return None
 
-    def update_user(
-        self, user_id: str, **properties: Any
-    ) -> bool:
+    async def update_user(self, user_id: str, **properties: Any) -> bool:
         """Update a user node's properties.
 
         Args:
@@ -131,7 +130,7 @@ class UserService:
 
         try:
             # Get existing user
-            user_node = self.repository.get_node(user_node_id)
+            user_node = await self.repository.get_node(user_node_id)
             if not user_node:
                 logger.warning(f"User {user_node_id} not found, cannot update")
                 return False
@@ -141,7 +140,7 @@ class UserService:
             existing_properties.update(properties)
 
             # Update node
-            self.repository.update_node(
+            await self.repository.update_node(
                 node_id=user_node_id,
                 properties=existing_properties,
             )
@@ -153,7 +152,7 @@ class UserService:
             logger.error(f"Failed to update user {user_id}: {e}", exc_info=True)
             return False
 
-    def get_user_preferences(self, user_id: str) -> Dict[str, Any]:
+    async def get_user_preferences(self, user_id: str) -> Dict[str, Any]:
         """Get all preferences for a user.
 
         Args:
@@ -162,7 +161,7 @@ class UserService:
         Returns:
             Dictionary of user preferences (empty dict if user not found or no preferences)
         """
-        user_node = self.get_user(user_id)
+        user_node = await self.get_user(user_id)
         if not user_node:
             return {}
 
@@ -172,9 +171,7 @@ class UserService:
         logger.debug(f"Retrieved preferences for user {user_id}: {preferences}")
         return preferences
 
-    def set_user_preference(
-        self, user_id: str, key: str, value: Any
-    ) -> bool:
+    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
         """Set a single preference for a user.
 
         Args:
@@ -187,13 +184,13 @@ class UserService:
         """
         try:
             # Get existing preferences
-            preferences = self.get_user_preferences(user_id)
+            preferences = await self.get_user_preferences(user_id)
 
             # Update preference
             preferences[key] = value
 
             # Save back to user node
-            success = self.update_user(user_id, preferences=preferences)
+            success = await self.update_user(user_id, preferences=preferences)
 
             if success:
                 logger.info(f"Set preference for user {user_id}: {key}={value}")
@@ -208,9 +205,7 @@ class UserService:
             )
             return False
 
-    def get_user_preference(
-        self, user_id: str, key: str, default: Any = None
-    ) -> Any:
+    async def get_user_preference(self, user_id: str, key: str, default: Any = None) -> Any:
         """Get a single preference for a user.
 
         Args:
@@ -221,11 +216,10 @@ class UserService:
         Returns:
             Preference value, or default if not found
         """
-        preferences = self.get_user_preferences(user_id)
+        preferences = await self.get_user_preferences(user_id)
         return preferences.get(key, default)
 
-
-    def delete_user(self, user_id: str) -> bool:
+    async def delete_user(self, user_id: str) -> bool:
         """Delete a user node from the knowledge graph.
 
         Warning: This will also delete all relationships involving this user.
@@ -240,7 +234,7 @@ class UserService:
 
         try:
             # Delete the node (cascade will delete edges)
-            self.repository.delete_node(user_node_id)
+            await self.repository.delete_node(user_node_id)
 
             logger.info(f"Deleted user: {user_node_id}")
             return True
@@ -248,4 +242,3 @@ class UserService:
         except Exception as e:
             logger.error(f"Failed to delete user {user_id}: {e}", exc_info=True)
             return False
-

@@ -40,13 +40,13 @@ class TaskQueue:
         self.events = Events()
         logger.debug("TaskQueue initialized with event system")
 
-    def _ensure_task_concept(self) -> None:
+    async def _ensure_task_concept(self) -> None:
         """Ensure the concept:tasks node exists in the graph.
 
         This is called automatically by add_task to set up the ontology.
         """
         try:
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id="concept:tasks",
                 node_type="Concept",
                 label="Tasks",
@@ -66,7 +66,7 @@ class TaskQueue:
         """
         try:
             node_id = f"task:{task_id}"
-            node = self.repository.get_node(node_id)
+            node = await self.repository.get_node(node_id)
 
             if not node:
                 logger.debug(f"Task {task_id} not found")
@@ -108,7 +108,7 @@ class TaskQueue:
         }
 
         try:
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id=node_id,
                 node_type="Task",
                 label=(
@@ -143,7 +143,7 @@ class TaskQueue:
         """
         try:
             # Get all Task nodes
-            task_nodes = self.repository.get_nodes(node_type="Task")
+            task_nodes = await self.repository.get_nodes(node_type="Task")
 
             # Filter and score tasks
             results = []
@@ -255,15 +255,10 @@ class TaskQueue:
         task_id = str(uuid.uuid4())
 
         try:
-            # Use get_current_datetime tool
-            datetime_result = await self.repository.get_current_datetime()
-            if "result" in datetime_result:
-                now = datetime_result["result"]
-            else:
-                logger.error(f"get_current_datetime tool failed: {datetime_result.get('message')}. Using fallback datetime.")
-                now = datetime.now(timezone.utc).isoformat()  # Fallback
+            # Use current datetime
+            now = datetime.now(timezone.utc).isoformat()
         except Exception as e:
-            logger.error(f"Error calling get_current_datetime: {e}. Using fallback datetime.")
+            logger.error(f"Error getting datetime: {e}. Using fallback datetime.")
             now = datetime.now(timezone.utc).isoformat()  # Fallback
 
         task = {
@@ -279,7 +274,7 @@ class TaskQueue:
 
         try:
             # Ensure concept:tasks exists
-            self._ensure_task_concept()
+            await self._ensure_task_concept()
 
             # Save the task as a graph node
             await self._save_task(task)
@@ -299,7 +294,7 @@ class TaskQueue:
 
             # Link task to concept:tasks
             try:
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=f"task:{task_id}",
                     target_id="concept:tasks",
                     edge_type="INSTANCE_OF",
@@ -343,7 +338,7 @@ class TaskQueue:
         """
         try:
             # Get all Task nodes (we need to sort in Python, so get all first)
-            task_nodes = self.repository.get_nodes(node_type="Task")
+            task_nodes = await self.repository.get_nodes(node_type="Task")
 
             # Convert to task dictionaries and sort by created_at
             tasks = []
@@ -387,14 +382,14 @@ class TaskQueue:
             logger.error(f"Error retrieving all tasks: {e}")
             return []
 
-    def get_tasks_count(self) -> int:
+    async def get_tasks_count(self) -> int:
         """Get count of all tasks in the queue.
 
         Returns:
             Count of tasks
         """
         try:
-            return self.repository.get_nodes_count(node_type="Task")
+            return await self.repository.get_nodes_count(node_type="Task")
         except Exception as e:
             logger.error(f"Error getting tasks count: {e}")
             return 0
@@ -407,7 +402,7 @@ class TaskQueue:
         """
         try:
             # Get all Task nodes
-            task_nodes = self.repository.get_nodes(node_type="Task")
+            task_nodes = await self.repository.get_nodes(node_type="Task")
 
             # Find oldest pending task
             pending_tasks = [
@@ -595,7 +590,7 @@ class TaskQueue:
         node_id = f"task:{task_id}"
 
         try:
-            success = self.repository.delete_node(node_id)
+            success = await self.repository.delete_node(node_id)
             if success:
                 logger.info(f"Deleted task {task_id}")
             else:
@@ -616,7 +611,7 @@ class TaskQueue:
         """
         try:
             # Get all Task nodes
-            task_nodes = self.repository.get_nodes(node_type="Task")
+            task_nodes = await self.repository.get_nodes(node_type="Task")
 
             cleared = 0
             for node in task_nodes:
@@ -654,7 +649,7 @@ class TaskQueue:
         """
         try:
             # Get all Task nodes
-            task_nodes = self.repository.get_nodes(node_type="Task")
+            task_nodes = await self.repository.get_nodes(node_type="Task")
 
             stats = {
                 "pending": 0,
@@ -712,7 +707,7 @@ class TaskQueue:
                 return False
 
             # Create the edge
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id=f"task:{task_id}",
                 target_id=f"task:{depends_on_id}",
                 edge_type="DEPENDS_ON",
@@ -736,7 +731,7 @@ class TaskQueue:
         try:
             node_id = f"task:{task_id}"
             # Get outgoing DEPENDS_ON edges
-            edges = self.repository.get_edges(source_id=node_id, edge_type="DEPENDS_ON")
+            edges = await self.repository.get_edges(source_id=node_id, edge_type="DEPENDS_ON")
 
             tasks = []
             for edge in edges:
@@ -767,7 +762,7 @@ class TaskQueue:
         try:
             node_id = f"task:{task_id}"
             # Get incoming DEPENDS_ON edges
-            edges = self.repository.get_edges(target_id=node_id, edge_type="DEPENDS_ON")
+            edges = await self.repository.get_edges(target_id=node_id, edge_type="DEPENDS_ON")
 
             tasks = []
             for edge in edges:
@@ -822,7 +817,7 @@ class TaskQueue:
                 return False
 
             # Create the edge
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id=f"task:{task_id}",
                 target_id=f"task:{related_task_id}",
                 edge_type=relationship_type,
@@ -853,11 +848,11 @@ class TaskQueue:
 
             # Get outgoing edges (excluding INSTANCE_OF)
             if relationship_type:
-                edges = self.repository.get_edges(
+                edges = await self.repository.get_edges(
                     source_id=node_id, edge_type=relationship_type
                 )
             else:
-                all_edges = self.repository.get_edges(source_id=node_id)
+                all_edges = await self.repository.get_edges(source_id=node_id)
                 edges = [e for e in all_edges if e.edge_type != "INSTANCE_OF"]
 
             tasks = []
@@ -890,7 +885,7 @@ class TaskQueue:
         """
         try:
             # Get all Task nodes
-            task_nodes = self.repository.get_nodes(node_type="Task")
+            task_nodes = await self.repository.get_nodes(node_type="Task")
 
             # Filter by scheduled_task_name in metadata and sort by created_at
             matching_tasks = []
@@ -917,7 +912,7 @@ class TaskQueue:
             return None
 
 
-def create_task_queue() -> TaskQueue:
+async def create_task_queue() -> TaskQueue:
     """Create a TaskQueue instance using repository from environment variables.
 
     This is a convenience function for creating a TaskQueue when you don't
@@ -942,7 +937,7 @@ def create_task_queue() -> TaskQueue:
     logger.info(f"Task queue: Connecting to database: ...@{safe_db_url}")
 
     db_manager = get_database_manager(db_url=db_url)
-    db_manager.connect()
+    await db_manager.connect()
     repository = KnowledgeRepository(db_manager)
     logger.debug("Task queue: Repository initialized")
 

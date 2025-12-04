@@ -14,7 +14,7 @@ from services.auth_service import (
     revoke_token,
 )
 from services.user_management_service import UserManagementService
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -79,9 +79,9 @@ class UserResponse(BaseModel):
     roles: list[str]
 
     @classmethod
-    def from_user(cls, user: User, user_service: UserManagementService) -> "UserResponse":
+    async def from_user(cls, user: User, user_service: UserManagementService) -> "UserResponse":
         """Create UserResponse from User model."""
-        roles = user_service.get_user_roles(user.id)
+        roles = await user_service.get_user_roles(user.id)
         return cls(
             id=user.id,
             username=user.username,
@@ -95,7 +95,7 @@ class UserResponse(BaseModel):
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     request: RegisterRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Register a new user.
 
@@ -112,10 +112,11 @@ async def register(
     user_service = UserManagementService(db)
     
     # Check if this is the first user - make them admin
-    user_count = len(user_service.list_users(limit=1))
+    users = await user_service.list_users(limit=1)
+    user_count = len(users)
     is_first_user = user_count == 0
     
-    user = user_service.create_user(
+    user = await user_service.create_user(
         username=request.username,
         email=request.email,
         password=request.password,
@@ -129,13 +130,13 @@ async def register(
             detail="Username or email already exists",
         )
 
-    return UserResponse.from_user(user, user_service)
+    return await UserResponse.from_user(user, user_service)
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
     request: LoginRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Login and get JWT tokens.
 
@@ -156,7 +157,7 @@ async def login(
     
     # Authenticate user (optimized single query)
     auth_start = time.time()
-    user = user_service.authenticate_user(request.username, request.password)
+    user = await user_service.authenticate_user(request.username, request.password)
     auth_time = time.time() - auth_start
     
     if not user:
@@ -168,7 +169,7 @@ async def login(
 
     # Get user roles (optimized query)
     roles_start = time.time()
-    roles = user_service.get_user_roles(user.id)
+    roles = await user_service.get_user_roles(user.id)
     roles_time = time.time() - roles_start
 
     # Create tokens (should be instant)
@@ -203,7 +204,7 @@ async def login(
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
     request: RefreshTokenRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Refresh access token using refresh token.
 
@@ -234,7 +235,7 @@ async def refresh_token(
         )
 
     user_service = UserManagementService(db)
-    user = user_service.get_user_by_id(user_id)
+    user = await user_service.get_user_by_id(user_id)
 
     if not user or not user.is_active:
         raise HTTPException(
@@ -244,7 +245,7 @@ async def refresh_token(
         )
 
     # Get user roles
-    roles = user_service.get_user_roles(user.id)
+    roles = await user_service.get_user_roles(user.id)
 
     # Create new tokens
     token_data = {
@@ -265,7 +266,7 @@ async def refresh_token(
 @router.post("/logout")
 async def logout(
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Logout and revoke token.
 
@@ -290,7 +291,7 @@ async def logout(
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get current user information.
 
@@ -302,14 +303,14 @@ async def get_current_user_info(
         Current user information
     """
     user_service = UserManagementService(db)
-    return UserResponse.from_user(current_user, user_service)
+    return await UserResponse.from_user(current_user, user_service)
 
 
 @router.post("/change-password")
 async def change_password(
     request: ChangePasswordRequest,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Change user password.
 
@@ -327,7 +328,7 @@ async def change_password(
     user_service = UserManagementService(db)
 
     # Verify current password
-    user = user_service.authenticate_user(current_user.username, request.current_password)
+    user = await user_service.authenticate_user(current_user.username, request.current_password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -335,7 +336,7 @@ async def change_password(
         )
 
     # Update password
-    updated_user = user_service.update_user(current_user.id, password=request.new_password)
+    updated_user = await user_service.update_user(current_user.id, password=request.new_password)
     if not updated_user:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -348,7 +349,7 @@ async def change_password(
 @router.post("/forgot-password")
 async def forgot_password(
     request: ForgotPasswordRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Request password reset.
 
@@ -363,7 +364,7 @@ async def forgot_password(
         In production, this should send an email with reset link
     """
     user_service = UserManagementService(db)
-    user = user_service.get_user_by_email(request.email)
+    user = await user_service.get_user_by_email(request.email)
 
     # Always return success to prevent email enumeration
     # In production, send reset email if user exists
@@ -373,7 +374,7 @@ async def forgot_password(
 @router.post("/reset-password")
 async def reset_password(
     request: ResetPasswordRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Reset password using reset token.
 
@@ -406,7 +407,7 @@ async def reset_password(
         )
 
     user_service = UserManagementService(db)
-    updated_user = user_service.update_user(user_id, password=request.new_password)
+    updated_user = await user_service.update_user(user_id, password=request.new_password)
 
     if not updated_user:
         raise HTTPException(

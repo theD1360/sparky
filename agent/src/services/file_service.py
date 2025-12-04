@@ -4,9 +4,9 @@ Handles file storage, metadata management, and linking files to users,
 sessions, and messages in the knowledge graph.
 """
 
+import datetime
 import logging
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -73,7 +73,9 @@ class FileService:
         """
         try:
             # Generate unique filename to prevent collisions
-            timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+                "%Y%m%d_%H%M%S"
+            )
             safe_filename = Path(filename).name  # Remove any path components
             unique_filename = f"{timestamp}_{safe_filename}"
             file_path = os.path.join(self.upload_directory, unique_filename)
@@ -91,7 +93,9 @@ class FileService:
                 "unique_filename": unique_filename,
                 "mime_type": mime_type,
                 "file_size": file_size,
-                "upload_timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "upload_timestamp": datetime.datetime.now(
+                    datetime.timezone.utc
+                ).isoformat(),
                 "file_path": file_path,
             }
 
@@ -116,7 +120,7 @@ class FileService:
                 content += f". AI Analysis: {ai_description}"
 
             # Create file node in knowledge graph
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id=file_node_id,
                 node_type="File",
                 label=safe_filename,
@@ -128,11 +132,11 @@ class FileService:
 
             # Link to user if provided
             if user_id:
-                self.link_file_to_user(file_node_id, user_id)
+                await self.link_file_to_user(file_node_id, user_id)
 
             # Link to session if provided
             if session_id:
-                self.link_file_to_session(file_node_id, session_id)
+                await self.link_file_to_session(file_node_id, session_id)
 
             return file_node_id
 
@@ -140,7 +144,7 @@ class FileService:
             logger.error(f"Failed to upload file {filename}: {e}", exc_info=True)
             return None
 
-    def get_file(self, file_id: str) -> Optional[Node]:
+    async def get_file(self, file_id: str) -> Optional[Node]:
         """Retrieve a file node from the knowledge graph.
 
         Args:
@@ -150,7 +154,7 @@ class FileService:
             File Node object, or None if not found
         """
         try:
-            file_node = self.repository.get_node(file_id)
+            file_node = await self.repository.get_node(file_id)
             if file_node:
                 logger.debug(f"Retrieved file: {file_id}")
             else:
@@ -161,7 +165,7 @@ class FileService:
             logger.error(f"Failed to retrieve file {file_id}: {e}", exc_info=True)
             return None
 
-    def get_file_path(self, file_id: str) -> Optional[str]:
+    async def get_file_path(self, file_id: str) -> Optional[str]:
         """Get the filesystem path for a file.
 
         Args:
@@ -170,14 +174,14 @@ class FileService:
         Returns:
             Filesystem path to the file, or None if not found
         """
-        file_node = self.get_file(file_id)
+        file_node = await self.get_file(file_id)
         if not file_node:
             return None
 
         properties = file_node.properties or {}
         return properties.get("file_path")
 
-    def link_file_to_user(self, file_id: str, user_id: str) -> bool:
+    async def link_file_to_user(self, file_id: str, user_id: str) -> bool:
         """Link a file to a user with an UPLOADED edge.
 
         Args:
@@ -190,7 +194,7 @@ class FileService:
         user_node_id = f"user:{user_id}" if not user_id.startswith("user:") else user_id
 
         try:
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id=user_node_id, target_id=file_id, edge_type="UPLOADED"
             )
             logger.info(f"Linked file {file_id} to user {user_node_id}")
@@ -202,7 +206,7 @@ class FileService:
             )
             return False
 
-    def link_file_to_session(self, file_id: str, session_id: str) -> bool:
+    async def link_file_to_session(self, file_id: str, session_id: str) -> bool:
         """Link a file to a session with a CONTAINS edge.
 
         Args:
@@ -213,7 +217,7 @@ class FileService:
             True if successful, False otherwise
         """
         try:
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id=session_id, target_id=file_id, edge_type="CONTAINS"
             )
             logger.info(f"Linked file {file_id} to session {session_id}")
@@ -226,7 +230,7 @@ class FileService:
             )
             return False
 
-    def link_file_to_message(self, file_id: str, message_node_id: str) -> bool:
+    async def link_file_to_message(self, file_id: str, message_node_id: str) -> bool:
         """Link a file to a message with a HAS_ATTACHMENT edge.
 
         Args:
@@ -237,7 +241,7 @@ class FileService:
             True if successful, False otherwise
         """
         try:
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id=message_node_id, target_id=file_id, edge_type="HAS_ATTACHMENT"
             )
             logger.info(f"Linked file {file_id} to message {message_node_id}")
@@ -250,7 +254,9 @@ class FileService:
             )
             return False
 
-    def get_message_attachments(self, message_node_id: str) -> List[Dict[str, Any]]:
+    async def get_message_attachments(
+        self, message_node_id: str
+    ) -> List[Dict[str, Any]]:
         """Get all file attachments for a message.
 
         Args:
@@ -261,13 +267,13 @@ class FileService:
         """
         try:
             # Get edges from message to files
-            attachment_edges = self.repository.get_edges(
+            attachment_edges = await self.repository.get_edges(
                 source_id=message_node_id, edge_type="HAS_ATTACHMENT"
             )
 
             attachments = []
             for edge in attachment_edges:
-                file_node = self.repository.get_node(edge.target_id)
+                file_node = await self.repository.get_node(edge.target_id)
                 if file_node:
                     file_props = file_node.properties or {}
                     attachments.append(
@@ -291,7 +297,9 @@ class FileService:
             )
             return []
 
-    def get_user_files(self, user_id: str, limit: Optional[int] = None) -> List[Node]:
+    async def get_user_files(
+        self, user_id: str, limit: Optional[int] = None
+    ) -> List[Node]:
         """Get all files uploaded by a user.
 
         Args:
@@ -305,13 +313,13 @@ class FileService:
 
         try:
             # Get outgoing UPLOADED edges from user
-            edges = self.repository.get_edges(
+            edges = await self.repository.get_edges(
                 source_id=user_node_id, edge_type="UPLOADED"
             )
 
             files = []
             for edge in edges:
-                file_node = self.repository.get_node(edge.target_id)
+                file_node = await self.repository.get_node(edge.target_id)
                 if file_node:
                     files.append(file_node)
 
@@ -322,12 +330,10 @@ class FileService:
             return files
 
         except Exception as e:
-            logger.error(
-                f"Failed to get files for user {user_id}: {e}", exc_info=True
-            )
+            logger.error(f"Failed to get files for user {user_id}: {e}", exc_info=True)
             return []
 
-    def get_session_files(
+    async def get_session_files(
         self, session_id: str, limit: Optional[int] = None
     ) -> List[Node]:
         """Get all files in a session.
@@ -341,12 +347,14 @@ class FileService:
         """
         try:
             # Get outgoing CONTAINS edges from session to files
-            edges = self.repository.get_edges(source_id=session_id, edge_type="CONTAINS")
+            edges = await self.repository.get_edges(
+                source_id=session_id, edge_type="CONTAINS"
+            )
 
             files = []
             for edge in edges:
                 # Only get File type nodes
-                node = self.repository.get_node(edge.target_id)
+                node = await self.repository.get_node(edge.target_id)
                 if node and node.node_type == "File":
                     files.append(node)
 
@@ -362,7 +370,7 @@ class FileService:
             )
             return []
 
-    def delete_file(self, file_id: str, delete_from_disk: bool = True) -> bool:
+    async def delete_file(self, file_id: str, delete_from_disk: bool = True) -> bool:
         """Delete a file from the knowledge graph and optionally from disk.
 
         Args:
@@ -376,10 +384,10 @@ class FileService:
             # Get file path before deleting node
             file_path = None
             if delete_from_disk:
-                file_path = self.get_file_path(file_id)
+                file_path = await self.get_file_path(file_id)
 
             # Delete node from knowledge graph (cascade will delete edges)
-            self.repository.delete_node(file_id)
+            await self.repository.delete_node(file_id)
             logger.info(f"Deleted file node: {file_id}")
 
             # Delete physical file if requested and path exists
@@ -399,7 +407,7 @@ class FileService:
             logger.error(f"Failed to delete file {file_id}: {e}", exc_info=True)
             return False
 
-    def update_file_metadata(self, file_id: str, **properties: Any) -> bool:
+    async def update_file_metadata(self, file_id: str, **properties: Any) -> bool:
         """Update file metadata properties.
 
         Args:
@@ -411,7 +419,7 @@ class FileService:
         """
         try:
             # Get existing file
-            file_node = self.repository.get_node(file_id)
+            file_node = await self.repository.get_node(file_id)
             if not file_node:
                 logger.warning(f"File {file_id} not found, cannot update")
                 return False
@@ -421,7 +429,9 @@ class FileService:
             existing_properties.update(properties)
 
             # Update node
-            self.repository.update_node(node_id=file_id, properties=existing_properties)
+            await self.repository.update_node(
+                node_id=file_id, properties=existing_properties
+            )
 
             logger.info(f"Updated file {file_id} metadata: {properties}")
             return True
@@ -431,4 +441,3 @@ class FileService:
                 f"Failed to update file {file_id} metadata: {e}", exc_info=True
             )
             return False
-

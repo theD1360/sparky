@@ -385,7 +385,7 @@ class FileAttachmentMiddleware(BaseMiddleware):
 
             try:
                 # Look up file node in knowledge graph
-                file_node = repository.get_node(file_id)
+                file_node = await repository.get_node(file_id)
                 if not file_node:
                     logger.warning(f"File node not found: {file_id}")
                     return await next_call(context)

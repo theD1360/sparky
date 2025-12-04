@@ -3,7 +3,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.auth_models import User, UserRole
 from database.database import get_database_manager
@@ -15,15 +16,15 @@ logger = logging.getLogger(__name__)
 class UserManagementService:
     """Service for managing users, roles, and authentication."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         """Initialize the user management service.
 
         Args:
-            db: Database session
+            db: Database async session
         """
         self.db = db
 
-    def create_user(
+    async def create_user(
         self,
         username: str,
         email: str,
@@ -49,13 +50,11 @@ class UserManagementService:
         """
         try:
             # Check if username or email already exists
-            existing_user = (
-                self.db.query(User)
-                .filter(
-                    (User.username == username) | (User.email == email)
-                )
-                .first()
+            stmt = select(User).filter(
+                (User.username == username) | (User.email == email)
             )
+            result = await self.db.execute(stmt)
+            existing_user = result.scalar_one_or_none()
             if existing_user:
                 logger.warning(
                     f"User with username '{username}' or email '{email}' already exists"
@@ -75,7 +74,7 @@ class UserManagementService:
                 extradata=metadata if metadata else None,
             )
             self.db.add(user)
-            self.db.flush()  # Flush to get user.id
+            await self.db.flush()  # Flush to get user.id
 
             # Assign default role if none provided
             if roles is None:
@@ -86,18 +85,18 @@ class UserManagementService:
                 user_role = UserRole(user_id=user.id, role=role)
                 self.db.add(user_role)
 
-            self.db.commit()
-            self.db.refresh(user)
+            await self.db.commit()
+            await self.db.refresh(user)
 
             logger.info(f"Created user: {username} (id: {user.id})")
             return user
 
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
             logger.error(f"Failed to create user {username}: {e}", exc_info=True)
             return None
 
-    def get_user_by_id(self, user_id: str) -> Optional[User]:
+    async def get_user_by_id(self, user_id: str) -> Optional[User]:
         """Get user by ID.
 
         Args:
@@ -106,9 +105,11 @@ class UserManagementService:
         Returns:
             User object, or None if not found
         """
-        return self.db.query(User).filter(User.id == user_id).first()
+        stmt = select(User).filter(User.id == user_id)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
-    def get_user_by_username(self, username: str) -> Optional[User]:
+    async def get_user_by_username(self, username: str) -> Optional[User]:
         """Get user by username.
 
         Args:
@@ -117,9 +118,11 @@ class UserManagementService:
         Returns:
             User object, or None if not found
         """
-        return self.db.query(User).filter(User.username == username).first()
+        stmt = select(User).filter(User.username == username)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
-    def get_user_by_email(self, email: str) -> Optional[User]:
+    async def get_user_by_email(self, email: str) -> Optional[User]:
         """Get user by email.
 
         Args:
@@ -128,9 +131,11 @@ class UserManagementService:
         Returns:
             User object, or None if not found
         """
-        return self.db.query(User).filter(User.email == email).first()
+        stmt = select(User).filter(User.email == email)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
-    def authenticate_user(self, username: str, password: str) -> Optional[User]:
+    async def authenticate_user(self, username: str, password: str) -> Optional[User]:
         """Authenticate a user by username and password.
 
         Args:
@@ -144,11 +149,9 @@ class UserManagementService:
         from sqlalchemy import or_
         from database.auth_models import User
         
-        user = (
-            self.db.query(User)
-            .filter(or_(User.username == username, User.email == username))
-            .first()
-        )
+        stmt = select(User).filter(or_(User.username == username, User.email == username))
+        result = await self.db.execute(stmt)
+        user = result.scalar_one_or_none()
 
         if not user:
             logger.debug(f"User not found: {username}")
@@ -166,11 +169,11 @@ class UserManagementService:
         from datetime import datetime
 
         user.last_login = datetime.utcnow()
-        self.db.commit()
+        await self.db.commit()
 
         return user
 
-    def update_user(
+    async def update_user(
         self,
         user_id: str,
         username: Optional[str] = None,
@@ -195,21 +198,21 @@ class UserManagementService:
             Updated User object, or None if not found
         """
         try:
-            user = self.get_user_by_id(user_id)
+            user = await self.get_user_by_id(user_id)
             if not user:
                 logger.warning(f"User not found: {user_id}")
                 return None
 
             # Check for username/email conflicts if changing
             if username and username != user.username:
-                existing = self.get_user_by_username(username)
+                existing = await self.get_user_by_username(username)
                 if existing:
                     logger.warning(f"Username already exists: {username}")
                     return None
                 user.username = username
 
             if email and email != user.email:
-                existing = self.get_user_by_email(email)
+                existing = await self.get_user_by_email(email)
                 if existing:
                     logger.warning(f"Email already exists: {email}")
                     return None
@@ -230,18 +233,18 @@ class UserManagementService:
                 current_metadata.update(metadata)
                 user.extradata = current_metadata
 
-            self.db.commit()
-            self.db.refresh(user)
+            await self.db.commit()
+            await self.db.refresh(user)
 
             logger.info(f"Updated user: {user_id}")
             return user
 
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
             logger.error(f"Failed to update user {user_id}: {e}", exc_info=True)
             return None
 
-    def delete_user(self, user_id: str) -> bool:
+    async def delete_user(self, user_id: str) -> bool:
         """Delete a user.
 
         Args:
@@ -251,23 +254,23 @@ class UserManagementService:
             True if successful, False otherwise
         """
         try:
-            user = self.get_user_by_id(user_id)
+            user = await self.get_user_by_id(user_id)
             if not user:
                 logger.warning(f"User not found: {user_id}")
                 return False
 
-            self.db.delete(user)
-            self.db.commit()
+            await self.db.delete(user)
+            await self.db.commit()
 
             logger.info(f"Deleted user: {user_id}")
             return True
 
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
             logger.error(f"Failed to delete user {user_id}: {e}", exc_info=True)
             return False
 
-    def list_users(
+    async def list_users(
         self, limit: int = 100, offset: int = 0, is_active: Optional[bool] = None
     ) -> List[User]:
         """List users with pagination.
@@ -280,14 +283,16 @@ class UserManagementService:
         Returns:
             List of User objects
         """
-        query = self.db.query(User)
+        stmt = select(User)
 
         if is_active is not None:
-            query = query.filter(User.is_active == is_active)
+            stmt = stmt.filter(User.is_active == is_active)
 
-        return query.offset(offset).limit(limit).all()
+        stmt = stmt.offset(offset).limit(limit)
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
 
-    def get_user_roles(self, user_id: str) -> List[str]:
+    async def get_user_roles(self, user_id: str) -> List[str]:
         """Get all roles for a user.
 
         Args:
@@ -297,14 +302,12 @@ class UserManagementService:
             List of role names
         """
         # Optimize: Use direct query with only role column
-        roles = (
-            self.db.query(UserRole.role)
-            .filter(UserRole.user_id == user_id)
-            .all()
-        )
-        return [role[0] for role in roles]  # Extract role from tuple
+        stmt = select(UserRole.role).filter(UserRole.user_id == user_id)
+        result = await self.db.execute(stmt)
+        roles = result.scalars().all()
+        return list(roles)
 
-    def assign_role(self, user_id: str, role: str) -> bool:
+    async def assign_role(self, user_id: str, role: str) -> bool:
         """Assign a role to a user.
 
         Args:
@@ -316,17 +319,15 @@ class UserManagementService:
         """
         try:
             # Check if user exists
-            user = self.get_user_by_id(user_id)
+            user = await self.get_user_by_id(user_id)
             if not user:
                 logger.warning(f"User not found: {user_id}")
                 return False
 
             # Check if role already assigned
-            existing = (
-                self.db.query(UserRole)
-                .filter(UserRole.user_id == user_id, UserRole.role == role)
-                .first()
-            )
+            stmt = select(UserRole).filter(UserRole.user_id == user_id, UserRole.role == role)
+            result = await self.db.execute(stmt)
+            existing = result.scalar_one_or_none()
             if existing:
                 logger.debug(f"Role '{role}' already assigned to user {user_id}")
                 return True
@@ -334,19 +335,19 @@ class UserManagementService:
             # Create role
             user_role = UserRole(user_id=user_id, role=role)
             self.db.add(user_role)
-            self.db.commit()
+            await self.db.commit()
 
             logger.info(f"Assigned role '{role}' to user {user_id}")
             return True
 
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
             logger.error(
                 f"Failed to assign role '{role}' to user {user_id}: {e}", exc_info=True
             )
             return False
 
-    def remove_role(self, user_id: str, role: str) -> bool:
+    async def remove_role(self, user_id: str, role: str) -> bool:
         """Remove a role from a user.
 
         Args:
@@ -357,11 +358,9 @@ class UserManagementService:
             True if successful, False otherwise
         """
         try:
-            user_role = (
-                self.db.query(UserRole)
-                .filter(UserRole.user_id == user_id, UserRole.role == role)
-                .first()
-            )
+            stmt = select(UserRole).filter(UserRole.user_id == user_id, UserRole.role == role)
+            result = await self.db.execute(stmt)
+            user_role = result.scalar_one_or_none()
 
             if not user_role:
                 logger.warning(
@@ -369,20 +368,20 @@ class UserManagementService:
                 )
                 return False
 
-            self.db.delete(user_role)
-            self.db.commit()
+            await self.db.delete(user_role)
+            await self.db.commit()
 
             logger.info(f"Removed role '{role}' from user {user_id}")
             return True
 
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
             logger.error(
                 f"Failed to remove role '{role}' from user {user_id}: {e}", exc_info=True
             )
             return False
 
-    def has_role(self, user_id: str, role: str) -> bool:
+    async def has_role(self, user_id: str, role: str) -> bool:
         """Check if a user has a specific role.
 
         Args:
@@ -392,14 +391,12 @@ class UserManagementService:
         Returns:
             True if user has the role, False otherwise
         """
-        user_role = (
-            self.db.query(UserRole)
-            .filter(UserRole.user_id == user_id, UserRole.role == role)
-            .first()
-        )
+        stmt = select(UserRole).filter(UserRole.user_id == user_id, UserRole.role == role)
+        result = await self.db.execute(stmt)
+        user_role = result.scalar_one_or_none()
         return user_role is not None
 
-    def has_any_role(self, user_id: str, roles: List[str]) -> bool:
+    async def has_any_role(self, user_id: str, roles: List[str]) -> bool:
         """Check if a user has any of the specified roles.
 
         Args:
@@ -409,10 +406,8 @@ class UserManagementService:
         Returns:
             True if user has any of the roles, False otherwise
         """
-        user_roles = (
-            self.db.query(UserRole)
-            .filter(UserRole.user_id == user_id, UserRole.role.in_(roles))
-            .first()
-        )
+        stmt = select(UserRole).filter(UserRole.user_id == user_id, UserRole.role.in_(roles))
+        result = await self.db.execute(stmt)
+        user_roles = result.scalar_one_or_none()
         return user_roles is not None
 

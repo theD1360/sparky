@@ -1,14 +1,18 @@
 """Database connection and session management for the knowledge base."""
 
 import logging
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Generator, Optional
+from typing import AsyncGenerator, Optional
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import QueuePool, StaticPool
+from sqlalchemy import event, text
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool, QueuePool, StaticPool
 
 from .embeddings import EmbeddingManager
 from .models import Base
@@ -43,21 +47,36 @@ class DatabaseManager:
         db_url takes precedence.
         """
         if db_url:
-            self.db_url = db_url
+            # Convert PostgreSQL URL to async format if needed
+            if db_url.startswith("postgresql://") and not db_url.startswith(
+                "postgresql+psycopg://"
+            ):
+                self.db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+            elif db_url.startswith("postgresql+asyncpg://"):
+                self.db_url = db_url.replace(
+                    "postgresql+asyncpg://", "postgresql+psycopg://", 1
+                )
+            elif db_url.startswith("postgresql+psycopg2://"):
+                self.db_url = db_url.replace(
+                    "postgresql+psycopg2://", "postgresql+psycopg://", 1
+                )
+            else:
+                self.db_url = db_url
             self.is_sqlite = db_url.startswith("sqlite")
             self.db_path = None
         elif db_path:
-            self.db_url = f"sqlite:///{db_path}"
+            # Convert SQLite to async format
+            self.db_url = f"sqlite+aiosqlite:///{db_path}"
             self.is_sqlite = True
             self.db_path = db_path
         else:
             raise ValueError("Either db_url or db_path must be provided")
 
         self.echo = echo
-        self.engine: Optional[Engine] = None
-        self.SessionLocal: Optional[sessionmaker] = None
+        self.engine: Optional[AsyncEngine] = None
+        self.SessionLocal: Optional[async_sessionmaker] = None
 
-    def connect(self) -> None:
+    async def connect(self) -> None:
         """Create database engine and session factory."""
         if self.engine is not None:
             logger.warning("Database already connected")
@@ -65,18 +84,18 @@ class DatabaseManager:
 
         # Create engine with database-specific configurations
         if self.is_sqlite:
-            # SQLite-specific configuration
-            self.engine = create_engine(
+            # SQLite-specific configuration with aiosqlite
+            self.engine = create_async_engine(
                 self.db_url,
                 echo=self.echo,
-                poolclass=StaticPool,
+                poolclass=NullPool,  # SQLite with aiosqlite works better with NullPool
                 connect_args={
                     "check_same_thread": False,  # Allow multi-threading
                 },
             )
 
             # Enable SQLite optimizations and load sqlite-vec
-            @event.listens_for(self.engine, "connect")
+            @event.listens_for(self.engine.sync_engine, "connect")
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
@@ -106,36 +125,24 @@ class DatabaseManager:
             logger.debug(f"Database connected: {self.db_path}")
         else:
             # PostgreSQL or other database configuration
-            self.engine = create_engine(
+            # Note: For async engines, poolclass is automatically AsyncAdaptedQueuePool
+            self.engine = create_async_engine(
                 self.db_url,
                 echo=self.echo,
-                poolclass=QueuePool,
                 pool_size=10,  # Increased pool size for better performance
                 max_overflow=20,  # Increased overflow
                 pool_pre_ping=True,  # Verify connections before using
                 pool_recycle=3600,  # Recycle connections after 1 hour
                 connect_args={
-                    "connect_timeout": 10,  # 10 second connection timeout
+                    "connect_timeout": 10,  # 10 second connection timeout for psycopg
                 } if "postgresql" in self.db_url else {},
             )
 
-            # Enable pgvector extension for PostgreSQL
-            @event.listens_for(self.engine, "connect")
-            def enable_pgvector(dbapi_connection, connection_record):
-                cursor = dbapi_connection.cursor()
-                try:
-                    cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                    logger.debug("pgvector extension enabled")
-                except Exception as e:
-                    logger.warning(f"Failed to enable pgvector extension: {e}")
-                finally:
-                    cursor.close()
-
             logger.debug(f"Database connected: {self.db_url}")
 
-        # Create session factory (for both SQLite and PostgreSQL)
-        self.SessionLocal = sessionmaker(
-            autocommit=False, autoflush=False, bind=self.engine
+        # Create async session factory
+        self.SessionLocal = async_sessionmaker(
+            self.engine, class_=AsyncSession, expire_on_commit=False
         )
 
         # Initialize embedding manager singleton
@@ -145,6 +152,15 @@ class DatabaseManager:
         except Exception as e:
             logger.warning(f"Failed to initialize EmbeddingManager: {e}")
 
+        # Enable pgvector for PostgreSQL on first connection
+        if not self.is_sqlite and "postgresql" in self.db_url:
+            try:
+                async with self.engine.begin() as conn:
+                    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    logger.debug("pgvector extension enabled")
+            except Exception as e:
+                logger.warning(f"Failed to enable pgvector extension: {e}")
+
         # Note: Table creation is handled by Alembic migrations
         # Run migrations with: sparky db migrate
         # Base.metadata.create_all(bind=self.engine) is not needed when using Alembic
@@ -152,8 +168,8 @@ class DatabaseManager:
             "Database connection established (tables managed by Alembic migrations)"
         )
 
-    @contextmanager
-    def get_session(self) -> Generator[Session, None, None]:
+    @asynccontextmanager
+    async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
         """Get a new database session with proper transaction management.
 
         This context manager ensures that:
@@ -162,7 +178,7 @@ class DatabaseManager:
         - Sessions are properly closed after use
 
         Yields:
-            SQLAlchemy session instance
+            SQLAlchemy async session instance
 
         Raises:
             RuntimeError: If database not connected
@@ -170,32 +186,30 @@ class DatabaseManager:
         if self.SessionLocal is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
-        session = self.SessionLocal()
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        async with self.SessionLocal() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close database connections and cleanup resources."""
         if self.engine:
-            self.engine.dispose()
+            await self.engine.dispose()
             self.engine = None
             self.SessionLocal = None
             logger.debug("Database connections closed")
 
-    def __enter__(self):
-        """Context manager entry."""
-        self.connect()
+    async def __aenter__(self):
+        """Async context manager entry."""
+        await self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()
 
 
 def get_database_manager(
@@ -235,11 +249,11 @@ def get_database_manager(
     return _db_manager
 
 
-def get_session() -> Session:
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """Get a database session from the global manager.
 
-    Returns:
-        SQLAlchemy session instance
+    Yields:
+        SQLAlchemy async session instance
 
     Raises:
         RuntimeError: If database manager not initialized
@@ -249,10 +263,11 @@ def get_session() -> Session:
             "Database manager not initialized. Call get_database_manager() first."
         )
 
-    return _db_manager.get_session()
+    async with _db_manager.get_session() as session:
+        yield session
 
 
-def initialize_database(
+async def initialize_database(
     db_url: Optional[str] = None,
     db_path: Optional[Path] = None,
     echo: bool = False,
@@ -272,14 +287,14 @@ def initialize_database(
     """
     manager = get_database_manager(db_url=db_url, db_path=db_path)
     manager.echo = echo
-    manager.connect()
+    await manager.connect()
     # Tables are created via Alembic migrations, not create_all()
     return manager
 
 
-def close_database() -> None:
+async def close_database() -> None:
     """Close the global database manager."""
     global _db_manager
     if _db_manager:
-        _db_manager.close()
+        await _db_manager.close()
         _db_manager = None

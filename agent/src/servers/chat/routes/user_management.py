@@ -8,7 +8,7 @@ from pydantic import BaseModel, EmailStr
 from database.auth_models import User
 from middleware.auth_middleware import get_current_active_user, get_db, require_admin
 from services.user_management_service import UserManagementService
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api/admin/users", tags=["user-management"])
 
@@ -48,9 +48,9 @@ class UserResponse(BaseModel):
     last_login: Optional[str] = None
 
     @classmethod
-    def from_user(cls, user: User, user_service: UserManagementService) -> "UserResponse":
+    async def from_user(cls, user: User, user_service: UserManagementService) -> "UserResponse":
         """Create UserResponse from User model."""
-        roles = user_service.get_user_roles(user.id)
+        roles = await user_service.get_user_roles(user.id)
         return cls(
             id=user.id,
             username=user.username,
@@ -77,7 +77,7 @@ async def list_users(
     offset: int = 0,
     is_active: Optional[bool] = None,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """List all users (admin only).
 
@@ -92,8 +92,8 @@ async def list_users(
         List of users
     """
     user_service = UserManagementService(db)
-    users = user_service.list_users(limit=limit, offset=offset, is_active=is_active)
-    return [UserResponse.from_user(user, user_service) for user in users]
+    users = await user_service.list_users(limit=limit, offset=offset, is_active=is_active)
+    return [await UserResponse.from_user(user, user_service) for user in users]
 
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -101,7 +101,7 @@ async def list_users(
 async def get_user(
     user_id: str,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get user by ID (admin only).
 
@@ -117,7 +117,7 @@ async def get_user(
         HTTPException: If user not found
     """
     user_service = UserManagementService(db)
-    user = user_service.get_user_by_id(user_id)
+    user = await user_service.get_user_by_id(user_id)
 
     if not user:
         raise HTTPException(
@@ -125,7 +125,7 @@ async def get_user(
             detail=f"User '{user_id}' not found",
         )
 
-    return UserResponse.from_user(user, user_service)
+    return await UserResponse.from_user(user, user_service)
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -133,7 +133,7 @@ async def get_user(
 async def create_user(
     request: CreateUserRequest,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a new user (admin only).
 
@@ -149,7 +149,7 @@ async def create_user(
         HTTPException: If creation fails
     """
     user_service = UserManagementService(db)
-    user = user_service.create_user(
+    user = await user_service.create_user(
         username=request.username,
         email=request.email,
         password=request.password,
@@ -164,7 +164,7 @@ async def create_user(
             detail="Username or email already exists",
         )
 
-    return UserResponse.from_user(user, user_service)
+    return await UserResponse.from_user(user, user_service)
 
 
 @router.put("/{user_id}", response_model=UserResponse)
@@ -173,7 +173,7 @@ async def update_user(
     user_id: str,
     request: UpdateUserRequest,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Update user information (admin only).
 
@@ -204,7 +204,7 @@ async def update_user(
     if request.is_verified is not None:
         update_kwargs["is_verified"] = request.is_verified
 
-    user = user_service.update_user(user_id, **update_kwargs)
+    user = await user_service.update_user(user_id, **update_kwargs)
 
     if not user:
         raise HTTPException(
@@ -212,7 +212,7 @@ async def update_user(
             detail=f"User '{user_id}' not found or update failed",
         )
 
-    return UserResponse.from_user(user, user_service)
+    return await UserResponse.from_user(user, user_service)
 
 
 @router.delete("/{user_id}")
@@ -220,7 +220,7 @@ async def update_user(
 async def delete_user(
     user_id: str,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a user (admin only).
 
@@ -236,7 +236,7 @@ async def delete_user(
         HTTPException: If user not found
     """
     user_service = UserManagementService(db)
-    success = user_service.delete_user(user_id)
+    success = await user_service.delete_user(user_id)
 
     if not success:
         raise HTTPException(
@@ -253,7 +253,7 @@ async def assign_role(
     user_id: str,
     request: AssignRoleRequest,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Assign a role to a user (admin only).
 
@@ -270,7 +270,7 @@ async def assign_role(
         HTTPException: If user not found or assignment fails
     """
     user_service = UserManagementService(db)
-    success = user_service.assign_role(user_id, request.role)
+    success = await user_service.assign_role(user_id, request.role)
 
     if not success:
         raise HTTPException(
@@ -287,7 +287,7 @@ async def remove_role(
     user_id: str,
     role: str,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Remove a role from a user (admin only).
 
@@ -304,7 +304,7 @@ async def remove_role(
         HTTPException: If user not found or role removal fails
     """
     user_service = UserManagementService(db)
-    success = user_service.remove_role(user_id, role)
+    success = await user_service.remove_role(user_id, role)
 
     if not success:
         raise HTTPException(

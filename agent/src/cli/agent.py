@@ -32,7 +32,7 @@ def agent_status():
     try:
 
         async def _get_stats():
-            task_queue = create_task_queue()
+            task_queue = await create_task_queue()
             return await task_queue.get_task_stats()
 
         stats = run_async(_get_stats())
@@ -66,7 +66,7 @@ def list_tasks(
     try:
 
         async def _get_tasks():
-            task_queue = create_task_queue()
+            task_queue = await create_task_queue()
             return await task_queue.get_all_tasks()
 
         all_tasks = run_async(_get_tasks())
@@ -140,7 +140,7 @@ def add_task(
             metadata[key.strip()] = value.strip()
 
     async def _add_task():
-        task_queue = create_task_queue()
+        task_queue = await create_task_queue()
         return await task_queue.add_task(
             instruction=instruction,
             metadata=metadata if metadata else None,
@@ -167,7 +167,7 @@ def get_task(
     """Get detailed information about a specific task."""
 
     async def _get_task():
-        task_queue = create_task_queue()
+        task_queue = await create_task_queue()
         return await task_queue.get_task(task_id)
 
     try:
@@ -251,7 +251,7 @@ def update_task(
             metadata[key.strip()] = value.strip()
 
     async def _update_task():
-        task_queue = create_task_queue()
+        task_queue = await create_task_queue()
         return await task_queue.update_task(
             task_id=task_id,
             status=status,
@@ -292,7 +292,7 @@ def delete_task(
     """Delete a specific task from the queue."""
 
     async def _get_task():
-        task_queue = create_task_queue()
+        task_queue = await create_task_queue()
         return await task_queue.get_task(task_id), task_queue
 
     try:
@@ -387,7 +387,7 @@ def clear_tasks(
         raise typer.Exit(1)
 
     async def _clear_tasks():
-        task_queue = create_task_queue()
+        task_queue = await create_task_queue()
         all_tasks_list = await task_queue.get_all_tasks()
 
         # Apply filters
@@ -578,7 +578,7 @@ def run_scheduled_tasks(
                 tasks_to_add.append(task_dict[name])
 
         # Create task queue
-        task_queue = create_task_queue()
+        task_queue = await create_task_queue()
 
         # Add each task to the queue
         added_count = 0
@@ -756,7 +756,7 @@ def agent_statistics():
     try:
 
         async def _get_stats():
-            task_queue = create_task_queue()
+            task_queue = await create_task_queue()
             return await task_queue.get_task_stats()
 
         stats = run_async(_get_stats())

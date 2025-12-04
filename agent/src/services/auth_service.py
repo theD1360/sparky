@@ -7,7 +7,8 @@ from typing import Optional
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.auth_models import User, UserSession
 from database.database import get_database_manager
@@ -120,12 +121,12 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-def get_user_from_token(token: str, db: Session) -> Optional[User]:
+async def get_user_from_token(token: str, db: AsyncSession) -> Optional[User]:
     """Get user from JWT token.
 
     Args:
         token: JWT token string
-        db: Database session
+        db: Database async session
 
     Returns:
         User object if token is valid, None otherwise
@@ -138,11 +139,13 @@ def get_user_from_token(token: str, db: Session) -> Optional[User]:
     if user_id is None:
         return None
 
-    user = db.query(User).filter(User.id == user_id).first()
+    stmt = select(User).filter(User.id == user_id)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
     return user
 
 
-def revoke_token(token: str, db: Session) -> bool:
+async def revoke_token(token: str, db: AsyncSession) -> bool:
     """Revoke a token by storing its JTI in the database.
 
     Args:
@@ -164,11 +167,9 @@ def revoke_token(token: str, db: Session) -> bool:
         return False
 
     # Check if token is already revoked
-    existing = (
-        db.query(UserSession)
-        .filter(UserSession.token_jti == jti)
-        .first()
-    )
+    stmt = select(UserSession).filter(UserSession.token_jti == jti)
+    result = await db.execute(stmt)
+    existing = result.scalar_one_or_none()
     if existing:
         return True  # Already revoked
 
@@ -181,16 +182,16 @@ def revoke_token(token: str, db: Session) -> bool:
         expires_at=expires_at,
     )
     db.add(session)
-    db.commit()
+    await db.commit()
     return True
 
 
-def is_token_revoked(token: str, db: Session) -> bool:
+async def is_token_revoked(token: str, db: AsyncSession) -> bool:
     """Check if a token has been revoked.
 
     Args:
         token: JWT token string
-        db: Database session
+        db: Database async session
 
     Returns:
         True if token is revoked, False otherwise
@@ -204,28 +205,30 @@ def is_token_revoked(token: str, db: Session) -> bool:
         return True
 
     # Check if token JTI exists in revoked sessions
-    revoked = (
-        db.query(UserSession)
-        .filter(UserSession.token_jti == jti)
-        .first()
-    )
+    stmt = select(UserSession).filter(UserSession.token_jti == jti)
+    result = await db.execute(stmt)
+    revoked = result.scalar_one_or_none()
     return revoked is not None
 
 
-def cleanup_expired_sessions(db: Session) -> int:
+async def cleanup_expired_sessions(db: AsyncSession) -> int:
     """Remove expired session records from the database.
 
     Args:
-        db: Database session
+        db: Database async session
 
     Returns:
         Number of sessions removed
     """
+    from sqlalchemy import delete
     now = datetime.utcnow()
-    expired = db.query(UserSession).filter(UserSession.expires_at < now).all()
+    stmt = select(UserSession).filter(UserSession.expires_at < now)
+    result = await db.execute(stmt)
+    expired = result.scalars().all()
     count = len(expired)
-    for session in expired:
-        db.delete(session)
-    db.commit()
+    if count > 0:
+        delete_stmt = delete(UserSession).filter(UserSession.expires_at < now)
+        await db.execute(delete_stmt)
+        await db.commit()
     return count
 

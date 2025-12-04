@@ -12,6 +12,7 @@ from uuid import uuid4
 from badmcp.tool_chain import ToolChain
 from database.database import get_database_manager
 from database.repository import KnowledgeRepository
+from events import BotEvents
 from services import (
     FileService,
     IdentityService,
@@ -20,7 +21,6 @@ from services import (
     UserService,
 )
 from utils.async_util import run_async
-from events import BotEvents
 from utils.events import Events
 
 from .history_utils import convert_nodes_to_llm_format, format_nodes_for_summary
@@ -219,6 +219,16 @@ class AgentOrchestrator:
         """Returns the current session_id, or None if chat hasn't been started."""
         return self._session_id
 
+    def _run_async(self, coro):
+        """Helper to run async function from sync context."""
+        try:
+            loop = asyncio.get_running_loop()
+            # If we're in an async context, create a task
+            asyncio.create_task(coro)
+        except RuntimeError:
+            # No event loop running, create a new one
+            asyncio.run(coro)
+
     def _register_event_handlers(self):
         """Register event handlers for storing messages to the knowledge graph.
 
@@ -266,60 +276,70 @@ class AgentOrchestrator:
     def _handle_message_sent(self, message: str):
         """Handle MESSAGE_SENT event by delegating to message service."""
         if self.message_service:
-            self.message_service.save_message(
-                content=message,
-                role="user",
-                session_id=self._session_id,
-                chat_id=self._chat_id,
-                message_type="message",
-                file_node_id=getattr(self, "_current_file_id", None),
+            self._run_async(
+                self.message_service.save_message(
+                    content=message,
+                    role="user",
+                    session_id=self._session_id,
+                    chat_id=self._chat_id,
+                    message_type="message",
+                    file_node_id=getattr(self, "_current_file_id", None),
+                )
             )
 
     def _handle_message_received(self, message: str):
         """Handle MESSAGE_RECEIVED event by delegating to message service."""
         if self.message_service:
-            self.message_service.save_message(
-                content=message,
-                role="model",
-                session_id=self._session_id,
-                chat_id=self._chat_id,
-                message_type="message",
+            self._run_async(
+                self.message_service.save_message(
+                    content=message,
+                    role="model",
+                    session_id=self._session_id,
+                    chat_id=self._chat_id,
+                    message_type="message",
+                )
             )
 
     def _handle_tool_use(self, tool_name: str, args: dict):
         """Handle TOOL_USE event by delegating to message service."""
         if self.message_service:
-            self.message_service.save_message(
-                content=f"Using tool: {tool_name} with args: {args}",
-                role="model",
-                session_id=self._session_id,
-                chat_id=self._chat_id,
-                message_type="tool_use",
-                tool_name=tool_name,
-                tool_args=args,
+            self._run_async(
+                self.message_service.save_message(
+                    content=f"Using tool: {tool_name} with args: {args}",
+                    role="model",
+                    session_id=self._session_id,
+                    chat_id=self._chat_id,
+                    message_type="tool_use",
+                    tool_name=tool_name,
+                    tool_args=args,
+                )
             )
 
     def _handle_tool_result(self, tool_name: str, result: Any, status: str = None):
         """Handle TOOL_RESULT event by delegating to message service."""
         if self.message_service:
-            self.message_service.save_message(
-                content=f"Tool {tool_name} result: {result}",
-                role="model",
-                session_id=self._session_id,
-                chat_id=self._chat_id,
-                message_type="tool_result",
-                tool_name=tool_name,
+            self._run_async(
+                self.message_service.save_message(
+                    content=f"Tool {tool_name} result: {result}",
+                    role="model",
+                    session_id=self._session_id,
+                    chat_id=self._chat_id,
+                    message_type="tool_result",
+                    tool_name=tool_name,
+                )
             )
 
     def _handle_thought(self, thought: str):
         """Handle THOUGHT event by delegating to message service."""
         if self.message_service:
-            self.message_service.save_message(
-                content=thought,
-                role="model",
-                session_id=self._session_id,
-                chat_id=self._chat_id,
-                message_type="thought",
+            self._run_async(
+                self.message_service.save_message(
+                    content=thought,
+                    role="model",
+                    session_id=self._session_id,
+                    chat_id=self._chat_id,
+                    message_type="thought",
+                )
             )
 
     def _handle_summarized(self, summary: str):
@@ -330,13 +350,15 @@ class AgentOrchestrator:
         """
 
         if self.message_service:
-            self.message_service.save_message(
-                content=summary,
-                role="user",
-                session_id=self._session_id,
-                chat_id=self._chat_id,
-                internal=True,
-                message_type="summary",
+            self._run_async(
+                self.message_service.save_message(
+                    content=summary,
+                    role="user",
+                    session_id=self._session_id,
+                    chat_id=self._chat_id,
+                    internal=True,
+                    message_type="summary",
+                )
             )
 
     def get_effective_token_budget(self) -> int:
@@ -357,7 +379,7 @@ class AgentOrchestrator:
         )
         return effective_budget
 
-    def _should_summarize(self) -> bool:
+    async def _should_summarize(self) -> bool:
         """Check if conversation should be summarized based on token usage.
 
         Returns True if messages since last summary exceed the token threshold.
@@ -374,7 +396,7 @@ class AgentOrchestrator:
 
         try:
             # Get all messages from the graph
-            nodes = self.knowledge.repository.get_chat_messages(
+            nodes = await self.knowledge.repository.get_chat_messages(
                 chat_id=self._chat_id, limit=None
             )
 
@@ -470,7 +492,7 @@ class AgentOrchestrator:
             logger.warning("Failed to check if summarization needed: %s", e)
             return False
 
-    def _get_recent_messages(
+    async def _get_recent_messages(
         self, limit: Optional[int] = None, use_token_limit: bool = True
     ) -> List[dict]:
         """Retrieve recent messages from the knowledge graph and convert to LLM format.
@@ -492,7 +514,7 @@ class AgentOrchestrator:
             # If using token limits, get messages within budget
             if use_token_limit:
                 token_budget = self.get_effective_token_budget()
-                return self.message_service.get_messages_within_token_limit(
+                return await self.message_service.get_messages_within_token_limit(
                     chat_id=self._chat_id,
                     max_tokens=token_budget,
                     prefer_summaries=True,
@@ -502,7 +524,7 @@ class AgentOrchestrator:
             if limit is None:
                 limit = self.fallback_message_limit
 
-            return self.message_service.get_recent_messages(
+            return await self.message_service.get_recent_messages(
                 chat_id=self._chat_id, limit=limit, prefer_summaries=True
             )
 
@@ -523,7 +545,7 @@ class AgentOrchestrator:
 
         try:
             # Get all messages from the graph
-            nodes = self.knowledge.repository.get_chat_messages(
+            nodes = await self.knowledge.repository.get_chat_messages(
                 chat_id=self._chat_id, limit=None
             )
 
@@ -642,7 +664,7 @@ class AgentOrchestrator:
             ai_description_callback=ai_description_callback,
         )
 
-    def _add_message_with_chat_node(
+    async def _add_message_with_chat_node(
         self,
         message: str,
         role: str = "user",
@@ -668,16 +690,18 @@ class AgentOrchestrator:
         """
         # Delegate to message service if available
         if self.message_service and self._session_id:
-            self.message_service.save_message(
-                content=message,
-                role=role,
-                session_id=self._session_id,
-                chat_id=self._chat_id,
-                internal=internal,
-                message_type=message_type,
-                tool_name=tool_name,
-                tool_args=tool_args,
-                file_node_id=file_node_id,
+            self._run_async(
+                self.message_service.save_message(
+                    content=message,
+                    role=role,
+                    session_id=self._session_id,
+                    chat_id=self._chat_id,
+                    internal=internal,
+                    message_type=message_type,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    file_node_id=file_node_id,
+                )
             )
             return
 
@@ -697,7 +721,7 @@ class AgentOrchestrator:
         try:
             # Get current message count from graph for this chat
             if self._chat_id:
-                current_messages = self.knowledge.repository.get_chat_messages(
+                current_messages = await self.knowledge.repository.get_chat_messages(
                     chat_id=self._chat_id
                 )
                 message_num = len(current_messages) + 1
@@ -724,14 +748,14 @@ class AgentOrchestrator:
             if tool_args:
                 properties["tool_args"] = tool_args
 
-            self.knowledge.repository.add_node(
+            await self.knowledge.repository.add_node(
                 node_id=chat_node_id,
                 node_type="ChatMessage",
                 label=f"Chat Message {message_num}",
                 content=message,
                 properties=properties,
             )
-            self.knowledge.repository.add_edge(
+            await self.knowledge.repository.add_edge(
                 source_id=self._session_id,
                 target_id=chat_node_id,
                 edge_type="CONTAINS",
@@ -742,7 +766,7 @@ class AgentOrchestrator:
                 logger.info(
                     f"Linking message to chat node: chat:{self._chat_id} -> {chat_node_id}"
                 )
-                self.knowledge.repository.add_edge(
+                await self.knowledge.repository.add_edge(
                     source_id=f"chat:{self._chat_id}",
                     target_id=chat_node_id,
                     edge_type="CONTAINS",
@@ -755,7 +779,7 @@ class AgentOrchestrator:
                 logger.info(
                     f"Linking file to message: {chat_node_id} -> {file_node_id}"
                 )
-                self.knowledge.repository.add_edge(
+                await self.knowledge.repository.add_edge(
                     source_id=chat_node_id,
                     target_id=file_node_id,
                     edge_type="HAS_ATTACHMENT",
@@ -890,10 +914,10 @@ class AgentOrchestrator:
             try:
                 # Create user node using UserService
                 if self.user_service:
-                    self.user_service.create_user(user_id)
+                    await self.user_service.create_user(user_id)
                 else:
                     # Fallback to direct creation
-                    self.knowledge.repository.add_node(
+                    await self.knowledge.repository.add_node(
                         node_id=user_node_id,
                         node_type="User",
                         label=f"User {user_id}",
@@ -907,20 +931,22 @@ class AgentOrchestrator:
                     chat_node_id = f"chat:{chat_id}"
 
                     # CHECK IF CHAT ALREADY EXISTS to prevent duplicates
-                    existing_chat = self.knowledge.repository.get_node(chat_node_id)
+                    existing_chat = await self.knowledge.repository.get_node(
+                        chat_node_id
+                    )
 
                     if existing_chat:
                         logger.info(f"Chat {chat_node_id} already exists, reusing it")
                         # Verify the edge exists
                         try:
-                            edges = self.knowledge.repository.get_edges(
+                            edges = await self.knowledge.repository.get_edges(
                                 source_id=chat_node_id,
                                 target_id=user_node_id,
                                 edge_type="BELONGS_TO",
                             )
                             if not edges:
                                 # Edge missing, recreate it
-                                self.knowledge.repository.add_edge(
+                                await self.knowledge.repository.add_edge(
                                     source_id=chat_node_id,
                                     target_id=user_node_id,
                                     edge_type="BELONGS_TO",
@@ -931,7 +957,7 @@ class AgentOrchestrator:
                     else:
                         # Only create if it doesn't exist - use repository.create_chat
                         display_name = chat_name or f"Chat {chat_id[:8]}"
-                        chat_node = self.knowledge.repository.create_chat(
+                        chat_node = await self.knowledge.repository.create_chat(
                             chat_id=chat_id,
                             chat_name=display_name,
                             user_id=user_id,
@@ -1012,22 +1038,22 @@ class AgentOrchestrator:
             identity_instruction = f"# Your Identity\n\n{identity_summary}\n\nPlease remember this is who you are and act accordingly in all responses."
 
         if not self.initial_context_added:
-            self._add_message_with_chat_node(
+            await self._add_message_with_chat_node(
                 identity_instruction, "user", internal=True, message_type="internal"
             )
-            self._add_message_with_chat_node(
+            await self._add_message_with_chat_node(
                 "I understand my identity and purpose. I'm ready to help you.",
                 "model",
                 internal=True,
                 message_type="internal",
             )
-            self._add_message_with_chat_node(
+            await self._add_message_with_chat_node(
                 f"# Session Context\n\n{session_context}",
                 "user",
                 internal=True,
                 message_type="internal",
             )
-            self._add_message_with_chat_node(
+            await self._add_message_with_chat_node(
                 "I understand my session context. I'm ready to help you.",
                 "model",
                 internal=True,
@@ -1036,12 +1062,12 @@ class AgentOrchestrator:
             self.initial_context_added = True
 
         # Check if summarization is needed before loading messages
-        if self._should_summarize():
+        if await self._should_summarize():
             logger.info("Proactively summarizing conversation before loading messages")
             await self._summarize_conversation()
 
         # Get truncated history from the graph (last N messages)
-        truncated_history = self._get_recent_messages()
+        truncated_history = await self._get_recent_messages()
 
         # Estimate tokens for initial history and dispatch estimate event
         if truncated_history and hasattr(self, "token_service"):
@@ -1150,7 +1176,7 @@ class AgentOrchestrator:
             if self.knowledge:
                 try:
                     error_node_id = f"error:{task_id}:initial_error:{datetime.datetime.utcnow().timestamp()}"
-                    self.knowledge.repository.add_node(
+                    await self.knowledge.repository.add_node(
                         node_id=error_node_id,
                         node_type="Error",
                         label="Initial Message Error",
@@ -1232,7 +1258,7 @@ class AgentOrchestrator:
         """Generate a one-off response without chat history."""
         return await self.provider.generate_content(prompt)
 
-    def _format_history_for_summary(self) -> str:
+    async def _format_history_for_summary(self) -> str:
         """Create a concise text dump of recent conversation for summarization.
 
         Only summarizes messages since the last summary to avoid re-summarizing
@@ -1240,14 +1266,14 @@ class AgentOrchestrator:
         """
         # Delegate to message service if available
         if self.message_service and self._chat_id:
-            return self.message_service.format_for_summary(
+            return await self.message_service.format_for_summary(
                 chat_id=self._chat_id, since_last_summary=True
             )
 
         # Fallback to direct implementation
         if self.knowledge and self.knowledge.repository and self._chat_id:
             try:
-                nodes = self.knowledge.repository.get_chat_messages(
+                nodes = await self.knowledge.repository.get_chat_messages(
                     chat_id=self._chat_id
                 )
 
@@ -1316,7 +1342,7 @@ class AgentOrchestrator:
         """
         try:
             logger.info("Summarizing conversation...")
-            history_text = self._format_history_for_summary()
+            history_text = await self._format_history_for_summary()
             prompt = (
                 "Summarize the key points of this conversation. Focus on tasks, decisions, and outcomes. Be concise.\n\n"
                 + history_text

@@ -95,7 +95,7 @@ Cannot proceed without identity."""
         seen_ids = set()
 
         # Search for core identity
-        core_results = self.repository.search_nodes(
+        core_results = await self.repository.search_nodes(
             query_text="who am I, my purpose, my identity, my core being",
             node_type=None,
             limit=10,
@@ -113,7 +113,7 @@ Cannot proceed without identity."""
                 identity_nodes.append(node)
 
         # Step 2: Get direct neighbors only for concept:self (the most important node)
-        self_node = self.repository.get_node("concept:self")
+        self_node = await self.repository.get_node("concept:self")
         if self_node:
             if self_node.id not in seen_ids:
                 identity_nodes.append(self_node)
@@ -121,7 +121,7 @@ Cannot proceed without identity."""
 
             # Get its direct neighbors only (depth 1), with a limit
             try:
-                neighbors = self.repository.get_node_neighbors(
+                neighbors = await self.repository.get_node_neighbors(
                     "concept:self", 
                     direction="both", 
                     limit=50
@@ -163,7 +163,7 @@ Cannot proceed without identity."""
         # Only check relationships for up to 20 most important nodes
         for node in identity_nodes[:20]:
             try:
-                neighbors = self.repository.get_node_neighbors(
+                neighbors = await self.repository.get_node_neighbors(
                     node.id, direction="both", limit=20
                 )
                 # Only track relationships to nodes we've already collected
@@ -220,7 +220,7 @@ Cannot proceed without identity."""
         logger.info("Loading identity using legacy approach")
 
         # Step 1: Get the self node
-        best_match = self.repository.get_node("concept:self")
+        best_match = await self.repository.get_node("concept:self")
         if not best_match:
             logger.error("concept:self node not found")
             raise ValueError("concept:self node not found")
@@ -237,7 +237,7 @@ Cannot proceed without identity."""
 
         # Step 2: Get connected nodes (limit to avoid performance issues)
         try:
-            neighbors = self.repository.get_node_neighbors(
+            neighbors = await self.repository.get_node_neighbors(
                 node_id=best_match_id, direction="both", limit=100
             )
 
@@ -322,7 +322,7 @@ Cannot proceed without identity."""
             session_node_id = session_id if session_id.startswith("session:") else f"session:{session_id}"
             logger.info("Loading session context for node: %s", session_node_id)
 
-            node = self.repository.get_node(session_node_id)
+            node = await self.repository.get_node(session_node_id)
             if not node:
                 logger.debug("Session node not found: %s", session_node_id)
                 return None
@@ -369,7 +369,7 @@ Cannot proceed without identity."""
 
             # Load directly related nodes (neighbors) and present previews
             try:
-                neighbors = self.repository.get_node_neighbors(
+                neighbors = await self.repository.get_node_neighbors(
                     node_id=session_node_id, direction="both", limit=max_related
                 )
             except Exception as e:

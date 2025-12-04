@@ -59,12 +59,12 @@ async def get_chat_messages(chat_id: str, limit: int = 100, offset: int = 0):
         # Get database manager and connect
         db_manager = get_database_manager()
         if not db_manager.engine:
-            db_manager.connect()
+            await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
 
         # Get chat messages
-        messages = repository.get_chat_messages(chat_id, limit=limit, offset=offset)
+        messages = await repository.get_chat_messages(chat_id, limit=limit, offset=offset)
 
         # Batch load all attachments for all messages in one query (avoid N+1 problem)
         message_ids = [msg.id for msg in messages]
@@ -73,12 +73,15 @@ async def get_chat_messages(chat_id: str, limit: int = 100, offset: int = 0):
             try:
                 # Get all HAS_ATTACHMENT edges for all messages at once
                 from database.models import Edge
+                from sqlalchemy import select
                 db_manager = repository.db_manager
-                with db_manager.get_session() as session:
-                    all_attachment_edges = session.query(Edge).filter(
+                async with db_manager.get_session() as session:
+                    stmt = select(Edge).filter(
                         Edge.source_id.in_(message_ids),
                         Edge.edge_type == "HAS_ATTACHMENT"
-                    ).all()
+                    )
+                    result = await session.execute(stmt)
+                    all_attachment_edges = result.scalars().all()
                     # Expunge to detach from session
                     for edge in all_attachment_edges:
                         session.expunge(edge)
@@ -123,7 +126,7 @@ async def get_chat_messages(chat_id: str, limit: int = 100, offset: int = 0):
             file_ids = attachment_lookup.get(msg.id, [])
             for file_id in file_ids:
                 try:
-                    file_node = repository.get_node(file_id)
+                    file_node = await repository.get_node(file_id)
                     if file_node:
                         file_props = file_node.properties or {}
                         attachments.append(

@@ -10,7 +10,9 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import and_, func, or_, text
+from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -74,7 +76,9 @@ class KnowledgeRepository:
         else:
             return f"JSON_EXTRACT(properties, '$') {operation} :pattern"
 
-    def query_graph(self, query: str, parameters: Optional[Dict] = None) -> List[Dict]:
+    async def query_graph(
+        self, query: str, parameters: Optional[Dict] = None
+    ) -> List[Dict]:
         """Execute a query against the knowledge graph using SQLAlchemy.
 
         Args:
@@ -85,33 +89,35 @@ class KnowledgeRepository:
             List of results
         """
         ast = self.parser.parse(query)
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             query_type = ast.get("type", "match")
             if query_type == "match":
-                matches = self._execute_sqlalchemy_query(session, ast["match"])
+                matches = await self._execute_sqlalchemy_query(session, ast["match"])
                 if ast.get("where"):
                     matches = [
                         m for m in matches if self.evaluator.evaluate(ast["where"], m)
                     ]
                 return self.projector.project(matches, ast["return"])
             elif query_type == "create":
-                return self._execute_create_operation(session, ast["create"])
+                return await self._execute_create_operation(session, ast["create"])
             elif query_type == "update":
-                return self._execute_update_operation(
+                return await self._execute_update_operation(
                     session, ast["update"], ast.get("where", [])
                 )
             elif query_type == "delete":
-                return self._execute_delete_operation(
+                return await self._execute_delete_operation(
                     session, ast["delete"], ast.get("where", [])
                 )
             else:
                 raise ValueError(f"Unsupported query type: {query_type}")
 
-    def _execute_sqlalchemy_query(self, session, match_pattern: Dict) -> List[Dict]:
+    async def _execute_sqlalchemy_query(
+        self, session: AsyncSession, match_pattern: Dict
+    ) -> List[Dict]:
         """Execute SQLAlchemy query based on MATCH pattern.
 
         Args:
-            session: SQLAlchemy session
+            session: SQLAlchemy async session
             match_pattern: Parsed MATCH pattern from QueryParser
 
         Returns:
@@ -120,33 +126,40 @@ class KnowledgeRepository:
         if not match_pattern.get("nodes"):
             return []
         if len(match_pattern["nodes"]) == 1 and (not match_pattern.get("edges")):
-            return self._execute_simple_node_query(session, match_pattern["nodes"][0])
-        return self._execute_complex_pattern_query(session, match_pattern)
+            return await self._execute_simple_node_query(
+                session, match_pattern["nodes"][0]
+            )
+        return await self._execute_complex_pattern_query(session, match_pattern)
 
-    def _execute_simple_node_query(self, session, node_spec: Dict) -> List[Dict]:
+    async def _execute_simple_node_query(
+        self, session: AsyncSession, node_spec: Dict
+    ) -> List[Dict]:
         """Execute a simple single-node query using SQLAlchemy."""
-        query = session.query(Node)
+        stmt = select(Node)
         if "label" in node_spec:
-            query = query.filter(Node.node_type == node_spec["label"])
+            stmt = stmt.filter(Node.node_type == node_spec["label"])
         if "properties" in node_spec:
             for prop, value in node_spec["properties"].items():
-                query = query.filter(
+                stmt = stmt.filter(
                     text(self._get_json_property_query(prop, "="))
                 ).params(value=value)
-        results = query.all()
+        result = await session.execute(stmt)
+        nodes = result.scalars().all()
         var_name = node_spec["var"]
-        return [{var_name: {"id": node.id, **node.to_dict()}} for node in results]
+        return [{var_name: {"id": node.id, **node.to_dict()}} for node in nodes]
 
-    def _execute_complex_pattern_query(self, session, pattern: Dict) -> List[Dict]:
+    async def _execute_complex_pattern_query(
+        self, session: AsyncSession, pattern: Dict
+    ) -> List[Dict]:
         """Execute complex patterns with edges using SQLAlchemy."""
         first_node = pattern["nodes"][0]
-        candidates = self._execute_simple_node_query(session, first_node)
+        candidates = await self._execute_simple_node_query(session, first_node)
         if pattern.get("edges"):
-            return self._traverse_with_edges(session, pattern, candidates)
+            return await self._traverse_with_edges(session, pattern, candidates)
         return candidates
 
-    def _traverse_with_edges(
-        self, session, pattern: Dict, initial_matches: List[Dict]
+    async def _traverse_with_edges(
+        self, session: AsyncSession, pattern: Dict, initial_matches: List[Dict]
     ) -> List[Dict]:
         """Traverse edges to extend matches using SQLAlchemy."""
         if len(pattern["nodes"]) < 2:
@@ -158,21 +171,22 @@ class KnowledgeRepository:
             target_spec = pattern["nodes"][1]
             edge_spec = pattern["edges"][0]
             edge_type = edge_spec.get("type")
-            query = (
-                session.query(Edge, Node)
+            stmt = (
+                select(Edge, Node)
                 .join(Node, Edge.target_id == Node.id)
                 .filter(Edge.source_id == source_id)
             )
             if edge_type:
-                query = query.filter(Edge.edge_type == edge_type)
+                stmt = stmt.filter(Edge.edge_type == edge_type)
             if target_spec.get("label"):
-                query = query.filter(Node.node_type == target_spec["label"])
+                stmt = stmt.filter(Node.node_type == target_spec["label"])
             if target_spec.get("properties"):
                 for prop, value in target_spec["properties"].items():
-                    query = query.filter(
+                    stmt = stmt.filter(
                         text(self._get_json_property_query(prop, "="))
                     ).params(value=value)
-            neighbors = query.all()
+            result = await session.execute(stmt)
+            neighbors = result.all()
             for edge, target_node in neighbors:
                 new_match = match.copy()
                 new_match[target_spec["var"]] = {
@@ -182,7 +196,9 @@ class KnowledgeRepository:
                 results.append(new_match)
         return results
 
-    def _execute_create_operation(self, session, create_spec: Dict) -> List[Dict]:
+    async def _execute_create_operation(
+        self, session: AsyncSession, create_spec: Dict
+    ) -> List[Dict]:
         """Execute CREATE operation.
 
         Args:
@@ -206,7 +222,7 @@ class KnowledgeRepository:
                 properties=properties,
             )
             session.add(node)
-            session.commit()
+            await session.commit()
             results.append({var: {"id": node_id, **node.to_dict()}})
             logger.info(f"Created node {node_id} of type {label}")
         for edge_spec in create_spec.get("edges", []):
@@ -224,14 +240,14 @@ class KnowledgeRepository:
                     properties={},
                 )
                 session.add(edge)
-                session.commit()
+                await session.commit()
                 if var:
                     results.append({var: edge.to_dict()})
                 logger.info(f"Created edge {source_id} -> {target_id}")
         return results
 
-    def _execute_update_operation(
-        self, session, update_spec: Dict, where_conditions: List
+    async def _execute_update_operation(
+        self, session: AsyncSession, update_spec: Dict, where_conditions: List
     ) -> List[Dict]:
         """Execute UPDATE operation.
 
@@ -245,34 +261,35 @@ class KnowledgeRepository:
         """
         var = update_spec["variable"]
         properties = update_spec["properties"]
-        query = session.query(Node)
+        stmt = select(Node)
         for condition in where_conditions:
             if condition["type"] == "equals":
                 if condition["property"] == "id":
-                    query = query.filter(Node.id == condition["value"])
+                    stmt = stmt.filter(Node.id == condition["value"])
                 else:
-                    query = query.filter(
+                    stmt = stmt.filter(
                         text(self._get_json_property_query(condition["property"], "="))
                     ).params(value=condition["value"])
             elif condition["type"] == "starts_with":
-                query = query.filter(
+                stmt = stmt.filter(
                     text(self._get_json_property_query(condition["property"], "LIKE"))
                 ).params(value=f"{condition['value']}%")
-        nodes_to_update = query.all()
+        result = await session.execute(stmt)
+        nodes_to_update = result.scalars().all()
         results = []
         for node in nodes_to_update:
             if node.properties is None:
                 node.properties = {}
             for key, value in properties.items():
                 node.properties[key] = value
-            node.updated_at = datetime.utcnow()
-            session.commit()
+            node.updated_at = datetime.now(timezone.utc)
+            await session.commit()
             results.append({var: {"id": node.id, **node.to_dict()}})
             logger.info(f"Updated node {node.id}")
         return results
 
-    def _execute_delete_operation(
-        self, session, delete_spec: Dict, where_conditions: List
+    async def _execute_delete_operation(
+        self, session: AsyncSession, delete_spec: Dict, where_conditions: List
     ) -> List[Dict]:
         """Execute DELETE operation.
 
@@ -287,13 +304,13 @@ class KnowledgeRepository:
         variables = delete_spec["variables"]
         results = []
         for var in variables:
-            query = session.query(Node)
+            stmt = select(Node)
             for condition in where_conditions:
                 if condition["type"] == "equals":
                     if condition["property"] == "id":
-                        query = query.filter(Node.id == condition["value"])
+                        stmt = stmt.filter(Node.id == condition["value"])
                     else:
-                        query = query.filter(
+                        stmt = stmt.filter(
                             text(
                                 self._get_json_property_query(
                                     condition["property"], "="
@@ -301,19 +318,22 @@ class KnowledgeRepository:
                             )
                         ).params(value=condition["value"])
                 elif condition["type"] == "starts_with":
-                    query = query.filter(
+                    stmt = stmt.filter(
                         text(
                             self._get_json_property_query(condition["property"], "LIKE")
                         )
                     ).params(value=f"{condition['value']}%")
-            nodes_to_delete = query.all()
+            result = await session.execute(stmt)
+            nodes_to_delete = result.scalars().all()
             for node in nodes_to_delete:
-                session.query(Edge).filter(
+                # Delete related edges
+                delete_stmt = delete(Edge).filter(
                     or_(Edge.source_id == node.id, Edge.target_id == node.id)
-                ).delete()
+                )
+                await session.execute(delete_stmt)
                 results.append({var: {"id": node.id, **node.to_dict()}})
-                session.delete(node)
-                session.commit()
+                await session.delete(node)
+                await session.commit()
                 logger.info(f"Deleted node {node.id}")
         return results
 
@@ -323,8 +343,8 @@ class KnowledgeRepository:
 
         return str(uuid.uuid4())[:8]
 
-    def _generate_and_store_embedding(
-        self, session, node: Node, rowid: Optional[int] = None
+    async def _generate_and_store_embedding(
+        self, session: AsyncSession, node: Node, rowid: Optional[int] = None
     ) -> None:
         """Generate and store embedding for a node.
 
@@ -360,12 +380,12 @@ class KnowledgeRepository:
                 embedding_str = "[" + ",".join(map(str, embedding)) + "]"
                 escaped_id = node.id.replace("'", "''")
                 update_query = f"UPDATE nodes SET embedding = '{embedding_str}'::vector WHERE id = '{escaped_id}'"
-                session.execute(text(update_query))
+                await session.execute(text(update_query))
             else:
-                session.execute(
+                await session.execute(
                     text("DELETE FROM nodes_vec WHERE rowid = :rowid"), {"rowid": rowid}
                 )
-                session.execute(
+                await session.execute(
                     text(
                         "INSERT INTO nodes_vec(rowid, embedding) VALUES (:rowid, json(:embedding))"
                     ),
@@ -375,7 +395,7 @@ class KnowledgeRepository:
         except Exception as e:
             logger.warning(f"Failed to generate embedding for node {node.id}: {e}")
 
-    def add_node(
+    async def add_node(
         self,
         node_id: str,
         node_type: str,
@@ -396,30 +416,33 @@ class KnowledgeRepository:
             The created or updated Node instance
         """
         node_type = normalize_node_type(node_type)
-        with self.db_manager.get_session() as session:
-            existing = session.query(Node).filter(Node.id == node_id).first()
+        async with self.db_manager.get_session() as session:
+            stmt = select(Node).filter(Node.id == node_id)
+            result = await session.execute(stmt)
+            existing = result.scalar_one_or_none()
             if existing:
                 existing.node_type = node_type
                 existing.label = label
                 existing.content = content
                 existing.properties = properties or {}
                 existing.updated_at = datetime.now(timezone.utc)
-                session.commit()
+                await session.commit()
                 is_postgres = self.db_manager.engine.dialect.name == "postgresql"
                 if not is_postgres:
-                    session.refresh(existing)
-                    rowid_result = session.execute(
+                    await session.refresh(existing)
+                    rowid_result = await session.execute(
                         text("SELECT rowid FROM nodes WHERE id = :node_id"),
                         {"node_id": node_id},
-                    ).fetchone()
-                    if rowid_result:
-                        self._generate_and_store_embedding(
-                            session, existing, rowid_result[0]
+                    )
+                    rowid_row = rowid_result.fetchone()
+                    if rowid_row:
+                        await self._generate_and_store_embedding(
+                            session, existing, rowid_row[0]
                         )
                 else:
-                    self._generate_and_store_embedding(session, existing)
-                session.commit()
-                session.refresh(existing)
+                    await self._generate_and_store_embedding(session, existing)
+                await session.commit()
+                await session.refresh(existing)
                 session.expunge(existing)
                 logger.info(f"Updated node {node_id}")
                 return existing
@@ -432,26 +455,67 @@ class KnowledgeRepository:
                     properties=properties or {},
                 )
                 session.add(node)
-                session.flush()
+                try:
+                    await session.flush()
+                except IntegrityError:
+                    # Race condition: node was inserted by another process
+                    # Roll back and fetch the existing node
+                    await session.rollback()
+                    stmt = select(Node).filter(Node.id == node_id)
+                    result = await session.execute(stmt)
+                    existing = result.scalar_one_or_none()
+                    if existing:
+                        # Update the existing node
+                        existing.node_type = node_type
+                        existing.label = label
+                        existing.content = content
+                        existing.properties = properties or {}
+                        existing.updated_at = datetime.now(timezone.utc)
+                        await session.commit()
+                        is_postgres = (
+                            self.db_manager.engine.dialect.name == "postgresql"
+                        )
+                        if not is_postgres:
+                            await session.refresh(existing)
+                            rowid_result = await session.execute(
+                                text("SELECT rowid FROM nodes WHERE id = :node_id"),
+                                {"node_id": node_id},
+                            )
+                            rowid_row = rowid_result.fetchone()
+                            if rowid_row:
+                                await self._generate_and_store_embedding(
+                                    session, existing, rowid_row[0]
+                                )
+                        else:
+                            await self._generate_and_store_embedding(session, existing)
+                        await session.commit()
+                        await session.refresh(existing)
+                        session.expunge(existing)
+                        logger.info(f"Updated node {node_id} (race condition handled)")
+                        return existing
+                    else:
+                        # Should not happen, but re-raise if it does
+                        raise
                 is_postgres = self.db_manager.engine.dialect.name == "postgresql"
                 if not is_postgres:
-                    rowid_result = session.execute(
+                    rowid_result = await session.execute(
                         text("SELECT rowid FROM nodes WHERE id = :node_id"),
                         {"node_id": node_id},
-                    ).fetchone()
-                    if rowid_result:
-                        self._generate_and_store_embedding(
-                            session, node, rowid_result[0]
+                    )
+                    rowid_row = rowid_result.fetchone()
+                    if rowid_row:
+                        await self._generate_and_store_embedding(
+                            session, node, rowid_row[0]
                         )
                 else:
-                    self._generate_and_store_embedding(session, node)
-                session.commit()
-                session.refresh(node)
+                    await self._generate_and_store_embedding(session, node)
+                await session.commit()
+                await session.refresh(node)
                 session.expunge(node)
                 logger.info(f"Created node {node_id}")
                 return node
 
-    def bulk_add_nodes(self, nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def bulk_add_nodes(self, nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Add or update multiple nodes in a single transaction.
 
         Args:
@@ -472,7 +536,7 @@ class KnowledgeRepository:
         added = []
         updated = []
         failed = []
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             is_postgres = self.db_manager.engine.dialect.name == "postgresql"
             for node_data in nodes:
                 try:
@@ -490,25 +554,28 @@ class KnowledgeRepository:
                         )
                         continue
                     node_type = normalize_node_type(node_type)
-                    existing = session.query(Node).filter(Node.id == node_id).first()
+                    stmt = select(Node).filter(Node.id == node_id)
+                    result = await session.execute(stmt)
+                    existing = result.scalar_one_or_none()
                     if existing:
                         existing.node_type = node_type
                         existing.label = label
                         existing.content = content
                         existing.properties = properties
                         existing.updated_at = datetime.now(timezone.utc)
-                        session.flush()
+                        await session.flush()
                         if not is_postgres:
-                            rowid_result = session.execute(
+                            rowid_result = await session.execute(
                                 text("SELECT rowid FROM nodes WHERE id = :node_id"),
                                 {"node_id": node_id},
-                            ).fetchone()
-                            if rowid_result:
-                                self._generate_and_store_embedding(
-                                    session, existing, rowid_result[0]
+                            )
+                            rowid_row = rowid_result.fetchone()
+                            if rowid_row:
+                                await self._generate_and_store_embedding(
+                                    session, existing, rowid_row[0]
                                 )
                         else:
-                            self._generate_and_store_embedding(session, existing)
+                            await self._generate_and_store_embedding(session, existing)
                         updated.append(node_id)
                     else:
                         node = Node(
@@ -519,18 +586,19 @@ class KnowledgeRepository:
                             properties=properties,
                         )
                         session.add(node)
-                        session.flush()
+                        await session.flush()
                         if not is_postgres:
-                            rowid_result = session.execute(
+                            rowid_result = await session.execute(
                                 text("SELECT rowid FROM nodes WHERE id = :node_id"),
                                 {"node_id": node_id},
-                            ).fetchone()
-                            if rowid_result:
-                                self._generate_and_store_embedding(
-                                    session, node, rowid_result[0]
+                            )
+                            rowid_row = rowid_result.fetchone()
+                            if rowid_row:
+                                await self._generate_and_store_embedding(
+                                    session, node, rowid_row[0]
                                 )
                         else:
-                            self._generate_and_store_embedding(session, node)
+                            await self._generate_and_store_embedding(session, node)
                         added.append(node_id)
                 except Exception as e:
                     logger.error(
@@ -542,7 +610,7 @@ class KnowledgeRepository:
                             "error": str(e),
                         }
                     )
-            session.commit()
+            await session.commit()
         logger.info(
             f"Bulk add nodes: {len(added)} added, {len(updated)} updated, {len(failed)} failed"
         )
@@ -553,7 +621,7 @@ class KnowledgeRepository:
             "total": len(nodes),
         }
 
-    def update_node(
+    async def update_node(
         self,
         node_id: str,
         node_type: Optional[str] = None,
@@ -580,8 +648,10 @@ class KnowledgeRepository:
         Raises:
             ValueError: If the node doesn't exist
         """
-        with self.db_manager.get_session() as session:
-            existing = session.query(Node).filter(Node.id == node_id).first()
+        async with self.db_manager.get_session() as session:
+            stmt = select(Node).filter(Node.id == node_id)
+            result = await session.execute(stmt)
+            existing = result.scalar_one_or_none()
             if not existing:
                 raise ValueError(f"Node {node_id} not found")
             if node_type is not None:
@@ -593,7 +663,7 @@ class KnowledgeRepository:
             if properties is not None:
                 existing.properties = properties
             existing.updated_at = datetime.now(timezone.utc)
-            session.flush()
+            await session.flush()
             is_postgres = self.db_manager.engine.dialect.name == "postgresql"
             if not is_postgres:
                 rowid_result = session.execute(
@@ -601,34 +671,50 @@ class KnowledgeRepository:
                     {"node_id": node_id},
                 ).fetchone()
                 if rowid_result:
-                    self._generate_and_store_embedding(
+                    await self._generate_and_store_embedding(
                         session, existing, rowid_result[0]
                     )
             else:
-                self._generate_and_store_embedding(session, existing)
-            session.flush()
-            session.refresh(existing)
+                await self._generate_and_store_embedding(session, existing)
+            await session.flush()
+            await session.refresh(existing)
             session.expunge(existing)
             logger.info(f"Updated node {node_id}")
             return existing
 
-    def get_node(self, node_id: str) -> Optional[Node]:
+    async def get_node(self, node_id: str) -> Optional[Node]:
         """Get a node by its ID.
+
+        The node is properly detached from the session before returning to prevent
+        "Instance is not present in this Session" errors. All scalar attributes
+        (id, node_type, label, content, properties, timestamps) are loaded and
+        accessible after the node is returned.
+
+        Note: Relationships (outgoing_edges, incoming_edges) are not loaded and
+        should not be accessed on the returned node. Use get_node_neighbors() or
+        get_edges() methods instead.
 
         Args:
             node_id: Unique identifier of the node
 
         Returns:
-            Node instance if found, None otherwise
+            Node instance if found, None otherwise. The node is detached from the
+            session and safe to use outside the session context.
         """
-        with self.db_manager.get_session() as session:
-            node = session.query(Node).filter(Node.id == node_id).first()
+        async with self.db_manager.get_session() as session:
+            stmt = select(Node).filter(Node.id == node_id)
+            result = await session.execute(stmt)
+            node = result.scalar_one_or_none()
             if node:
-                session.refresh(node)
+                # Refresh to ensure all attributes are loaded from the database
+                await session.refresh(node)
+                # Access properties to ensure they're loaded (JSON fields may be lazy)
+                _ = node.properties
+                # Expunge to detach from session and prevent session errors
                 session.expunge(node)
             return node
 
-    def get_nodes(
+    async def get_nodes(
         self,
         node_type: Optional[str] = None,
         limit: Optional[int] = None,
@@ -644,22 +730,23 @@ class KnowledgeRepository:
         Returns:
             List of Node instances
         """
-        with self.db_manager.get_session() as session:
-            query = session.query(Node)
+        async with self.db_manager.get_session() as session:
+            stmt = select(Node)
             if node_type:
-                query = query.filter(Node.node_type == node_type)
-            query = query.order_by(Node.created_at)
+                stmt = stmt.filter(Node.node_type == node_type)
+            stmt = stmt.order_by(Node.created_at)
             if offset:
-                query = query.offset(offset)
+                stmt = stmt.offset(offset)
             if limit:
-                query = query.limit(limit)
-            nodes = query.all()
+                stmt = stmt.limit(limit)
+            result = await session.execute(stmt)
+            nodes = result.scalars().all()
             for node in nodes:
-                session.refresh(node)
+                await session.refresh(node)
                 session.expunge(node)
             return nodes
 
-    def get_nodes_count(self, node_type: Optional[str] = None) -> int:
+    async def get_nodes_count(self, node_type: Optional[str] = None) -> int:
         """Get count of nodes with optional filtering.
 
         Args:
@@ -668,13 +755,14 @@ class KnowledgeRepository:
         Returns:
             Count of matching nodes
         """
-        with self.db_manager.get_session() as session:
-            query = session.query(func.count(Node.id))
+        async with self.db_manager.get_session() as session:
+            stmt = select(func.count(Node.id))
             if node_type:
-                query = query.filter(Node.node_type == node_type)
-            return query.scalar() or 0
+                stmt = stmt.filter(Node.node_type == node_type)
+            result = await session.execute(stmt)
+            return result.scalar() or 0
 
-    def add_edge(
+    async def add_edge(
         self,
         source_id: str,
         target_id: str,
@@ -696,27 +784,29 @@ class KnowledgeRepository:
             ValueError: If source or target node doesn't exist
         """
         edge_type = normalize_edge_type(edge_type)
-        with self.db_manager.get_session() as session:
-            source = session.query(Node).filter(Node.id == source_id).first()
-            target = session.query(Node).filter(Node.id == target_id).first()
+        async with self.db_manager.get_session() as session:
+            stmt = select(Node).filter(Node.id == source_id)
+            result = await session.execute(stmt)
+            source = result.scalar_one_or_none()
+            stmt = select(Node).filter(Node.id == target_id)
+            result = await session.execute(stmt)
+            target = result.scalar_one_or_none()
             if not source:
                 raise ValueError(f"Source node {source_id} not found")
             if not target:
                 raise ValueError(f"Target node {target_id} not found")
-            existing = (
-                session.query(Edge)
-                .filter(
-                    and_(
-                        Edge.source_id == source_id,
-                        Edge.target_id == target_id,
-                        Edge.edge_type == edge_type,
-                    )
+            stmt = select(Edge).filter(
+                and_(
+                    Edge.source_id == source_id,
+                    Edge.target_id == target_id,
+                    Edge.edge_type == edge_type,
                 )
-                .first()
             )
+            result = await session.execute(stmt)
+            existing = result.scalar_one_or_none()
             if existing:
                 existing.properties = properties or {}
-                session.commit()
+                await session.commit()
                 logger.info(f"Updated edge {source_id} -> {target_id}")
                 return existing
             else:
@@ -727,11 +817,11 @@ class KnowledgeRepository:
                     properties=properties or {},
                 )
                 session.add(edge)
-                session.commit()
+                await session.commit()
                 logger.info(f"Created edge {source_id} -> {target_id}")
                 return edge
 
-    def bulk_add_edges(self, edges: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def bulk_add_edges(self, edges: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Add or update multiple edges in a single transaction.
 
         Args:
@@ -751,7 +841,7 @@ class KnowledgeRepository:
         added = []
         updated = []
         failed = []
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             all_node_ids = set()
             for edge_data in edges:
                 source_id = edge_data.get("source_id")
@@ -831,7 +921,7 @@ class KnowledgeRepository:
                             "error": str(e),
                         }
                     )
-            session.commit()
+            await session.commit()
         logger.info(
             f"Bulk add edges: {len(added)} added, {len(updated)} updated, {len(failed)} failed"
         )
@@ -842,7 +932,7 @@ class KnowledgeRepository:
             "total": len(edges),
         }
 
-    def append_graph(
+    async def append_graph(
         self, nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Append a subgraph (nodes and edges) to the knowledge graph in a single operation.
@@ -871,8 +961,8 @@ class KnowledgeRepository:
                 - total_nodes: Total number of nodes processed
                 - total_edges: Total number of edges processed
         """
-        node_result = self.bulk_add_nodes(nodes)
-        edge_result = self.bulk_add_edges(edges)
+        node_result = await self.bulk_add_nodes(nodes)
+        edge_result = await self.bulk_add_edges(edges)
         logger.info(
             f"Append graph: nodes ({len(node_result['added'])} added, {len(node_result['updated'])} updated, {len(node_result['failed'])} failed), edges ({len(edge_result['added'])} added, {len(edge_result['updated'])} updated, {len(edge_result['failed'])} failed)"
         )
@@ -887,7 +977,7 @@ class KnowledgeRepository:
             "total_edges": edge_result["total"],
         }
 
-    def find_similar_nodes(
+    async def find_similar_nodes(
         self,
         node_id: str,
         similarity_threshold: float = 0.7,
@@ -908,7 +998,7 @@ class KnowledgeRepository:
         Raises:
             ValueError: If node doesn't exist or has no embedding
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             ref_node = session.query(Node).filter(Node.id == node_id).first()
             if not ref_node:
                 raise ValueError(f"Node {node_id} not found")
@@ -988,7 +1078,7 @@ class KnowledgeRepository:
             logger.info(f"Found {len(similar_nodes)} similar nodes to {node_id}")
             return similar_nodes
 
-    def validate_graph_integrity(
+    async def validate_graph_integrity(
         self, checks: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """Run integrity checks on the graph to detect issues.
@@ -1019,7 +1109,7 @@ class KnowledgeRepository:
             "total_issues": 0,
             "healthy": True,
         }
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             is_postgres = self.db_manager.engine.dialect.name == "postgresql"
             if "orphaned_nodes" in checks:
                 orphan_query = "\n                    SELECT n.id, n.node_type, n.label\n                    FROM nodes n\n                    WHERE NOT EXISTS (\n                        SELECT 1 FROM edges e WHERE e.source_id = n.id OR e.target_id = n.id\n                    )\n                    AND n.node_type NOT IN ('Memory', 'Session', 'ThinkingPattern', 'Workflow')\n                "
@@ -1087,7 +1177,7 @@ class KnowledgeRepository:
         )
         return results
 
-    def extract_subgraph(
+    async def extract_subgraph(
         self,
         root_node_ids: List[str],
         depth: int = 2,
@@ -1105,7 +1195,7 @@ class KnowledgeRepository:
         Returns:
             Dictionary with nodes, edges, and formatted export
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             visited_nodes = set()
             all_nodes = []
             all_edges = []
@@ -1201,7 +1291,7 @@ class KnowledgeRepository:
             )
             return result
 
-    def merge_duplicate_nodes(
+    async def merge_duplicate_nodes(
         self, node_ids: List[str], keep_node_id: str, merge_strategy: str = "union"
     ) -> Dict[str, Any]:
         """Merge duplicate nodes into a single node.
@@ -1221,7 +1311,7 @@ class KnowledgeRepository:
             raise ValueError(f"keep_node_id {keep_node_id} must be in node_ids list")
         if len(node_ids) < 2:
             raise ValueError("Need at least 2 nodes to merge")
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             nodes = session.query(Node).filter(Node.id.in_(node_ids)).all()
             if len(nodes) != len(node_ids):
                 found_ids = {n.id for n in nodes}
@@ -1261,7 +1351,7 @@ class KnowledgeRepository:
                         .first()
                     )
                     if existing:
-                        session.delete(edge)
+                        await session.delete(edge)
                     else:
                         edge.source_id = keep_node_id
                     edges_updated += 1
@@ -1281,14 +1371,14 @@ class KnowledgeRepository:
                         .first()
                     )
                     if existing:
-                        session.delete(edge)
+                        await session.delete(edge)
                     else:
                         edge.target_id = keep_node_id
                     edges_updated += 1
             for merge_node in merge_nodes:
-                session.delete(merge_node)
-            session.commit()
-            session.refresh(keep_node)
+                await session.delete(merge_node)
+            await session.commit()
+            await session.refresh(keep_node)
             session.expunge(keep_node)
             result = {
                 "kept_node_id": keep_node_id,
@@ -1302,7 +1392,7 @@ class KnowledgeRepository:
             )
             return result
 
-    def get_edges(
+    async def get_edges(
         self,
         source_id: Optional[str] = None,
         target_id: Optional[str] = None,
@@ -1322,7 +1412,7 @@ class KnowledgeRepository:
         Returns:
             List of Edge instances
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             query = session.query(Edge)
             if source_id:
                 query = query.filter(Edge.source_id == source_id)
@@ -1338,11 +1428,11 @@ class KnowledgeRepository:
             edges = query.all()
             # Refresh and expunge all edges to detach from session
             for edge in edges:
-                session.refresh(edge)
+                await session.refresh(edge)
                 session.expunge(edge)
             return edges
 
-    def get_edges_count(
+    async def get_edges_count(
         self,
         source_id: Optional[str] = None,
         target_id: Optional[str] = None,
@@ -1358,17 +1448,18 @@ class KnowledgeRepository:
         Returns:
             Count of matching edges
         """
-        with self.db_manager.get_session() as session:
-            query = session.query(func.count(Edge.id))
+        async with self.db_manager.get_session() as session:
+            stmt = select(func.count(Edge.id))
             if source_id:
-                query = query.filter(Edge.source_id == source_id)
+                stmt = stmt.filter(Edge.source_id == source_id)
             if target_id:
-                query = query.filter(Edge.target_id == target_id)
+                stmt = stmt.filter(Edge.target_id == target_id)
             if edge_type:
-                query = query.filter(Edge.edge_type == edge_type)
-            return query.scalar() or 0
+                stmt = stmt.filter(Edge.edge_type == edge_type)
+            result = await session.execute(stmt)
+            return result.scalar() or 0
 
-    def delete_node(self, node_id: str) -> bool:
+    async def delete_node(self, node_id: str) -> bool:
         """Delete a node and all its edges.
 
         Args:
@@ -1377,16 +1468,17 @@ class KnowledgeRepository:
         Returns:
             True if node was deleted, False if not found
         """
-        with self.db_manager.get_session() as session:
-            node = session.query(Node).filter(Node.id == node_id).first()
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(select(Node).filter(Node.id == node_id))
+            node = result.scalar_one_or_none()
             if not node:
                 return False
-            session.delete(node)
-            session.commit()
+            await session.delete(node)
+            await session.commit()
             logger.info(f"Deleted node {node_id}")
             return True
 
-    def bulk_delete_nodes(self, node_ids: List[str]) -> Dict[str, Any]:
+    async def bulk_delete_nodes(self, node_ids: List[str]) -> Dict[str, Any]:
         """Delete multiple nodes and all their edges in a single transaction.
 
         Args:
@@ -1402,21 +1494,21 @@ class KnowledgeRepository:
         deleted = []
         not_found = []
         failed = []
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             for node_id in node_ids:
                 try:
                     node = session.query(Node).filter(Node.id == node_id).first()
                     if not node:
                         not_found.append(node_id)
                         continue
-                    session.delete(node)
+                    await session.delete(node)
                     deleted.append(node_id)
                 except Exception as e:
                     logger.error(f"Error deleting node {node_id}: {e}")
                     failed.append({"node_id": node_id, "error": str(e)})
                     session.rollback()
             try:
-                session.commit()
+                await session.commit()
                 logger.info(
                     f"Bulk deleted {len(deleted)} nodes, {len(not_found)} not found, {len(failed)} failed"
                 )
@@ -1433,7 +1525,7 @@ class KnowledgeRepository:
             "total": len(node_ids),
         }
 
-    def delete_edge(self, edge_id: int) -> bool:
+    async def delete_edge(self, edge_id: int) -> bool:
         """Delete an edge by its ID.
 
         Args:
@@ -1442,16 +1534,16 @@ class KnowledgeRepository:
         Returns:
             True if edge was deleted, False if not found
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             edge = session.query(Edge).filter(Edge.id == edge_id).first()
             if not edge:
                 return False
-            session.delete(edge)
-            session.commit()
+            await session.delete(edge)
+            await session.commit()
             logger.info(f"Deleted edge {edge_id}")
             return True
 
-    def search_nodes(
+    async def search_nodes(
         self,
         query_text: str,
         node_type: Optional[str] = None,
@@ -1471,17 +1563,19 @@ class KnowledgeRepository:
         Returns:
             List of matching Node instances
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             query_text = str(query_text).strip() if query_text else ""
             if not query_text and node_type:
-                query = session.query(Node).filter(Node.node_type == node_type)
+                query = select(Node).filter(Node.node_type == node_type)
                 if order_by == "created_at":
                     query = query.order_by(Node.created_at.desc())
                 if offset:
                     query = query.offset(offset)
-                nodes = query.limit(limit).all()
+                query = query.limit(limit)
+                nodes_result = await session.execute(query)
+                nodes = nodes_result.scalars().all()
                 for node in nodes:
-                    session.refresh(node)
+                    await session.refresh(node)
                     session.expunge(node)
                 return nodes
             if not query_text:
@@ -1498,26 +1592,36 @@ class KnowledgeRepository:
                         embedding_array = (
                             "[" + ",".join(map(str, query_embedding)) + "]"
                         )
-                        base_query = "\n                            SELECT \n                                n.id,\n                                n.node_type,\n                                n.label,\n                                n.content,\n                                n.properties,\n                                n.created_at,\n                                n.updated_at,\n                                1 - (n.embedding <=> %s::vector) as similarity\n                            FROM nodes n\n                            WHERE n.embedding IS NOT NULL\n                        "
+                        # Build query with proper parameter binding for async
+                        query_parts = [
+                            "SELECT",
+                            "n.id,",
+                            "n.node_type,",
+                            "n.label,",
+                            "n.content,",
+                            "n.properties,",
+                            "n.created_at,",
+                            "n.updated_at,",
+                            "1 - (n.embedding <=> :embedding::vector) as similarity",
+                            "FROM nodes n",
+                            "WHERE n.embedding IS NOT NULL",
+                        ]
+                        query_params = {"embedding": embedding_array}
                         if node_type:
-                            base_query += " AND n.node_type = %s"
-                        base_query += " ORDER BY n.embedding <=> %s::vector"
+                            query_parts.append("AND n.node_type = :node_type")
+                            query_params["node_type"] = node_type
+                        query_parts.append(
+                            "ORDER BY n.embedding <=> :embedding::vector"
+                        )
                         if offset:
-                            base_query += " OFFSET %s"
-                        base_query += " LIMIT %s"
-                        conn = session.connection()
-                        dbapi_conn = conn.connection
-                        cursor = dbapi_conn.cursor()
-                        params = [embedding_array]
-                        if node_type:
-                            params.append(node_type)
-                        params.append(embedding_array)
-                        if offset:
-                            params.append(offset)
-                        params.append(limit)
-                        cursor.execute(base_query, params)
-                        results_list = cursor.fetchall()
-                        cursor.close()
+                            query_parts.append("OFFSET :offset")
+                            query_params["offset"] = offset
+                        query_parts.append("LIMIT :limit")
+                        query_params["limit"] = limit
+
+                        base_query = " ".join(query_parts)
+                        result = await session.execute(text(base_query), query_params)
+                        results_list = result.fetchall()
 
                         class ResultWrapper:
 
@@ -1568,7 +1672,7 @@ class KnowledgeRepository:
                     return []
             else:
                 search_pattern = f"%{query_text}%"
-                query = session.query(Node).filter(
+                query = select(Node).filter(
                     or_(
                         Node.label.like(search_pattern),
                         Node.content.like(search_pattern),
@@ -1579,14 +1683,15 @@ class KnowledgeRepository:
                 )
                 if node_type:
                     query = query.filter(Node.node_type == node_type)
-                query = query.order_by(Node.created_at)
-                nodes = query.limit(limit).all()
+                query = query.order_by(Node.created_at).limit(limit)
+                nodes_result = await session.execute(query)
+                nodes = nodes_result.scalars().all()
                 for node in nodes:
-                    session.refresh(node)
+                    await session.refresh(node)
                     session.expunge(node)
                 return nodes
 
-    def get_node_neighbors(
+    async def get_node_neighbors(
         self,
         node_id: str,
         direction: str = "both",
@@ -1604,10 +1709,10 @@ class KnowledgeRepository:
         Returns:
             List of (Edge, Node) tuples
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             if direction in ["outgoing", "both"]:
                 outgoing_query = (
-                    session.query(Edge, Node)
+                    select(Edge, Node)
                     .join(Node, Edge.target_id == Node.id)
                     .filter(Edge.source_id == node_id)
                 )
@@ -1617,12 +1722,13 @@ class KnowledgeRepository:
                     )
                 if limit:
                     outgoing_query = outgoing_query.limit(limit)
-                outgoing_results = outgoing_query.all()
+                outgoing_result = await session.execute(outgoing_query)
+                outgoing_results = outgoing_result.all()
             else:
                 outgoing_results = []
             if direction in ["incoming", "both"]:
                 incoming_query = (
-                    session.query(Edge, Node)
+                    select(Edge, Node)
                     .join(Node, Edge.source_id == Node.id)
                     .filter(Edge.target_id == node_id)
                 )
@@ -1636,7 +1742,8 @@ class KnowledgeRepository:
                     )
                     if remaining_limit > 0:
                         incoming_query = incoming_query.limit(remaining_limit)
-                incoming_results = incoming_query.all()
+                incoming_result = await session.execute(incoming_query)
+                incoming_results = incoming_result.all()
             else:
                 incoming_results = []
             all_results = outgoing_results + incoming_results
@@ -1646,43 +1753,47 @@ class KnowledgeRepository:
                 session.expunge(node)
             return all_results
 
-    def get_graph_stats(self) -> Dict[str, int]:
+    async def get_graph_stats(self) -> Dict[str, int]:
         """Get basic statistics about the graph.
 
         Returns:
             Dictionary with node count, edge count, and counts by type
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             stats = {
-                "total_nodes": session.query(Node).count(),
-                "total_edges": session.query(Edge).count(),
+                "total_nodes": (
+                    await session.execute(select(func.count(Node.id)))
+                ).scalar()
+                or 0,
+                "total_edges": (
+                    await session.execute(select(func.count(Edge.id)))
+                ).scalar()
+                or 0,
             }
-            node_types = (
-                session.query(Node.node_type, func.count(Node.id))
-                .group_by(Node.node_type)
-                .all()
+            node_types_result = await session.execute(
+                select(Node.node_type, func.count(Node.id)).group_by(Node.node_type)
             )
+            node_types = node_types_result.all()
             stats["node_types"] = {nt: count for nt, count in node_types}
-            edge_types = (
-                session.query(Edge.edge_type, func.count(Edge.id))
-                .group_by(Edge.edge_type)
-                .all()
+            edge_types_result = await session.execute(
+                select(Edge.edge_type, func.count(Edge.id)).group_by(Edge.edge_type)
             )
+            edge_types = edge_types_result.all()
             stats["edge_types"] = {et: count for et, count in edge_types}
             return stats
 
-    def export_to_memory_format(self) -> Dict[str, Any]:
+    async def export_to_memory_format(self) -> Dict[str, Any]:
         """Export graph data in the format expected by existing code.
 
         Returns:
             Dictionary with 'nodes' and 'edges' keys containing data
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             nodes = {node.id: node.to_dict() for node in session.query(Node).all()}
             edges = [edge.to_dict() for edge in session.query(Edge).all()]
             return {"nodes": nodes, "edges": edges}
 
-    def find_nodes_by_properties(
+    async def find_nodes_by_properties(
         self, properties: Dict[str, Any], node_type: Optional[str] = None
     ) -> List[Node]:
         """Find nodes matching property criteria.
@@ -1694,7 +1805,7 @@ class KnowledgeRepository:
         Returns:
             List of matching Node instances
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             query = session.query(Node)
             if node_type:
                 query = query.filter(Node.node_type == node_type)
@@ -1704,7 +1815,7 @@ class KnowledgeRepository:
                 ).params(value=value)
             return query.all()
 
-    def find_shortest_path(
+    async def find_shortest_path(
         self, start_id: str, end_id: str, max_depth: Optional[int] = None
     ) -> Optional[List[str]]:
         """Find shortest path using BFS.
@@ -1717,7 +1828,7 @@ class KnowledgeRepository:
         Returns:
             List of node IDs forming the path, or None if no path exists
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             start_node = session.query(Node).filter(Node.id == start_id).first()
             end_node = session.query(Node).filter(Node.id == end_id).first()
             if not start_node or not end_node:
@@ -1732,7 +1843,7 @@ class KnowledgeRepository:
                     continue
                 if current == end_id:
                     return path
-                neighbors = self.get_node_neighbors(current, direction="both")
+                neighbors = await self.get_node_neighbors(current, direction="both")
                 # Extract node IDs immediately to avoid detached instance issues
                 neighbor_ids = [neighbor_node.id for _, neighbor_node in neighbors]
                 for neighbor_id in neighbor_ids:
@@ -1741,7 +1852,7 @@ class KnowledgeRepository:
                         queue.append((neighbor_id, path + [neighbor_id]))
             return None
 
-    def find_all_paths(
+    async def find_all_paths(
         self, start_id: str, end_id: str, max_depth: int = 5
     ) -> List[List[str]]:
         """Find all paths using DFS.
@@ -1754,7 +1865,7 @@ class KnowledgeRepository:
         Returns:
             List of paths, where each path is a list of node IDs
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             start_node = session.query(Node).filter(Node.id == start_id).first()
             end_node = session.query(Node).filter(Node.id == end_id).first()
             if not start_node or not end_node:
@@ -1763,13 +1874,15 @@ class KnowledgeRepository:
                 return [[start_id]]
             all_paths_list = []
 
-            def dfs(current: str, target: str, path: List[str], visited: Set[str]):
+            async def dfs(
+                current: str, target: str, path: List[str], visited: Set[str]
+            ):
                 if len(path) > max_depth:
                     return
                 if current == target:
                     all_paths_list.append(path.copy())
                     return
-                neighbors = self.get_node_neighbors(current, direction="both")
+                neighbors = await self.get_node_neighbors(current, direction="both")
                 # Extract node IDs immediately to avoid detached instance issues
                 neighbor_ids = [neighbor_node.id for _, neighbor_node in neighbors]
                 for neighbor_id in neighbor_ids:
@@ -1780,16 +1893,16 @@ class KnowledgeRepository:
                         path.pop()
                         visited.remove(neighbor_id)
 
-            dfs(start_id, end_id, [start_id], {start_id})
+            await dfs(start_id, end_id, [start_id], {start_id})
             return all_paths_list
 
-    def calculate_degree_centrality(self) -> Dict[str, float]:
+    async def calculate_degree_centrality(self) -> Dict[str, float]:
         """Calculate degree centrality for all nodes.
 
         Returns:
             Dictionary of node_id -> centrality score
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             total_nodes = session.query(Node).count()
             if total_nodes <= 1:
                 return {}
@@ -1808,7 +1921,7 @@ class KnowledgeRepository:
                 )
             return centrality
 
-    def calculate_pagerank(
+    async def calculate_pagerank(
         self, damping: float = 0.85, iterations: int = 100, tolerance: float = 1e-06
     ) -> Dict[str, float]:
         """Calculate PageRank centrality.
@@ -1821,7 +1934,7 @@ class KnowledgeRepository:
         Returns:
             Dictionary of node_id -> pagerank score
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             nodes = session.query(Node).all()
             node_ids = [node.id for node in nodes]
             n = len(node_ids)
@@ -1851,21 +1964,22 @@ class KnowledgeRepository:
                     break
             return scores
 
-    def find_connected_components(self) -> List[Set[str]]:
+    async def find_connected_components(self) -> List[Set[str]]:
         """Find connected components using BFS.
 
         Returns:
             List of sets, where each set contains node IDs in a component
         """
-        with self.db_manager.get_session() as session:
-            nodes = session.query(Node).all()
+        async with self.db_manager.get_session() as session:
+            nodes_result = await session.execute(select(Node))
+            nodes = nodes_result.scalars().all()
             node_ids = [node.id for node in nodes]
             if not node_ids:
                 return []
             visited = set()
             components = []
 
-            def bfs(start: str) -> Set[str]:
+            async def bfs(start: str) -> Set[str]:
                 """BFS to find all nodes in component."""
                 component = set()
                 queue = deque([start])
@@ -1873,7 +1987,7 @@ class KnowledgeRepository:
                 visited.add(start)
                 while queue:
                     current = queue.popleft()
-                    neighbors = self.get_node_neighbors(current, direction="both")
+                    neighbors = await self.get_node_neighbors(current, direction="both")
                     # Extract node IDs immediately to avoid detached instance issues
                     neighbor_ids = [neighbor_node.id for _, neighbor_node in neighbors]
                     for neighbor_id in neighbor_ids:
@@ -1885,11 +1999,11 @@ class KnowledgeRepository:
 
             for node_id in node_ids:
                 if node_id not in visited:
-                    component = bfs(node_id)
+                    component = await bfs(node_id)
                     components.append(component)
             return components
 
-    def traverse_graph(
+    async def traverse_graph(
         self,
         start_nodes: List[str],
         edge_types: Optional[List[str]] = None,
@@ -1909,7 +2023,7 @@ class KnowledgeRepository:
         Returns:
             Dictionary containing traversed subgraph
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             valid_start_nodes = []
             for node_id in start_nodes:
                 if session.query(Node).filter(Node.id == node_id).first():
@@ -1927,7 +2041,7 @@ class KnowledgeRepository:
                 current, depth = queue.popleft()
                 if depth >= max_depth:
                     continue
-                neighbors = self.get_node_neighbors(
+                neighbors = await self.get_node_neighbors(
                     current, direction=direction, edge_types=edge_types
                 )
                 # Extract node information immediately to avoid detached instance issues
@@ -1957,7 +2071,7 @@ class KnowledgeRepository:
             }
             return subgraph
 
-    def get_graph_context(self, node_id: str, depth: int = 1) -> Dict[str, Any]:
+    async def get_graph_context(self, node_id: str, depth: int = 1) -> Dict[str, Any]:
         """Get node and its neighbors up to specified depth.
 
         Args:
@@ -1967,7 +2081,7 @@ class KnowledgeRepository:
         Returns:
             Dictionary containing nodes and edges in context
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             node = session.query(Node).filter(Node.id == node_id).first()
             if not node:
                 return {"error": f"Node {node_id} not found"}
@@ -1986,7 +2100,7 @@ class KnowledgeRepository:
                             .first()
                             .to_dict()
                         )
-                    neighbors = self.get_node_neighbors(node_id, direction="both")
+                    neighbors = await self.get_node_neighbors(node_id, direction="both")
                     # Extract node IDs immediately to avoid detached instance issues
                     neighbor_ids = [neighbor_node.id for _, neighbor_node in neighbors]
                     for neighbor_id in neighbor_ids:
@@ -2003,9 +2117,25 @@ class KnowledgeRepository:
                     node = session.query(Node).filter(Node.id == node_id).first()
                     if node:
                         context["nodes"][node_id] = node.to_dict()
+
+            # Sort nodes by created_at in ascending order
+            # Rebuild the nodes dict in sorted order (Python 3.7+ maintains insertion order)
+            sorted_nodes = {}
+            for node_id, node_dict in sorted(
+                context["nodes"].items(),
+                key=lambda x: x[1].get("created_at") or "",
+            ):
+                sorted_nodes[node_id] = node_dict
+            context["nodes"] = sorted_nodes
+
+            # Sort edges by created_at in ascending order
+            context["edges"].sort(
+                key=lambda x: x.get("created_at") or "",
+            )
+
             return context
 
-    def save_memory(
+    async def save_memory(
         self, key: str, content: str, overwrite: bool = False
     ) -> Optional[Node]:
         """Save text content as a Memory node.
@@ -2022,10 +2152,10 @@ class KnowledgeRepository:
             ValueError: If memory exists and overwrite=False
         """
         node_id = f"memory:{key}"
-        existing = self.get_node(node_id)
+        existing = await self.get_node(node_id)
         if existing and (not overwrite):
             raise ValueError(f"Memory '{key}' already exists (set overwrite=True)")
-        node = self.add_node(
+        node = await self.add_node(
             node_id=node_id,
             node_type="Memory",
             label=key,
@@ -2034,7 +2164,7 @@ class KnowledgeRepository:
         )
         return node
 
-    def append_memory(self, key: str, content: str) -> Node:
+    async def append_memory(self, key: str, content: str) -> Node:
         """Append text content to a Memory node (creates if missing).
 
         Args:
@@ -2045,12 +2175,12 @@ class KnowledgeRepository:
             The created or updated Node instance
         """
         node_id = f"memory:{key}"
-        existing = self.get_node(node_id)
+        existing = await self.get_node(node_id)
         if existing and existing.content:
             new_content = existing.content + content
         else:
             new_content = content
-        node = self.add_node(
+        node = await self.add_node(
             node_id=node_id,
             node_type="Memory",
             label=key,
@@ -2059,7 +2189,7 @@ class KnowledgeRepository:
         )
         return node
 
-    def get_memory(self, key: str) -> Optional[str]:
+    async def get_memory(self, key: str) -> Optional[str]:
         """Get the text content stored under a key.
 
         Args:
@@ -2068,13 +2198,16 @@ class KnowledgeRepository:
         Returns:
             Content string if found, None otherwise
         """
-        node_id = f"memory:{key}"
-        node = self.get_node(node_id)
+        if key.startswith("memory:"):
+            node_id = key
+        else:
+            node_id = f"memory:{key}"
+        node = await self.get_node(node_id)
         if not node:
             return None
-        return node.content
+        return node.content if node else None
 
-    def delete_memory(self, key: str) -> bool:
+    async def delete_memory(self, key: str) -> bool:
         """Delete a Memory node by key.
 
         Args:
@@ -2084,9 +2217,9 @@ class KnowledgeRepository:
             True if deleted, False if not found
         """
         node_id = f"memory:{key}"
-        return self.delete_node(node_id)
+        return await self.delete_node(node_id)
 
-    def list_memories(
+    async def list_memories(
         self,
         prefix: Optional[str] = None,
         sort_by_timestamp: bool = False,
@@ -2110,7 +2243,7 @@ class KnowledgeRepository:
             - created_at: Creation timestamp
             - updated_at: Last update timestamp
         """
-        all_memories = self.get_nodes(node_type="Memory")
+        all_memories = await self.get_nodes(node_type="Memory")
         if prefix:
             all_memories = [
                 m
@@ -2143,7 +2276,7 @@ class KnowledgeRepository:
             memory_list = memory_list[offset:end_index]
         return memory_list
 
-    def get_memories_count(self, prefix: Optional[str] = None) -> int:
+    async def get_memories_count(self, prefix: Optional[str] = None) -> int:
         """Get count of stored memories with optional filtering.
 
         Args:
@@ -2152,10 +2285,10 @@ class KnowledgeRepository:
         Returns:
             Count of matching memories
         """
-        total_count = self.get_nodes_count(node_type="Memory")
+        total_count = await self.get_nodes_count(node_type="Memory")
         if not prefix:
             return total_count
-        all_memories = self.get_nodes(node_type="Memory")
+        all_memories = await self.get_nodes(node_type="Memory")
         count = sum(
             (
                 1
@@ -2165,7 +2298,7 @@ class KnowledgeRepository:
         )
         return count
 
-    def search_memory(
+    async def search_memory(
         self, query: str, limit: int = 10, offset: int = 0, order_by: str = "relevance"
     ) -> List[Dict[str, Any]]:
         """Search Memory nodes using semantic vector similarity search.
@@ -2184,7 +2317,7 @@ class KnowledgeRepository:
             - created_at: Creation timestamp
             - updated_at: Last update timestamp
         """
-        search_results = self.search_nodes(
+        search_results = await self.search_nodes(
             query, node_type="Memory", limit=limit, offset=offset, order_by=order_by
         )
         memory_results = []
@@ -2201,7 +2334,7 @@ class KnowledgeRepository:
             memory_results.append(memory_dict)
         return memory_results
 
-    def calculate_betweenness_centrality(
+    async def calculate_betweenness_centrality(
         self, normalized: bool = True
     ) -> Dict[str, float]:
         """Calculate betweenness centrality for all nodes using Brandes' algorithm (unweighted, treated as undirected).
@@ -2212,7 +2345,7 @@ class KnowledgeRepository:
         Returns:
             Dictionary of node_id -> betweenness score
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             nodes = session.query(Node).all()
             node_ids = [node.id for node in nodes]
             n = len(node_ids)
@@ -2258,13 +2391,13 @@ class KnowledgeRepository:
                     betweenness[v] *= scale
             return betweenness
 
-    def calculate_clustering_coefficient(self) -> Dict[str, float]:
+    async def calculate_clustering_coefficient(self) -> Dict[str, float]:
         """Calculate local clustering coefficient for all nodes (treated as undirected).
 
         Returns:
             Dictionary of node_id -> clustering coefficient in [0,1]
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             nodes = session.query(Node).all()
             node_ids = [node.id for node in nodes]
             if not node_ids:
@@ -2294,7 +2427,7 @@ class KnowledgeRepository:
                 clustering[v] = links / possible if possible > 0 else 0.0
             return clustering
 
-    def save_workflow(
+    async def save_workflow(
         self,
         name: str,
         description: str,
@@ -2312,7 +2445,7 @@ class KnowledgeRepository:
         Returns:
             The created/updated workflow node
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             if version is None:
                 existing = (
                     session.query(Node)
@@ -2337,29 +2470,31 @@ class KnowledgeRepository:
                 "success_count": 0,
                 "failure_count": 0,
             }
-            node = self.add_node(
+            node = await self.add_node(
                 node_id=workflow_id,
                 node_type="Workflow",
                 label=f"{name} (v{version})",
                 content=description,
                 properties=properties,
             )
-            self.add_edge(
+            await self.add_edge(
                 source_id=workflow_id,
                 target_id="concept:workflow",
                 edge_type="INSTANCE_OF",
             )
             if version > 1:
                 prev_workflow_id = f"workflow:{name}:{version - 1}"
-                if self.get_node(prev_workflow_id):
-                    self.add_edge(
+                if await self.get_node(prev_workflow_id):
+                    await self.add_edge(
                         source_id=workflow_id,
                         target_id=prev_workflow_id,
                         edge_type="VERSION_OF",
                     )
             return node
 
-    def get_workflow(self, name: str, version: Optional[int] = None) -> Optional[Node]:
+    async def get_workflow(
+        self, name: str, version: Optional[int] = None
+    ) -> Optional[Node]:
         """Get a workflow by name and version.
 
         Args:
@@ -2371,8 +2506,8 @@ class KnowledgeRepository:
         """
         if version is not None:
             workflow_id = f"workflow:{name}:{version}"
-            return self.get_node(workflow_id)
-        with self.db_manager.get_session() as session:
+            return await self.get_node(workflow_id)
+        async with self.db_manager.get_session() as session:
             node = (
                 session.query(Node)
                 .filter(
@@ -2383,11 +2518,11 @@ class KnowledgeRepository:
                 .first()
             )
             if node:
-                session.refresh(node)
+                await session.refresh(node)
                 session.expunge(node)
             return node
 
-    def list_workflows(
+    async def list_workflows(
         self,
         include_versions: bool = False,
         limit: Optional[int] = None,
@@ -2403,10 +2538,10 @@ class KnowledgeRepository:
         Returns:
             List of workflow nodes
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             if include_versions:
                 query = (
-                    session.query(Node)
+                    select(Node)
                     .filter(Node.node_type == "Workflow")
                     .order_by(
                         text("properties->>'name'"),
@@ -2417,14 +2552,16 @@ class KnowledgeRepository:
                     query = query.offset(offset)
                 if limit:
                     query = query.limit(limit)
-                workflows = query.all()
+                result = await session.execute(query)
+                workflows = result.scalars().all()
             else:
-                all_workflows = (
-                    session.query(Node)
+                query = (
+                    select(Node)
                     .filter(Node.node_type == "Workflow")
                     .order_by(text("properties->>'name'"))
-                    .all()
                 )
+                result = await session.execute(query)
+                all_workflows = result.scalars().all()
                 latest_by_name = {}
                 for wf in all_workflows:
                     wf_name = wf.properties.get("name")
@@ -2438,11 +2575,11 @@ class KnowledgeRepository:
                     end_index = offset + limit if limit else None
                     workflows = workflows[offset:end_index]
             for wf in workflows:
-                session.refresh(wf)
+                await session.refresh(wf)
                 session.expunge(wf)
             return workflows
 
-    def get_workflows_count(self, include_versions: bool = False) -> int:
+    async def get_workflows_count(self, include_versions: bool = False) -> int:
         """Get count of workflows.
 
         Args:
@@ -2451,18 +2588,17 @@ class KnowledgeRepository:
         Returns:
             Count of workflows
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             if include_versions:
-                return (
-                    session.query(func.count(Node.id))
-                    .filter(Node.node_type == "Workflow")
-                    .scalar()
-                    or 0
+                result = await session.execute(
+                    select(func.count(Node.id)).filter(Node.node_type == "Workflow")
                 )
+                return result.scalar() or 0
             else:
-                all_workflows = (
-                    session.query(Node).filter(Node.node_type == "Workflow").all()
+                result = await session.execute(
+                    select(Node).filter(Node.node_type == "Workflow")
                 )
+                all_workflows = result.scalars().all()
                 unique_names = set()
                 for wf in all_workflows:
                     wf_name = wf.properties.get("name")
@@ -2470,7 +2606,7 @@ class KnowledgeRepository:
                         unique_names.add(wf_name)
                 return len(unique_names)
 
-    def get_workflow_execution_history(
+    async def get_workflow_execution_history(
         self, workflow_name: str, limit: int = 50
     ) -> List[Node]:
         """Get execution history for a workflow.
@@ -2482,9 +2618,9 @@ class KnowledgeRepository:
         Returns:
             List of WorkflowExecution nodes
         """
-        with self.db_manager.get_session() as session:
-            executions = (
-                session.query(Node)
+        async with self.db_manager.get_session() as session:
+            query = (
+                select(Node)
                 .filter(
                     Node.node_type == "WorkflowExecution",
                     text(self._get_json_property_query("workflow_name")).bindparams(
@@ -2493,14 +2629,15 @@ class KnowledgeRepository:
                 )
                 .order_by(Node.created_at.desc())
                 .limit(limit)
-                .all()
             )
+            result = await session.execute(query)
+            executions = result.scalars().all()
             for node in executions:
-                session.refresh(node)
+                await session.refresh(node)
                 session.expunge(node)
             return executions
 
-    def delete_workflow(self, name: str, version: Optional[int] = None) -> bool:
+    async def delete_workflow(self, name: str, version: Optional[int] = None) -> bool:
         """Delete a workflow.
 
         Args:
@@ -2513,22 +2650,20 @@ class KnowledgeRepository:
         if version is not None:
             workflow_id = f"workflow:{name}:{version}"
             return self.delete_node(workflow_id)
-        with self.db_manager.get_session() as session:
-            workflows = (
-                session.query(Node)
-                .filter(
-                    Node.node_type == "Workflow",
-                    text(self._get_json_property_query("name")).bindparams(value=name),
-                )
-                .all()
+        async with self.db_manager.get_session() as session:
+            query = select(Node).filter(
+                Node.node_type == "Workflow",
+                text(self._get_json_property_query("name")).bindparams(value=name),
             )
+            result = await session.execute(query)
+            workflows = result.scalars().all()
             if not workflows:
                 return False
             for workflow in workflows:
                 self.delete_node(workflow.id)
             return True
 
-    def increment_workflow_stats(
+    async def increment_workflow_stats(
         self, workflow_name: str, version: int, success: bool
     ) -> None:
         """Increment execution statistics for a workflow.
@@ -2539,13 +2674,13 @@ class KnowledgeRepository:
             success: Whether the execution was successful
         """
         workflow_id = f"workflow:{workflow_name}:{version}"
-        node = self.get_node(workflow_id)
+        node = await self.get_node(workflow_id)
         if not node:
             return
         session.refresh(node)
         session.refresh(node)
         session.refresh(node)
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             db_node = session.query(Node).filter(Node.id == workflow_id).first()
             if not db_node:
                 return
@@ -2557,9 +2692,9 @@ class KnowledgeRepository:
                 props["failure_count"] = props.get("failure_count", 0) + 1
             db_node.properties = props
             db_node.updated_at = datetime.utcnow()
-            session.commit()
+            await session.commit()
 
-    def save_thinking_pattern(
+    async def save_thinking_pattern(
         self, name: str, description: str, steps: List[str], applicable_to: List[str]
     ) -> Node:
         """Save a thinking pattern.
@@ -2581,19 +2716,19 @@ class KnowledgeRepository:
             "usage_count": 0,
             "success_rate": 0.0,
         }
-        node = self.add_node(
+        node = await self.add_node(
             node_id=pattern_id,
             node_type="ThinkingPattern",
             label=name,
             content=description,
             properties=properties,
         )
-        self.add_edge(
+        await self.add_edge(
             source_id=pattern_id, target_id="concept:reasoning", edge_type="INSTANCE_OF"
         )
         return node
 
-    def get_thinking_patterns(
+    async def get_thinking_patterns(
         self,
         query: str,
         problem_type: Optional[str] = None,
@@ -2611,7 +2746,7 @@ class KnowledgeRepository:
         Returns:
             List of thinking pattern nodes
         """
-        results = self.search_nodes(
+        results = await self.search_nodes(
             query_text=query,
             node_type="ThinkingPattern",
             limit=limit * 2,
@@ -2629,7 +2764,7 @@ class KnowledgeRepository:
             results = results[:limit]
         return results
 
-    def save_problem_solution(
+    async def save_problem_solution(
         self,
         problem: str,
         approach_steps: List[str],
@@ -2661,29 +2796,29 @@ class KnowledgeRepository:
             "lessons_learned": lessons_learned,
         }
         problem_summary = problem[:50] + "..." if len(problem) > 50 else problem
-        node = self.add_node(
+        node = await self.add_node(
             node_id=solution_id,
             node_type="ProblemSolution",
             label=f"Solution to {problem_summary}",
             content=f"{problem}\n\nOutcome: {outcome}\n\nLessons: {lessons_learned}",
             properties=properties,
         )
-        self.add_edge(
+        await self.add_edge(
             source_id=solution_id,
             target_id="concept:reasoning",
             edge_type="INSTANCE_OF",
         )
         if session_id:
             session_node_id = f"session:{session_id}"
-            if self.get_node(session_node_id):
-                self.add_edge(
+            if await self.get_node(session_node_id):
+                await self.add_edge(
                     source_id=session_node_id,
                     target_id=solution_id,
                     edge_type="PRODUCED",
                 )
         return node
 
-    def create_thinking_session(
+    async def create_thinking_session(
         self,
         problem: str,
         session_id: str,
@@ -2708,34 +2843,34 @@ class KnowledgeRepository:
             "steps_generated": json.dumps(steps),
             "pattern_used": pattern_name or "",
         }
-        node = self.add_node(
+        node = await self.add_node(
             node_id=thinking_id,
             node_type="ThinkingSession",
             label="Problem-solving session",
             content=problem,
             properties=properties,
         )
-        self.add_edge(
+        await self.add_edge(
             source_id=thinking_id,
             target_id="concept:reasoning",
             edge_type="INSTANCE_OF",
         )
         session_node_id = f"session:{session_id}"
-        if self.get_node(session_node_id):
-            self.add_edge(
+        if await self.get_node(session_node_id):
+            await self.add_edge(
                 source_id=session_node_id, target_id=thinking_id, edge_type="PERFORMED"
             )
         if pattern_name:
             pattern_id = f"pattern:{pattern_name}"
-            if self.get_node(pattern_id):
-                self.add_edge(
+            if await self.get_node(pattern_id):
+                await self.add_edge(
                     source_id=thinking_id,
                     target_id=pattern_id,
                     edge_type="USES_PATTERN",
                 )
         return node
 
-    def get_user_chats(
+    async def get_user_chats(
         self,
         user_id: str,
         limit: Optional[int] = None,
@@ -2754,13 +2889,18 @@ class KnowledgeRepository:
             List of chat dictionaries with metadata (deduplicated)
         """
         user_node_id = f"user:{user_id}"
-        with self.db_manager.get_session() as session:
-            user_node = session.query(Node).filter(Node.id == user_node_id).first()
+        async with self.db_manager.get_session() as session:
+            # Get user node
+            stmt = select(Node).filter(Node.id == user_node_id)
+            result = await session.execute(stmt)
+            user_node = result.scalar_one_or_none()
             if not user_node:
                 return []
+
+            # Query for direct chats (Chat -> BELONGS_TO -> User)
             direct_chat_edge = aliased(Edge)
-            direct_chats_query = (
-                session.query(Node, direct_chat_edge)
+            direct_chats_stmt = (
+                select(Node, direct_chat_edge)
                 .join(
                     direct_chat_edge,
                     and_(
@@ -2772,10 +2912,14 @@ class KnowledgeRepository:
                 .filter(Node.node_type == "Chat")
                 .distinct(Node.id)
             )
+            direct_result = await session.execute(direct_chats_stmt)
+            direct_results = direct_result.all()
+
+            # Query for session-linked chats (Chat -> BELONGS_TO_SESSION -> Session -> BELONGS_TO -> User)
             chat_to_session_edge = aliased(Edge)
             session_to_user_edge = aliased(Edge)
-            session_chats_query = (
-                session.query(Node, chat_to_session_edge)
+            session_chats_stmt = (
+                select(Node, chat_to_session_edge)
                 .join(
                     chat_to_session_edge,
                     and_(
@@ -2795,8 +2939,8 @@ class KnowledgeRepository:
                 .filter(Node.node_type == "Chat")
                 .distinct(Node.id)
             )
-            direct_results = direct_chats_query.all()
-            session_results = session_chats_query.all()
+            session_result = await session.execute(session_chats_stmt)
+            session_results = session_result.all()
             all_results = {}
             for chat_node, edge in direct_results + session_results:
                 chat_id = (
@@ -2859,7 +3003,9 @@ class KnowledgeRepository:
                 chats = chats[:limit]
             return chats
 
-    def create_chat(self, chat_id: str, chat_name: str, user_id: str) -> Optional[Node]:
+    async def create_chat(
+        self, chat_id: str, chat_name: str, user_id: str
+    ) -> Optional[Node]:
         """Create a chat node and link it directly to a user.
 
         Args:
@@ -2871,25 +3017,25 @@ class KnowledgeRepository:
             Created Chat node or None if user doesn't exist
         """
         user_node_id = f"user:{user_id}"
-        user_node = self.get_node(user_node_id)
+        user_node = await self.get_node(user_node_id)
         if not user_node:
             logger.warning(f"Cannot create chat: user {user_id} not found")
             return None
         chat_node_id = f"chat:{chat_id}"
-        chat_node = self.add_node(
+        chat_node = await self.add_node(
             node_id=chat_node_id,
             node_type="Chat",
             label=chat_name,
             content=f"Chat created at {datetime.utcnow().isoformat()}",
             properties={"chat_id": chat_id, "chat_name": chat_name, "user_id": user_id},
         )
-        self.add_edge(
+        await self.add_edge(
             source_id=chat_node_id, target_id=user_node_id, edge_type="BELONGS_TO"
         )
         logger.info(f"Created chat {chat_node_id} for user {user_id}")
         return chat_node
 
-    def get_chat(self, chat_id: str) -> Optional[Node]:
+    async def get_chat(self, chat_id: str) -> Optional[Node]:
         """Get a chat by its ID.
 
         Args:
@@ -2899,9 +3045,9 @@ class KnowledgeRepository:
             Chat node if found, None otherwise
         """
         chat_node_id = f"chat:{chat_id}"
-        return self.get_node(chat_node_id)
+        return await self.get_node(chat_node_id)
 
-    def get_session_messages(
+    async def get_session_messages(
         self, session_id: str, limit: Optional[int] = None, offset: int = 0
     ) -> List[Node]:
         """Get all messages linked to a session.
@@ -2914,7 +3060,7 @@ class KnowledgeRepository:
         Returns:
             List of ChatMessage nodes ordered by creation time
         """
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             session_node = session.query(Node).filter(Node.id == session_id).first()
             if not session_node:
                 logger.warning(f"Session {session_id} not found")
@@ -2935,14 +3081,14 @@ class KnowledgeRepository:
                 query = query.limit(limit)
             messages = query.all()
             for msg in messages:
-                session.refresh(msg)
+                await session.refresh(msg)
                 session.expunge(msg)
             logger.debug(
                 f"Retrieved {len(messages)} messages from session {session_id}"
             )
             return messages
 
-    def get_chat_messages(
+    async def get_chat_messages(
         self, chat_id: str, limit: Optional[int] = None, offset: int = 0
     ) -> List[Node]:
         """Get messages for a chat.
@@ -2956,13 +3102,16 @@ class KnowledgeRepository:
             List of ChatMessage nodes ordered by creation time
         """
         chat_node_id = f"chat:{chat_id}"
-        with self.db_manager.get_session() as session:
-            chat_node = session.query(Node).filter(Node.id == chat_node_id).first()
+        async with self.db_manager.get_session() as session:
+            chat_node_result = await session.execute(
+                select(Node).filter(Node.id == chat_node_id)
+            )
+            chat_node = chat_node_result.scalar_one_or_none()
             if not chat_node:
                 logger.warning(f"Chat {chat_id} not found")
                 return []
             chat_query = (
-                session.query(Node)
+                select(Node)
                 .join(Edge, Edge.target_id == Node.id)
                 .filter(
                     Edge.source_id == chat_node_id,
@@ -2970,7 +3119,8 @@ class KnowledgeRepository:
                     Node.node_type == "ChatMessage",
                 )
             )
-            chat_messages = chat_query.all()
+            chat_messages_result = await session.execute(chat_query)
+            chat_messages = chat_messages_result.scalars().all()
             logger.debug(
                 f"Found {len(chat_messages)} messages directly linked to chat {chat_id}"
             )
@@ -2990,11 +3140,11 @@ class KnowledgeRepository:
             if limit:
                 chat_messages = chat_messages[:limit]
             for msg in chat_messages:
-                session.refresh(msg)
+                await session.refresh(msg)
                 session.expunge(msg)
             return chat_messages
 
-    def update_chat_name(self, chat_id: str, new_name: str) -> Optional[Node]:
+    async def update_chat_name(self, chat_id: str, new_name: str) -> Optional[Node]:
         """Update the name of a chat.
 
         Args:
@@ -3005,12 +3155,13 @@ class KnowledgeRepository:
             Updated Chat node or None if not found
         """
         chat_node_id = f"chat:{chat_id}"
-        chat_node = self.get_node(chat_node_id)
+        chat_node = await self.get_node(chat_node_id)
         if not chat_node:
             logger.warning(f"Cannot update chat name: chat {chat_id} not found")
             return None
-        with self.db_manager.get_session() as session:
-            db_node = session.query(Node).filter(Node.id == chat_node_id).first()
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(select(Node).filter(Node.id == chat_node_id))
+            db_node = result.scalar_one_or_none()
             if not db_node:
                 return None
             db_node.label = new_name
@@ -3020,13 +3171,13 @@ class KnowledgeRepository:
                 db_node.properties = {"chat_name": new_name}
             flag_modified(db_node, "properties")
             db_node.updated_at = datetime.now(timezone.utc)
-            session.commit()
-            session.refresh(db_node)
+            await session.commit()
+            await session.refresh(db_node)
             session.expunge(db_node)
             logger.info(f"Updated chat {chat_id} name to '{new_name}'")
             return db_node
 
-    def delete_chat(self, chat_id: str) -> bool:
+    async def delete_chat(self, chat_id: str) -> bool:
         """Delete a chat and all its messages permanently.
 
         Args:
@@ -3043,7 +3194,7 @@ class KnowledgeRepository:
             logger.warning(f"Cannot delete chat: chat {chat_id} not found")
         return result
 
-    def archive_chat(self, chat_id: str) -> Optional[Node]:
+    async def archive_chat(self, chat_id: str) -> Optional[Node]:
         """Archive a chat (soft delete - hides from main list but preserves data).
 
         Args:
@@ -3053,11 +3204,11 @@ class KnowledgeRepository:
             Updated Chat node or None if not found
         """
         chat_node_id = f"chat:{chat_id}"
-        chat_node = self.get_node(chat_node_id)
+        chat_node = await self.get_node(chat_node_id)
         if not chat_node:
             logger.warning(f"Cannot archive chat: chat {chat_id} not found")
             return None
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             db_node = session.query(Node).filter(Node.id == chat_node_id).first()
             if not db_node:
                 return None
@@ -3067,13 +3218,13 @@ class KnowledgeRepository:
             db_node.properties["archived_at"] = datetime.now(timezone.utc).isoformat()
             db_node.updated_at = datetime.now(timezone.utc)
             flag_modified(db_node, "properties")
-            session.commit()
-            session.refresh(db_node)
+            await session.commit()
+            await session.refresh(db_node)
             session.expunge(db_node)
             logger.info(f"Archived chat {chat_id}")
             return db_node
 
-    def unarchive_chat(self, chat_id: str) -> Optional[Node]:
+    async def unarchive_chat(self, chat_id: str) -> Optional[Node]:
         """Unarchive a chat (restore from archived state).
 
         Args:
@@ -3083,11 +3234,11 @@ class KnowledgeRepository:
             Updated Chat node or None if not found
         """
         chat_node_id = f"chat:{chat_id}"
-        chat_node = self.get_node(chat_node_id)
+        chat_node = await self.get_node(chat_node_id)
         if not chat_node:
             logger.warning(f"Cannot unarchive chat: chat {chat_id} not found")
             return None
-        with self.db_manager.get_session() as session:
+        async with self.db_manager.get_session() as session:
             db_node = session.query(Node).filter(Node.id == chat_node_id).first()
             if not db_node:
                 return None
@@ -3097,8 +3248,8 @@ class KnowledgeRepository:
             db_node.properties.pop("archived_at", None)
             db_node.updated_at = datetime.now(timezone.utc)
             flag_modified(db_node, "properties")
-            session.commit()
-            session.refresh(db_node)
+            await session.commit()
+            await session.refresh(db_node)
             session.expunge(db_node)
             logger.info(f"Unarchived chat {chat_id}")
             return db_node

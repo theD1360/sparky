@@ -226,7 +226,7 @@ Cannot proceed without identity."""
         seen_ids = set()
 
         # Search for core identity
-        core_results = self.repository.search_nodes(
+        core_results = await self.repository.search_nodes(
             query_text="who am I, my purpose, my identity, my core being",
             node_type=None,
             limit=10,
@@ -246,14 +246,14 @@ Cannot proceed without identity."""
 
             # Get deeper context around this node
             try:
-                context = self.repository.get_graph_context(node.id, depth=2)
+                context = await self.repository.get_graph_context(node.id, depth=2)
                 if context and "nodes" in context:
                     # context["nodes"] is a dict keyed by node_id, iterate over values
                     for ctx_node_data in context["nodes"].values():
                         ctx_node_id = ctx_node_data.get("id")
                         if ctx_node_id and ctx_node_id not in seen_ids:
                             # Get the actual node object
-                            ctx_node = self.repository.get_node(ctx_node_id)
+                            ctx_node = await self.repository.get_node(ctx_node_id)
                             if ctx_node:
                                 seen_ids.add(ctx_node_id)
                                 identity_nodes.append(ctx_node)
@@ -261,20 +261,22 @@ Cannot proceed without identity."""
                 logger.warning(f"Failed to get context for {node.id}: {e}")
 
         # Also ensure we get concept:self if it exists
-        self_node = self.repository.get_node("concept:self")
+        self_node = await self.repository.get_node("concept:self")
         if self_node and self_node.id not in seen_ids:
             identity_nodes.append(self_node)
             seen_ids.add(self_node.id)
 
             # Get its context too
             try:
-                context = self.repository.get_graph_context("concept:self", depth=2)
+                context = await self.repository.get_graph_context(
+                    "concept:self", depth=2
+                )
                 if context and "nodes" in context:
                     # context["nodes"] is a dict keyed by node_id, iterate over values
                     for ctx_node_data in context["nodes"].values():
                         ctx_node_id = ctx_node_data.get("id")
                         if ctx_node_id and ctx_node_id not in seen_ids:
-                            ctx_node = self.repository.get_node(ctx_node_id)
+                            ctx_node = await self.repository.get_node(ctx_node_id)
                             if ctx_node:
                                 seen_ids.add(ctx_node_id)
                                 identity_nodes.append(ctx_node)
@@ -306,7 +308,7 @@ Cannot proceed without identity."""
 
             # Track relationships
             try:
-                neighbors = self.repository.get_node_neighbors(
+                neighbors = await self.repository.get_node_neighbors(
                     node.id, direction="both"
                 )
                 for edge, neighbor in neighbors:
@@ -360,7 +362,7 @@ Cannot proceed without identity."""
         logger.info("Loading identity using legacy approach")
 
         # Step 1: Get the self node
-        best_match = self.repository.get_node("concept:self")
+        best_match = await self.repository.get_node("concept:self")
         if not best_match:
             logger.error("concept:self node not found")
             raise ValueError("concept:self node not found")
@@ -377,7 +379,7 @@ Cannot proceed without identity."""
 
         # Step 2: Get connected nodes
         try:
-            neighbors = self.repository.get_node_neighbors(
+            neighbors = await self.repository.get_node_neighbors(
                 node_id=best_match_id, direction="both"
             )
 
@@ -455,7 +457,7 @@ Cannot proceed without identity."""
             session_node_id = f"session:{self.session_id}"
             logger.info("Loading session context for node: %s", session_node_id)
 
-            node = self.repository.get_node(session_node_id)
+            node = await self.repository.get_node(session_node_id)
             if not node:
                 logger.debug("Session node not found: %s", session_node_id)
                 return None
@@ -502,7 +504,7 @@ Cannot proceed without identity."""
 
             # Load directly related nodes (neighbors) and present previews
             try:
-                neighbors = self.repository.get_node_neighbors(
+                neighbors = await self.repository.get_node_neighbors(
                     node_id=session_node_id, direction="both"
                 )
             except Exception as e:
@@ -613,7 +615,7 @@ Cannot proceed without identity."""
                 query[:50] + "..." if len(query) > 50 else query,
             )
 
-            matches = self.repository.search_nodes(
+            matches = await self.repository.search_nodes(
                 query_text=query, limit=top_k, order_by="relevance"
             )
 
@@ -848,7 +850,7 @@ Cannot proceed without identity."""
         try:
             logger.debug("AutoMemory: Appending turn %d to transcript", turn)
             if self.repository:
-                self.repository.append_memory(
+                await self.repository.append_memory(
                     key=self._mem_transcript_key, content=entry
                 )
             logger.info("AutoMemory: ✓ Appended Turn %d", turn)
@@ -884,20 +886,20 @@ Cannot proceed without identity."""
         try:
             # Persist summary content
             content = f"[Turns: {turn_count}]\n{summary}"
-            self.repository.save_memory(
+            await self.repository.save_memory(
                 key=self._mem_summary_key,
                 content=content,
                 overwrite=True,
             )
 
             # Ensure ontology and nodes
-            self._ensure_ontology_structure()
+            await self._ensure_ontology_structure()
             session_node_id = f"session:{self.session_id}"
             memory_summary_id = f"memory:{self._mem_summary_key}"
             memory_transcript_id = f"memory:{self._mem_transcript_key}"
 
             # Ensure session node exists
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id=session_node_id,
                 node_type="Session",
                 label=f"Session {self.session_id}",
@@ -905,21 +907,25 @@ Cannot proceed without identity."""
             )
 
             # Ensure memory nodes exist in the graph
-            self._ensure_memory_in_graph(self._mem_summary_key, "Chat Session Summary")
-            self._ensure_memory_in_graph(
+            await self._ensure_memory_in_graph(
+                self._mem_summary_key, "Chat Session Summary"
+            )
+            await self._ensure_memory_in_graph(
                 self._mem_transcript_key, "Chat Session Transcript"
             )
 
             # Auto-associate summary to concepts (e.g., Conversation)
-            self.auto_associate_memory(self._mem_summary_key, "Chat Session Summary")
+            await self.auto_associate_memory(
+                self._mem_summary_key, "Chat Session Summary"
+            )
 
             # Link session -> summary and summary -> transcript
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id=session_node_id,
                 target_id=memory_summary_id,
                 edge_type="HAS_SUMMARY",
             )
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id=memory_summary_id,
                 target_id=memory_transcript_id,
                 edge_type="SUMMARIZES",
@@ -944,7 +950,7 @@ Cannot proceed without identity."""
         try:
             # Save transcript to memory using repository
             if self.repository:
-                self.repository.save_memory(
+                await self.repository.save_memory(
                     key=self._mem_transcript_key,
                     content=header,
                     overwrite=True,
@@ -957,13 +963,13 @@ Cannot proceed without identity."""
 
             # Create session structure in knowledge graph
             if self.repository:
-                self._ensure_ontology_structure()
+                await self._ensure_ontology_structure()
 
                 session_node_id = f"session:{self.session_id}"
                 memory_node_id = f"memory:{self._mem_transcript_key}"
 
                 # Create session node
-                self.repository.add_node(
+                await self.repository.add_node(
                     node_id=session_node_id,
                     node_type="Session",
                     label=f"Session {self.session_id}",
@@ -974,7 +980,7 @@ Cannot proceed without identity."""
                 )
 
                 # Link session to concept:session
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id="concept:session",
                     target_id=session_node_id,
                     edge_type="HAS_INSTANCE",
@@ -982,7 +988,7 @@ Cannot proceed without identity."""
 
                 # Create memory node for transcript (already created by save_memory, but ensure it's linked)
                 # Link session to transcript
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=session_node_id,
                     target_id=memory_node_id,
                     edge_type="HAS_TRANSCRIPT",
@@ -1031,11 +1037,11 @@ Cannot proceed without identity."""
 
         try:
             # Ensure ontology structure exists
-            self._ensure_ontology_structure()
+            await self._ensure_ontology_structure()
 
             # Ensure session node exists
             logger.debug("KG: Creating/updating session node: %s", session_node_id)
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id=session_node_id,
                 node_type="Session",
                 label=f"Session {self.session_id}",
@@ -1054,7 +1060,7 @@ Cannot proceed without identity."""
                 properties["error_type"] = error_type
 
             logger.debug("KG: Creating ToolCall node: %s", tool_call_id)
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id=tool_call_id,
                 node_type="ToolCall",
                 label=f"{tool_name} ({status})",
@@ -1063,7 +1069,7 @@ Cannot proceed without identity."""
 
             # Link to concept:tool_usage
             logger.debug("KG: Linking ToolCall to concept:tool_usage")
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id=tool_call_id,
                 target_id="concept:tool_usage",
                 edge_type="INSTANCE_OF",
@@ -1071,7 +1077,7 @@ Cannot proceed without identity."""
 
             # Link session to tool call
             logger.debug("KG: Linking session to ToolCall")
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id=session_node_id,
                 target_id=tool_call_id,
                 edge_type="PERFORMED",
@@ -1101,21 +1107,21 @@ Cannot proceed without identity."""
                 file_id = f"file:{path}"
 
                 # Create File node
-                self.repository.add_node(
+                await self.repository.add_node(
                     node_id=file_id,
                     node_type="File",
                     label=path.split("/")[-1],
                 )
 
                 # Link file to concept:file
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=file_id,
                     target_id="concept:file",
                     edge_type="INSTANCE_OF",
                 )
 
                 # Link tool call to file with appropriate edge type
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=tool_call_id,
                     target_id=file_id,
                     edge_type=file_operations[tool_name],
@@ -1136,7 +1142,7 @@ Cannot proceed without identity."""
                 status,
             )
 
-    def associate_memory_to_knowledge(
+    async def associate_memory_to_knowledge(
         self, memory_key: str, node_id: str, relationship: str = "RELATES_TO"
     ):
         """Associate a memory with a knowledge graph node.
@@ -1155,9 +1161,9 @@ Cannot proceed without identity."""
         memory_node_id = f"memory:{memory_key}"
 
         # Create memory node (or get existing)
-        node = self.repository.get_node(memory_node_id)
+        node = await self.repository.get_node(memory_node_id)
         if not node:
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id=memory_node_id,
                 node_type="Memory",
                 label=memory_key,
@@ -1165,7 +1171,7 @@ Cannot proceed without identity."""
             )
 
         # Create edge from memory to knowledge node
-        self.repository.add_edge(
+        await self.repository.add_edge(
             source_id=memory_node_id,
             target_id=node_id,
             edge_type=relationship,
@@ -1178,7 +1184,7 @@ Cannot proceed without identity."""
             relationship,
         )
 
-    def _ensure_ontology_structure(self):
+    async def _ensure_ontology_structure(self):
         """Ensure basic ontology exists in the knowledge graph.
 
         Creates minimal concept structure:
@@ -1196,7 +1202,7 @@ Cannot proceed without identity."""
             logger.debug("KG: Ensuring basic ontology exists")
 
             # Create concept:self (required for bot identity queries)
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id="concept:self",
                 node_type="Concept",
                 label="Self",
@@ -1204,7 +1210,7 @@ Cannot proceed without identity."""
             )
 
             # Create concept:session for session tracking
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id="concept:session",
                 node_type="Concept",
                 label="Session",
@@ -1212,7 +1218,7 @@ Cannot proceed without identity."""
             )
 
             # Create concept:file for file operations
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id="concept:file",
                 node_type="Concept",
                 label="File",
@@ -1220,7 +1226,7 @@ Cannot proceed without identity."""
             )
 
             # Create concept:tool_usage for tool call tracking
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id="concept:tool_usage",
                 node_type="Concept",
                 label="Tool Usage",
@@ -1228,7 +1234,7 @@ Cannot proceed without identity."""
             )
 
             # Link tool_usage to self
-            self.repository.add_edge(
+            await self.repository.add_edge(
                 source_id="concept:tool_usage",
                 target_id="concept:self",
                 edge_type="ASPECT_OF",
@@ -1240,7 +1246,7 @@ Cannot proceed without identity."""
         except Exception as e:
             logger.warning("Failed to ensure ontology structure: %s", e)
 
-    def _ensure_memory_in_graph(self, memory_key: str, description: str = ""):
+    async def _ensure_memory_in_graph(self, memory_key: str, description: str = ""):
         """Ensure a memory node exists in the knowledge graph.
 
         This is idempotent - if the node already exists, it's updated.
@@ -1256,7 +1262,7 @@ Cannot proceed without identity."""
         label = description or memory_key
 
         try:
-            self.repository.add_node(
+            await self.repository.add_node(
                 node_id=memory_node_id,
                 node_type="Memory",
                 label=label,
@@ -1266,7 +1272,7 @@ Cannot proceed without identity."""
         except Exception as e:
             logger.error("KG: Failed to create memory node '%s': %s", memory_key, e)
 
-    def auto_associate_memory(self, memory_key: str, description: str = ""):
+    async def auto_associate_memory(self, memory_key: str, description: str = ""):
         """Automatically associate a memory with relevant knowledge graph nodes.
 
         This analyzes the memory key and creates appropriate associations:
@@ -1293,10 +1299,10 @@ Cannot proceed without identity."""
         logger.debug("KG: Auto-associating memory '%s'", memory_key)
 
         # Ensure ontology structure exists
-        self._ensure_ontology_structure()
+        await self._ensure_ontology_structure()
 
         # Ensure the memory node exists
-        self._ensure_memory_in_graph(memory_key, description)
+        await self._ensure_memory_in_graph(memory_key, description)
 
         memory_node_id = f"memory:{memory_key}"
 
@@ -1306,7 +1312,7 @@ Cannot proceed without identity."""
             if memory_key.startswith("core:"):
                 # Core memories associate with self
                 logger.info("KG: Linking '%s' → concept:self (RELATES_TO)", memory_key)
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=memory_node_id,
                     target_id="concept:self",
                     edge_type="RELATES_TO",
@@ -1317,19 +1323,19 @@ Cannot proceed without identity."""
                 # Session transcripts/summaries associate with concept:conversation
                 logger.info("KG: Linking '%s' → concept:conversation", memory_key)
                 # First ensure concept:conversation exists
-                self.repository.add_node(
+                await self.repository.add_node(
                     node_id="concept:conversation",
                     node_type="Concept",
                     label="Conversation",
                     properties={"description": "Conversation history and context"},
                 )
                 # Link conversation to self
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id="concept:conversation",
                     target_id="concept:self",
                     edge_type="ASPECT_OF",
                 )
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=memory_node_id,
                     target_id="concept:conversation",
                     edge_type="INSTANCE_OF",
@@ -1343,25 +1349,25 @@ Cannot proceed without identity."""
                 logger.info(
                     "KG: Linking '%s' → concept:self + concept:learning", memory_key
                 )
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=memory_node_id,
                     target_id="concept:self",
                     edge_type="INFORMS",
                 )
                 # Also create concept:learning
-                self.repository.add_node(
+                await self.repository.add_node(
                     node_id="concept:learning",
                     node_type="Concept",
                     label="Learning",
                     properties={"description": "Accumulated knowledge and insights"},
                 )
                 # Link learning to self
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id="concept:learning",
                     target_id="concept:self",
                     edge_type="ASPECT_OF",
                 )
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=memory_node_id,
                     target_id="concept:learning",
                     edge_type="CONTRIBUTES_TO",
@@ -1370,19 +1376,19 @@ Cannot proceed without identity."""
 
             elif memory_key.startswith("plans:"):
                 # Plans associate with concept:planning
-                self.repository.add_node(
+                await self.repository.add_node(
                     node_id="concept:planning",
                     node_type="Concept",
                     label="Planning",
                     properties={"description": "Plans and strategies"},
                 )
                 # Link planning to self
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id="concept:planning",
                     target_id="concept:self",
                     edge_type="ASPECT_OF",
                 )
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=memory_node_id,
                     target_id="concept:planning",
                     edge_type="INSTANCE_OF",
@@ -1391,19 +1397,19 @@ Cannot proceed without identity."""
 
             elif memory_key.startswith("goals:"):
                 # Goals associate with concept:goals
-                self.repository.add_node(
+                await self.repository.add_node(
                     node_id="concept:goals",
                     node_type="Concept",
                     label="Goals",
                     properties={"description": "Objectives and aspirations"},
                 )
                 # Link goals to self
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id="concept:goals",
                     target_id="concept:self",
                     edge_type="ASPECT_OF",
                 )
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=memory_node_id,
                     target_id="concept:goals",
                     edge_type="INSTANCE_OF",
@@ -1412,19 +1418,19 @@ Cannot proceed without identity."""
 
             elif memory_key.startswith("tasks:"):
                 # Tasks associate with concept:tasks
-                self.repository.add_node(
+                await self.repository.add_node(
                     node_id="concept:tasks",
                     node_type="Concept",
                     label="Tasks",
                     properties={"description": "Active tasks and work items"},
                 )
                 # Link tasks to self
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id="concept:tasks",
                     target_id="concept:self",
                     edge_type="ASPECT_OF",
                 )
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=memory_node_id,
                     target_id="concept:tasks",
                     edge_type="INSTANCE_OF",
@@ -1433,19 +1439,19 @@ Cannot proceed without identity."""
 
             elif memory_key.startswith("tools:"):
                 # Tools/capabilities associate with concept:capabilities
-                self.repository.add_node(
+                await self.repository.add_node(
                     node_id="concept:capabilities",
                     node_type="Concept",
                     label="Capabilities",
                     properties={"description": "Tools and capabilities"},
                 )
                 # Link capabilities to self
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id="concept:capabilities",
                     target_id="concept:self",
                     edge_type="ASPECT_OF",
                 )
-                self.repository.add_edge(
+                await self.repository.add_edge(
                     source_id=memory_node_id,
                     target_id="concept:capabilities",
                     edge_type="INSTANCE_OF",

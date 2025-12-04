@@ -69,20 +69,19 @@ class AgentLoop:
             self.scheduled_tasks = load_scheduled_tasks(config_path)
             logger.info(f"Loaded {len(self.scheduled_tasks)} scheduled tasks")
 
-        # Initialize task queue
-        self.task_queue = create_task_queue()
+        # Initialize task queue (will be created in run() method)
+        self.task_queue = None
+        self._task_queue_initialized = False
 
-        # Initialize task service
-        self.task_service = TaskService(task_queue=self.task_queue)
+        # Initialize task service (will be created in run() method after task_queue)
+        self.task_service = None
 
         # Initialize event system
         self.events = Events()
 
-        # Subscribe to task queue events
-        self.task_queue.events.subscribe(TaskEvents.TASK_ADDED, self._on_task_added)
-
         # Subscribe to our own events for task processing
         self.events.subscribe(TaskEvents.TASK_AVAILABLE, self._on_task_available)
+        # Note: Task queue event subscription will be done in run() after initialization
 
         # Create persistent session_id and user_id for the agent loop
         # Use regular UUIDs so the agent appears as a normal user in the UI
@@ -218,10 +217,10 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
 
                 db_manager = get_database_manager()
                 if not db_manager.engine:
-                    db_manager.connect()
+                    await db_manager.connect()
                 repository = KnowledgeRepository(db_manager)
 
-                chat_node = repository.get_chat(task_chat_id)
+                chat_node = await repository.get_chat(task_chat_id)
                 if chat_node and chat_node.properties:
                     # Get user_id from chat properties
                     chat_user_id = chat_node.properties.get("user_id")
@@ -556,6 +555,15 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
         )
         self.running = True
 
+        # Initialize task queue if not already done
+        if not self._task_queue_initialized:
+            self.task_queue = await create_task_queue()
+            self.task_service = TaskService(task_queue=self.task_queue)
+            # Subscribe to task queue events now that it's initialized
+            self.task_queue.events.subscribe(TaskEvents.TASK_ADDED, self._on_task_added)
+            self._task_queue_initialized = True
+            logger.info("Task queue and task service initialized and connected to database")
+
         try:
             while self.running:
                 try:
@@ -729,7 +737,7 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
         Returns:
             Dictionary with task counts by status and loop stats
         """
-        queue_stats = self.task_queue.get_task_stats()
+        queue_stats = await self.task_queue.get_task_stats()
         queue_stats["loop_cycles"] = self._cycle_count
         queue_stats["tasks_processed"] = self._tasks_processed
         queue_stats["scheduled_tasks_enabled"] = self.enable_scheduled_tasks

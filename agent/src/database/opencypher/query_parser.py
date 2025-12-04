@@ -117,27 +117,36 @@ class QueryParser:
         where_text = where_re.group(1).strip()
 
         # Parse simple conditions: var.prop = value, var.prop STARTS WITH value
+        # Also handle NOT operator: NOT var.prop = value
         conditions = []
 
-        # Handle STARTS WITH
+        # Handle STARTS WITH (with optional NOT)
         starts_with = re.findall(
-            r"(\w+)\.(\w+)\s+STARTS\s+WITH\s+[\"']([^\"']+)[\"']",
+            r"(NOT\s+)?(\w+)\.(\w+)\s+STARTS\s+WITH\s+[\"']([^\"']+)[\"']",
             where_text,
             re.IGNORECASE,
         )
-        for var, prop, value in starts_with:
+        for match in starts_with:
+            not_part, var, prop, value = match
+            negated = bool(not_part and not_part.strip().upper() == "NOT")
             conditions.append(
                 {
                     "type": "starts_with",
                     "var": var,
                     "property": prop,
                     "value": value,
+                    "negated": negated,
                 }
             )
 
-        # Handle equality
-        equals = re.findall(r"(\w+)\.(\w+)\s*=\s*([^,\s]+)", where_text)
-        for var, prop, value in equals:
+        # Handle equality (with optional NOT)
+        # Match patterns like: NOT n.label = "knowledge" or n.label = "knowledge"
+        equals = re.findall(
+            r"(NOT\s+)?(\w+)\.(\w+)\s*=\s*([^,\s]+)", where_text, re.IGNORECASE
+        )
+        for match in equals:
+            not_part, var, prop, value = match
+            negated = bool(not_part and not_part.strip().upper() == "NOT")
             value = value.strip().strip("\"'")
             # Convert boolean strings
             if value.lower() == "true":
@@ -150,6 +159,7 @@ class QueryParser:
                     "var": var,
                     "property": prop,
                     "value": value,
+                    "negated": negated,
                 }
             )
 

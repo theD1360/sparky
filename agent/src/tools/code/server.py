@@ -228,7 +228,7 @@ async def _index_file_to_graph(path: str, content: str) -> None:
         }
         language = language_map.get(file_ext, "unknown")
         file_node_id = f"file:{path}"
-        _kb_repository.add_node(
+        await _kb_repository.add_node(
             node_id=file_node_id,
             node_type="File",
             label=PathLib(path).name,
@@ -280,14 +280,14 @@ async def _index_python_file_structure(
                     imports.append(node.module)
         for imported_module in set(imports):
             module_node_id = f"module:{imported_module}"
-            _kb_repository.add_node(
+            await _kb_repository.add_node(
                 node_id=module_node_id,
                 node_type="Module",
                 label=imported_module,
                 content=f"Python module: {imported_module}",
                 properties={"name": imported_module},
             )
-            _kb_repository.add_edge(
+            await _kb_repository.add_edge(
                 source_id=file_node_id, target_id=module_node_id, edge_type="IMPORTS"
             )
         for node in ast.walk(tree):
@@ -299,7 +299,7 @@ async def _index_python_file_structure(
                 args = [arg.arg for arg in node.args.args]
                 signature = f"{func_name}({', '.join(args)})"
                 func_node_id = f"symbol:{path}:{func_name}:{func_line}"
-                _kb_repository.add_node(
+                await _kb_repository.add_node(
                     node_id=func_node_id,
                     node_type="Symbol",
                     label=func_name,
@@ -312,7 +312,7 @@ async def _index_python_file_structure(
                         "signature": signature,
                     },
                 )
-                _kb_repository.add_edge(
+                await _kb_repository.add_edge(
                     source_id=file_node_id, target_id=func_node_id, edge_type="CONTAINS"
                 )
         for node in ast.walk(tree):
@@ -320,7 +320,7 @@ async def _index_python_file_structure(
                 class_name = node.name
                 class_line = node.lineno
                 class_node_id = f"symbol:{path}:{class_name}:{class_line}"
-                _kb_repository.add_node(
+                await _kb_repository.add_node(
                     node_id=class_node_id,
                     node_type="Symbol",
                     label=class_name,
@@ -332,7 +332,7 @@ async def _index_python_file_structure(
                         "line": class_line,
                     },
                 )
-                _kb_repository.add_edge(
+                await _kb_repository.add_edge(
                     source_id=file_node_id,
                     target_id=class_node_id,
                     edge_type="CONTAINS",
@@ -362,7 +362,7 @@ async def _get_file_context(path: str) -> dict:
         return {}
     try:
         file_node_id = f"file:{path}"
-        file_node = _kb_repository.get_node(file_node_id)
+        file_node = await _kb_repository.get_node(file_node_id)
         if not file_node:
             return {}
         context = {
@@ -376,17 +376,17 @@ async def _get_file_context(path: str) -> dict:
             "symbols": [],
             "related_files": [],
         }
-        import_edges = _kb_repository.get_edges(
+        import_edges = await _kb_repository.get_edges(
             source_id=file_node_id, edge_type="IMPORTS"
         )
         context["imports"] = [
             edge.target_id.replace("module:", "") for edge in import_edges
         ]
-        symbol_edges = _kb_repository.get_edges(
+        symbol_edges = await _kb_repository.get_edges(
             source_id=file_node_id, edge_type="CONTAINS"
         )
         for edge in symbol_edges:
-            symbol_node = _kb_repository.get_node(edge.target_id)
+            symbol_node = await _kb_repository.get_node(edge.target_id)
             if symbol_node:
                 context["symbols"].append(
                     {
@@ -399,7 +399,7 @@ async def _get_file_context(path: str) -> dict:
         if context["imports"]:
             for module in context["imports"][:5]:
                 module_node_id = f"module:{module}"
-                files_importing_module = _kb_repository.get_edges(
+                files_importing_module = await _kb_repository.get_edges(
                     target_id=module_node_id, edge_type="IMPORTS"
                 )
                 for edge in files_importing_module:
@@ -435,7 +435,7 @@ class SandboxError(Exception):
     pass
 
 
-def _load_graph():
+async def _load_graph():
     """Load or initialize database using KnowledgeRepository."""
     global _kb_repository, _db_manager, _graph_initialized
     if _graph_initialized:
@@ -456,9 +456,9 @@ def _load_graph():
                 f"Connecting to PostgreSQL database (attempt {attempt + 1}/{max_retries}): ...@{safe_db_url}"
             )
             _db_manager = get_database_manager(db_url=db_url)
-            _db_manager.connect()
+            await _db_manager.connect()
             _kb_repository = KnowledgeRepository(_db_manager)
-            stats = _kb_repository.get_graph_stats()
+            stats = await _kb_repository.get_graph_stats()
             node_count = stats["total_nodes"]
             edge_count = stats["total_edges"]
             if node_count == 0:
@@ -483,14 +483,14 @@ def _load_graph():
                 raise
 
 
-def _ensure_graph_initialized():
+async def _ensure_graph_initialized():
     """Ensure graph is initialized, load if needed.
 
     This is called by graph-powered tools to lazily initialize the graph
     on first use rather than at module import time.
     """
     if not _graph_initialized:
-        _load_graph()
+        await _load_graph()
 
 
 def _mark_file_as_read(path: str, content: str) -> None:
@@ -985,7 +985,7 @@ async def read_file(path: str, index_to_graph: bool = True) -> dict:
         _mark_file_as_read(path, content)
         if index_to_graph:
             try:
-                _ensure_graph_initialized()
+                await _ensure_graph_initialized()
                 await _index_file_to_graph(path, content)
             except Exception as e:
                 logger.warning(f"Graph indexing skipped for {path}: {e}")
@@ -1167,18 +1167,39 @@ async def edit_file(path: str, edits: str) -> dict:
             return MCPResponse.error(str(e)).to_dict()
         except SearchReplaceMatchError as e:
             return MCPResponse.error(str(e)).to_dict()
-        try:
-            tree = ast.parse(edited_content)
-            edited_content = ast.unparse(tree)
-        except Exception as e:
-            logger.warning(f"AST formatting failed: {e}")
-            return MCPResponse.error(f"AST formatting failed: {e}").to_dict()
+
+        # Only attempt AST formatting for Python files
+        extension = Path(path).suffix.lstrip(".")
+        if extension == "py":
+            try:
+                # Parse to validate syntax, but only unparse if successful
+                tree = ast.parse(edited_content)
+                # Use unparse to normalize formatting, but catch any errors
+                try:
+                    edited_content = ast.unparse(tree)
+                except (AttributeError, SyntaxError) as e:
+                    # ast.unparse might not be available in older Python versions
+                    # or might fail on certain constructs - just use original content
+                    logger.debug(
+                        f"AST unparse not available or failed: {e}, using original formatting"
+                    )
+                    # Keep edited_content as-is if unparse fails
+            except SyntaxError as e:
+                # Syntax error will be caught later by _check_syntax
+                # Don't fail here, let the syntax checker provide better error messages
+                logger.debug(
+                    f"AST parse failed (will be caught by syntax checker): {e}"
+                )
+            except Exception as e:
+                # For any other AST-related errors, log but don't fail
+                logger.warning(
+                    f"AST formatting failed: {e}, continuing without formatting"
+                )
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(edited_content)
         except Exception as e:
             return MCPResponse.error(f"Write Error: {str(e)}").to_dict()
-        extension = Path(path).suffix.lstrip(".")
         syntax_errors = ""
         error_list = []
         if extension == "py":
@@ -1769,7 +1790,7 @@ async def search_codebase(query: str, file_type: str = None, limit: int = 10) ->
             return MCPResponse.error(
                 f"Knowledge graph initialization failed: {str(e)}\nEnsure SPARKY_DB_URL or SPARKY_DB_URL environment variable is set."
             ).to_dict()
-        results = _kb_repository.search_nodes(
+        results = await _kb_repository.search_nodes(
             query_text=query, node_type=file_type, limit=limit
         )
         formatted_results = []
@@ -1850,28 +1871,26 @@ async def symbol_search(
             return MCPResponse.error("Knowledge graph not available").to_dict()
         symbols = []
         if symbol_name:
-            nodes = _kb_repository.search_nodes(
+            nodes = await _kb_repository.search_nodes(
                 query_text=symbol_name, node_type="Symbol", limit=limit * 2
             )
-        else:
-            from database.models import Node
-            from sqlalchemy import select
-
-            with _kb_repository.db_manager.get_session() as session:
-                stmt = select(Node).where(Node.node_type == "Symbol")
-                result = session.execute(stmt)
-                nodes = [row[0] for row in result.fetchall()][: limit * 2]
-        for node in nodes:
-            if not node or node.node_type != "Symbol":
-                continue
-            name = node.properties.get("name", "")
-            kind = node.properties.get("kind", "")
-            file_path = node.properties.get("file", "")
-            line = node.properties.get("line", 0)
-            signature = node.properties.get("signature", "")
-            if symbol_type and kind != symbol_type:
-                continue
-            if symbol_name:
+            # Extract properties while nodes are still accessible
+            for node in nodes:
+                if not node or node.node_type != "Symbol":
+                    continue
+                # Access properties immediately to avoid session binding issues
+                properties = (
+                    node.properties
+                    if hasattr(node, "properties") and node.properties
+                    else {}
+                )
+                name = properties.get("name", "")
+                kind = properties.get("kind", "")
+                file_path = properties.get("file", "")
+                line = properties.get("line", 0)
+                signature = properties.get("signature", "")
+                if symbol_type and kind != symbol_type:
+                    continue
                 import fnmatch
 
                 if not fnmatch.fnmatch(
@@ -1879,20 +1898,62 @@ async def symbol_search(
                 ):
                     if symbol_name not in name.lower():
                         continue
-            if file_pattern:
-                if file_pattern not in file_path:
+                if file_pattern:
+                    if file_pattern not in file_path:
+                        continue
+                symbols.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "file": file_path,
+                        "line": line,
+                        "signature": signature,
+                    }
+                )
+                if len(symbols) >= limit:
+                    break
+        else:
+            from database.models import Node
+            from sqlalchemy import select
+
+            async with _kb_repository.db_manager.get_session() as session:
+                stmt = select(Node).where(Node.node_type == "Symbol")
+                result = await session.execute(stmt)
+                # Extract all properties while still in session context
+                node_data = []
+                for row in result.fetchall()[: limit * 2]:
+                    node = row[0]
+                    if not node or node.node_type != "Symbol":
+                        continue
+                    # Access properties while still in session
+                    properties = node.properties or {}
+                    node_data.append(
+                        {
+                            "name": properties.get("name", ""),
+                            "kind": properties.get("kind", ""),
+                            "file": properties.get("file", ""),
+                            "line": properties.get("line", 0),
+                            "signature": properties.get("signature", ""),
+                        }
+                    )
+            # Process node data outside session
+            for data in node_data:
+                if symbol_type and data["kind"] != symbol_type:
                     continue
-            symbols.append(
-                {
-                    "name": name,
-                    "type": kind,
-                    "file": file_path,
-                    "line": line,
-                    "signature": signature,
-                }
-            )
-            if len(symbols) >= limit:
-                break
+                if file_pattern:
+                    if file_pattern not in data["file"]:
+                        continue
+                symbols.append(
+                    {
+                        "name": data["name"],
+                        "type": data["kind"],
+                        "file": data["file"],
+                        "line": data["line"],
+                        "signature": data["signature"],
+                    }
+                )
+                if len(symbols) >= limit:
+                    break
         symbols.sort(key=lambda x: (x["file"], x["line"]))
         message = f"Found {len(symbols)} symbol(s)"
         if symbol_name:
@@ -1946,17 +2007,17 @@ async def find_references(
         if not _kb_repository:
             return MCPResponse.error("Knowledge graph not available").to_dict()
         module_node_id = f"module:{module_or_symbol}"
-        module_node = _kb_repository.get_node(module_node_id)
+        module_node = await _kb_repository.get_node(module_node_id)
         if not module_node:
             return MCPResponse.error(
                 f"Module '{module_or_symbol}' not found in knowledge graph.\nMake sure files that import it have been read and indexed."
             ).to_dict()
-        import_edges = _kb_repository.get_edges(
+        import_edges = await _kb_repository.get_edges(
             target_id=module_node_id, edge_type="IMPORTS"
         )
         references = []
         for edge in import_edges:
-            source_node = _kb_repository.get_node(edge.source_id)
+            source_node = await _kb_repository.get_node(edge.source_id)
             if source_node and source_node.node_type == "File":
                 file_path = source_node.properties.get("path", "")
                 language = source_node.properties.get("language", "")
@@ -2024,7 +2085,7 @@ async def batch_read_files(paths: list[str], index_to_graph: bool = True) -> dic
                 _mark_file_as_read(path, content)
                 if index_to_graph:
                     try:
-                        _ensure_graph_initialized()
+                        await _ensure_graph_initialized()
                         await _index_file_to_graph(path, content)
                     except Exception as e:
                         logger.warning(f"Graph indexing skipped for {path}: {e}")
@@ -2065,8 +2126,9 @@ async def batch_read_files(paths: list[str], index_to_graph: bool = True) -> dic
 
 def main():
     """Run the MCP server."""
+    import asyncio
     try:
-        _load_graph()
+        asyncio.run(_load_graph())
         logger.info("Knowledge graph initialized successfully")
     except Exception as e:
         logger.warning(f"Failed to initialize knowledge graph: {e}")
