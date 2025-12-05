@@ -10,10 +10,10 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy import and_, bindparam, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, object_session
 from sqlalchemy.orm.attributes import flag_modified
 
 from .database import DatabaseManager
@@ -1009,30 +1009,83 @@ class KnowledgeRepository:
             ValueError: If node doesn't exist or has no embedding
         """
         async with self.db_manager.get_session() as session:
-            ref_node = session.query(Node).filter(Node.id == node_id).first()
+            result = await session.execute(select(Node).filter(Node.id == node_id))
+            ref_node = result.scalar_one_or_none()
             if not ref_node:
                 raise ValueError(f"Node {node_id} not found")
             is_postgres = self.db_manager.engine.dialect.name == "postgresql"
             if is_postgres:
+                # PostgreSQL with pgvector
                 if not hasattr(ref_node, "embedding") or ref_node.embedding is None:
                     raise ValueError(f"Node {node_id} has no embedding")
-                embedding_array = "[" + ",".join(map(str, ref_node.embedding)) + "]"
-                base_query = "\n                    SELECT \n                        n.id,\n                        n.node_type,\n                        n.label,\n                        n.content,\n                        n.properties,\n                        n.created_at,\n                        n.updated_at,\n                        1 - (n.embedding <=> %s::vector) as similarity\n                    FROM nodes n\n                    WHERE n.embedding IS NOT NULL\n                        AND 1 - (n.embedding <=> %s::vector) >= %s\n                "
+
+                # Convert embedding to list format for PostgreSQL
+                embedding_list = (
+                    ref_node.embedding.tolist()
+                    if hasattr(ref_node.embedding, "tolist")
+                    else list(ref_node.embedding)
+                )
+                # Format as PostgreSQL array string
+                embedding_str = "[" + ",".join(map(str, embedding_list)) + "]"
+
+                # Build query with proper parameter binding
+                # Use CAST to properly handle vector type casting
                 if not include_self:
-                    base_query += " AND n.id != %s"
-                base_query += " ORDER BY n.embedding <=> %s::vector LIMIT %s"
-                conn = session.connection()
-                dbapi_conn = conn.connection
-                cursor = dbapi_conn.cursor()
-                params = [embedding_array, embedding_array, similarity_threshold]
-                if not include_self:
-                    params.append(node_id)
-                params.extend([embedding_array, limit])
-                cursor.execute(base_query, params)
-                results = cursor.fetchall()
-                cursor.close()
+                    query = text(
+                        """
+                        SELECT 
+                            n.id,
+                            n.node_type,
+                            n.label,
+                            n.content,
+                            n.properties,
+                            n.created_at,
+                            n.updated_at,
+                            1 - (n.embedding <=> CAST(:ref_embedding AS vector)) as similarity
+                        FROM nodes n
+                        WHERE n.embedding IS NOT NULL
+                            AND n.id != :node_id
+                            AND 1 - (n.embedding <=> CAST(:ref_embedding AS vector)) >= :threshold
+                        ORDER BY n.embedding <=> CAST(:ref_embedding AS vector)
+                        LIMIT :limit
+                    """
+                    )
+                    params = {
+                        "ref_embedding": embedding_str,
+                        "node_id": node_id,
+                        "threshold": similarity_threshold,
+                        "limit": limit,
+                    }
+                else:
+                    query = text(
+                        """
+                        SELECT 
+                            n.id,
+                            n.node_type,
+                            n.label,
+                            n.content,
+                            n.properties,
+                            n.created_at,
+                            n.updated_at,
+                            1 - (n.embedding <=> CAST(:ref_embedding AS vector)) as similarity
+                        FROM nodes n
+                        WHERE n.embedding IS NOT NULL
+                            AND 1 - (n.embedding <=> CAST(:ref_embedding AS vector)) >= :threshold
+                        ORDER BY n.embedding <=> CAST(:ref_embedding AS vector)
+                        LIMIT :limit
+                    """
+                    )
+                    params = {
+                        "ref_embedding": embedding_str,
+                        "threshold": similarity_threshold,
+                        "limit": limit,
+                    }
+
+                result = await session.execute(query, params)
+                rows = result.fetchall()
+
                 similar_nodes = []
-                for row in results:
+                for row in rows:
                     similar_nodes.append(
                         {
                             "id": row[0],
@@ -1046,33 +1099,85 @@ class KnowledgeRepository:
                         }
                     )
             else:
-                rowid_result = session.execute(
+                # SQLite with vec0 extension
+                rowid_result = await session.execute(
                     text("SELECT rowid FROM nodes WHERE id = :node_id"),
                     {"node_id": node_id},
-                ).fetchone()
-                if not rowid_result:
+                )
+                rowid_row = rowid_result.fetchone()
+                if not rowid_row:
                     raise ValueError(f"Node {node_id} not found")
-                ref_rowid = rowid_result[0]
-                vec_result = session.execute(
+                ref_rowid = rowid_row[0]
+
+                vec_result = await session.execute(
                     text("SELECT embedding FROM nodes_vec WHERE rowid = :rowid"),
                     {"rowid": ref_rowid},
-                ).fetchone()
-                if not vec_result:
+                )
+                vec_row = vec_result.fetchone()
+                if not vec_row:
                     raise ValueError(f"Node {node_id} has no embedding")
-                query_sql = "\n                    SELECT \n                        n.id,\n                        n.node_type,\n                        n.label,\n                        n.content,\n                        n.properties,\n                        n.created_at,\n                        n.updated_at,\n                        1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) as similarity\n                    FROM nodes n\n                    JOIN nodes_vec nv ON nv.rowid = n.rowid\n                    CROSS JOIN nodes_vec ref_vec\n                    WHERE ref_vec.rowid = :ref_rowid\n                        AND 1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) >= :threshold\n                "
+
+                # Build query with proper parameter binding
                 if not include_self:
-                    query_sql += " AND n.id != :node_id"
-                query_sql += " ORDER BY vec_distance_cosine(nv.embedding, ref_vec.embedding) LIMIT :limit"
-                params = {
-                    "ref_rowid": ref_rowid,
-                    "threshold": similarity_threshold,
-                    "limit": limit,
-                }
-                if not include_self:
-                    params["node_id"] = node_id
-                results = session.execute(text(query_sql), params).fetchall()
+                    query = text(
+                        """
+                        SELECT 
+                            n.id,
+                            n.node_type,
+                            n.label,
+                            n.content,
+                            n.properties,
+                            n.created_at,
+                            n.updated_at,
+                            1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) as similarity
+                        FROM nodes n
+                        JOIN nodes_vec nv ON nv.rowid = n.rowid
+                        CROSS JOIN nodes_vec ref_vec
+                        WHERE ref_vec.rowid = :ref_rowid
+                            AND n.id != :node_id
+                            AND 1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) >= :threshold
+                        ORDER BY vec_distance_cosine(nv.embedding, ref_vec.embedding)
+                        LIMIT :limit
+                    """
+                    )
+                    params = {
+                        "ref_rowid": ref_rowid,
+                        "node_id": node_id,
+                        "threshold": similarity_threshold,
+                        "limit": limit,
+                    }
+                else:
+                    query = text(
+                        """
+                        SELECT 
+                            n.id,
+                            n.node_type,
+                            n.label,
+                            n.content,
+                            n.properties,
+                            n.created_at,
+                            n.updated_at,
+                            1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) as similarity
+                        FROM nodes n
+                        JOIN nodes_vec nv ON nv.rowid = n.rowid
+                        CROSS JOIN nodes_vec ref_vec
+                        WHERE ref_vec.rowid = :ref_rowid
+                            AND 1 - vec_distance_cosine(nv.embedding, ref_vec.embedding) >= :threshold
+                        ORDER BY vec_distance_cosine(nv.embedding, ref_vec.embedding)
+                        LIMIT :limit
+                    """
+                    )
+                    params = {
+                        "ref_rowid": ref_rowid,
+                        "threshold": similarity_threshold,
+                        "limit": limit,
+                    }
+
+                result = await session.execute(query, params)
+                rows = result.fetchall()
+
                 similar_nodes = []
-                for row in results:
+                for row in rows:
                     similar_nodes.append(
                         {
                             "id": row[0],
@@ -1123,7 +1228,7 @@ class KnowledgeRepository:
             is_postgres = self.db_manager.engine.dialect.name == "postgresql"
             if "orphaned_nodes" in checks:
                 orphan_query = "\n                    SELECT n.id, n.node_type, n.label\n                    FROM nodes n\n                    WHERE NOT EXISTS (\n                        SELECT 1 FROM edges e WHERE e.source_id = n.id OR e.target_id = n.id\n                    )\n                    AND n.node_type NOT IN ('Memory', 'Session', 'ThinkingPattern', 'Workflow')\n                "
-                orphaned = session.execute(text(orphan_query)).fetchall()
+                orphaned = (await session.execute(text(orphan_query))).fetchall()
                 if orphaned:
                     results["issues_found"]["orphaned_nodes"] = [
                         {"id": row[0], "type": row[1], "label": row[2]}
@@ -1133,7 +1238,7 @@ class KnowledgeRepository:
                     results["healthy"] = False
             if "dangling_edges" in checks:
                 dangling_query = "\n                    SELECT e.id, e.source_id, e.target_id, e.edge_type\n                    FROM edges e\n                    WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.source_id)\n                       OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.target_id)\n                "
-                dangling = session.execute(text(dangling_query)).fetchall()
+                dangling = (await session.execute(text(dangling_query))).fetchall()
                 if dangling:
                     results["issues_found"]["dangling_edges"] = [
                         {
@@ -1151,7 +1256,9 @@ class KnowledgeRepository:
                     missing_emb_query = "\n                        SELECT id, node_type, label\n                        FROM nodes\n                        WHERE embedding IS NULL\n                        AND node_type NOT IN ('Session', 'ToolCall', 'Message')\n                        LIMIT 100\n                    "
                 else:
                     missing_emb_query = "\n                        SELECT n.id, n.node_type, n.label\n                        FROM nodes n\n                        WHERE n.rowid NOT IN (SELECT rowid FROM nodes_vec)\n                        AND n.node_type NOT IN ('Session', 'ToolCall', 'Message')\n                        LIMIT 100\n                    "
-                missing_emb = session.execute(text(missing_emb_query)).fetchall()
+                missing_emb = (
+                    await session.execute(text(missing_emb_query))
+                ).fetchall()
                 if missing_emb:
                     results["issues_found"]["missing_embeddings"] = [
                         {"id": row[0], "type": row[1], "label": row[2]}
@@ -1160,7 +1267,7 @@ class KnowledgeRepository:
                     results["total_issues"] += len(missing_emb)
             if "duplicate_edges" in checks:
                 dup_edges_query = "\n                    SELECT source_id, target_id, edge_type, COUNT(*) as count\n                    FROM edges\n                    GROUP BY source_id, target_id, edge_type\n                    HAVING COUNT(*) > 1\n                "
-                duplicates = session.execute(text(dup_edges_query)).fetchall()
+                duplicates = (await session.execute(text(dup_edges_query))).fetchall()
                 if duplicates:
                     results["issues_found"]["duplicate_edges"] = [
                         {
@@ -1175,7 +1282,7 @@ class KnowledgeRepository:
                     results["healthy"] = False
             if "self_loops" in checks:
                 self_loop_query = "\n                    SELECT id, source_id, edge_type\n                    FROM edges\n                    WHERE source_id = target_id\n                "
-                self_loops = session.execute(text(self_loop_query)).fetchall()
+                self_loops = (await session.execute(text(self_loop_query))).fetchall()
                 if self_loops:
                     results["issues_found"]["self_loops"] = [
                         {"edge_id": row[0], "node_id": row[1], "edge_type": row[2]}
@@ -1322,7 +1429,9 @@ class KnowledgeRepository:
         if len(node_ids) < 2:
             raise ValueError("Need at least 2 nodes to merge")
         async with self.db_manager.get_session() as session:
-            nodes = session.query(Node).filter(Node.id.in_(node_ids)).all()
+            # Get all nodes to merge
+            result = await session.execute(select(Node).filter(Node.id.in_(node_ids)))
+            nodes = result.scalars().all()
             if len(nodes) != len(node_ids):
                 found_ids = {n.id for n in nodes}
                 missing = set(node_ids) - found_ids
@@ -1345,51 +1454,54 @@ class KnowledgeRepository:
             keep_node.updated_at = datetime.now(timezone.utc)
             edges_updated = 0
             for merge_node in merge_nodes:
-                outgoing = (
-                    session.query(Edge).filter(Edge.source_id == merge_node.id).all()
+                # Get outgoing edges
+                outgoing_result = await session.execute(
+                    select(Edge).filter(Edge.source_id == merge_node.id)
                 )
+                outgoing = outgoing_result.scalars().all()
                 for edge in outgoing:
-                    existing = (
-                        session.query(Edge)
-                        .filter(
+                    existing_result = await session.execute(
+                        select(Edge).filter(
                             and_(
                                 Edge.source_id == keep_node_id,
                                 Edge.target_id == edge.target_id,
                                 Edge.edge_type == edge.edge_type,
                             )
                         )
-                        .first()
                     )
+                    existing = existing_result.scalar_one_or_none()
                     if existing:
-                        await session.delete(edge)
+                        session.delete(edge)
                     else:
                         edge.source_id = keep_node_id
                     edges_updated += 1
-                incoming = (
-                    session.query(Edge).filter(Edge.target_id == merge_node.id).all()
+                # Get incoming edges
+                incoming_result = await session.execute(
+                    select(Edge).filter(Edge.target_id == merge_node.id)
                 )
+                incoming = incoming_result.scalars().all()
                 for edge in incoming:
-                    existing = (
-                        session.query(Edge)
-                        .filter(
+                    existing_result = await session.execute(
+                        select(Edge).filter(
                             and_(
                                 Edge.source_id == edge.source_id,
                                 Edge.target_id == keep_node_id,
                                 Edge.edge_type == edge.edge_type,
                             )
                         )
-                        .first()
                     )
+                    existing = existing_result.scalar_one_or_none()
                     if existing:
-                        await session.delete(edge)
+                        session.delete(edge)
                     else:
                         edge.target_id = keep_node_id
                     edges_updated += 1
             for merge_node in merge_nodes:
-                await session.delete(merge_node)
+                session.delete(merge_node)
             await session.commit()
             await session.refresh(keep_node)
-            session.expunge(keep_node)
+            if object_session(keep_node) is session:
+                session.expunge(keep_node)
             result = {
                 "kept_node_id": keep_node_id,
                 "merged_node_ids": [n.id for n in merge_nodes],
@@ -1508,16 +1620,19 @@ class KnowledgeRepository:
         async with self.db_manager.get_session() as session:
             for node_id in node_ids:
                 try:
-                    node = session.query(Node).filter(Node.id == node_id).first()
+                    result = await session.execute(
+                        select(Node).filter(Node.id == node_id)
+                    )
+                    node = result.scalar_one_or_none()
                     if not node:
                         not_found.append(node_id)
                         continue
-                    await session.delete(node)
+                    session.delete(node)
                     deleted.append(node_id)
                 except Exception as e:
                     logger.error(f"Error deleting node {node_id}: {e}")
                     failed.append({"node_id": node_id, "error": str(e)})
-                    session.rollback()
+                    await session.rollback()
             try:
                 await session.commit()
                 logger.info(
@@ -1525,7 +1640,7 @@ class KnowledgeRepository:
                 )
             except Exception as e:
                 logger.error(f"Error committing bulk deletion: {e}")
-                session.rollback()
+                await session.rollback()
                 for node_id in deleted:
                     failed.append({"node_id": node_id, "error": "Commit failed"})
                 deleted = []
@@ -1759,10 +1874,12 @@ class KnowledgeRepository:
             else:
                 incoming_results = []
             all_results = outgoing_results + incoming_results
-            # Expunge objects to detach from session (no refresh needed for freshly queried objects)
+            # Expunge objects to detach from session (only if they're in this session)
             for edge, node in all_results:
-                session.expunge(edge)
-                session.expunge(node)
+                if object_session(edge) is session:
+                    session.expunge(edge)
+                if object_session(node) is session:
+                    session.expunge(node)
             return all_results
 
     async def get_graph_stats(self) -> Dict[str, int]:
@@ -1915,18 +2032,22 @@ class KnowledgeRepository:
             Dictionary of node_id -> centrality score
         """
         async with self.db_manager.get_session() as session:
-            total_nodes = session.query(Node).count()
+            total_nodes_result = await session.execute(select(func.count(Node.id)))
+            total_nodes = total_nodes_result.scalar() or 0
             if total_nodes <= 1:
                 return {}
             centrality = {}
-            nodes = session.query(Node).all()
+            nodes_result = await session.execute(select(Node))
+            nodes = nodes_result.scalars().all()
             for node in nodes:
-                in_degree = (
-                    session.query(Edge).filter(Edge.target_id == node.id).count()
+                in_degree_result = await session.execute(
+                    select(func.count(Edge.id)).filter(Edge.target_id == node.id)
                 )
-                out_degree = (
-                    session.query(Edge).filter(Edge.source_id == node.id).count()
+                in_degree = in_degree_result.scalar() or 0
+                out_degree_result = await session.execute(
+                    select(func.count(Edge.id)).filter(Edge.source_id == node.id)
                 )
+                out_degree = out_degree_result.scalar() or 0
                 degree = in_degree + out_degree
                 centrality[node.id] = (
                     degree / (total_nodes - 1) if total_nodes > 1 else 0
@@ -1947,14 +2068,16 @@ class KnowledgeRepository:
             Dictionary of node_id -> pagerank score
         """
         async with self.db_manager.get_session() as session:
-            nodes = session.query(Node).all()
+            nodes_result = await session.execute(select(Node))
+            nodes = nodes_result.scalars().all()
             node_ids = [node.id for node in nodes]
             n = len(node_ids)
             if n == 0:
                 return {}
             adjacency_out = defaultdict(list)
             adjacency_in = defaultdict(list)
-            edges = session.query(Edge).all()
+            edges_result = await session.execute(select(Edge))
+            edges = edges_result.scalars().all()
             for edge in edges:
                 adjacency_out[edge.source_id].append(edge.target_id)
                 adjacency_in[edge.target_id].append(edge.source_id)
