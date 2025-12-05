@@ -529,8 +529,34 @@ class ConnectionManager:
         config = ProviderConfig(model_name=model_name)
         provider = GeminiProvider(config)
 
+        # Create services for dependency injection (required)
+        if not knowledge or not knowledge.repository:
+            raise ValueError(
+                f"[{user_id}:{chat_id}] Knowledge repository must be available to create services"
+            )
+
+        from services import create_services
+        from utils.events import Events
+
+        # Create events first (bot will create its own, but we need one for token service)
+        events = Events()
+
+        services = create_services(
+            repository=knowledge.repository,
+            identity_search_terms=None,
+            events=events,
+            provider=provider,
+        )
+        logger.debug(f"[{user_id}:{chat_id}] Created services via dependency injection")
+
         bot = AgentOrchestrator(
             provider=provider,
+            message_service=services["message_service"],
+            user_service=services["user_service"],
+            identity_service=services["identity_service"],
+            file_service=services["file_service"],
+            chat_service=services["chat_service"],
+            token_service=services["token_service"],
             middlewares=[
                 SelfModificationGuard(),
                 FileAttachmentMiddleware(),
@@ -540,6 +566,9 @@ class ConnectionManager:
             toolchain=self.toolchain,
             knowledge=knowledge,
         )
+
+        # Sync token service with bot's events
+        services["token_service"].events = bot.events
 
         # Subscribe to all bot events using consistent event subscription pattern
         from events import BotEvents

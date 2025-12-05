@@ -14,6 +14,7 @@ from database.database import get_database_manager
 from database.repository import KnowledgeRepository
 from events import BotEvents
 from services import (
+    ChatService,
     FileService,
     IdentityService,
     KnowledgeService,
@@ -53,6 +54,13 @@ class AgentOrchestrator:
     def __init__(
         self,
         provider: LLMProvider,
+        # Required services (must be injected via dependency injection)
+        message_service: MessageService,
+        user_service: UserService,
+        identity_service: IdentityService,
+        file_service: FileService,
+        chat_service: ChatService,
+        token_service: Any,
         middlewares: Optional[List[BaseMiddleware]] = None,
         initial_context_added: bool = False,
         on_load: Optional[Coroutine] = None,
@@ -77,11 +85,21 @@ class AgentOrchestrator:
             knowledge: Knowledge module instance. If None, creates default Knowledge module in start_chat.
             identity_search_terms: Custom search terms for finding identity memories.
             identity_max_depth: Maximum graph traversal depth when loading identity. (Unused - kept for backward compatibility)
-            enable_turn_summarization: DEPRECATED. Token-based summarization is now used automatically.
-            summary_turn_threshold: DEPRECATED. Use SPARKY_SUMMARY_TOKEN_THRESHOLD instead.
+            message_service: MessageService instance (required)
+            user_service: UserService instance (required)
+            identity_service: IdentityService instance (required)
+            file_service: FileService instance (required)
+            chat_service: ChatService instance (required)
+            token_service: TokenUsageService instance (required)
         """
         self._session_id = None  # Will be set in start_chat
         self._chat_id = None  # Will be set in start_chat if provided
+        self._event_handlers_registered = (
+            False  # Track if event handlers are registered
+        )
+        self._current_file_id = (
+            None  # Temporary storage for file_id during message processing
+        )
         self.identity_max_depth = identity_max_depth
         self._last_add_task_time = None
         self.identity_search_terms = identity_search_terms
@@ -147,11 +165,13 @@ class AgentOrchestrator:
                     self.provider.config.token_budget_percent * 100,
                 )
 
-        # Initialize services (will be set up in start_chat when repository is available)
-        self.message_service: Optional[MessageService] = None
-        self.user_service: Optional[UserService] = None
-        self.identity_service: Optional[IdentityService] = None
-        self.file_service: Optional[FileService] = None
+        # Services injected via constructor (required)
+        self.message_service = message_service
+        self.user_service = user_service
+        self.identity_service = identity_service
+        self.file_service = file_service
+        self.chat_service = chat_service
+        self.token_service = token_service
 
         # Keep old callbacks for backward compatibility
         self.on_tool_use = on_tool_use
@@ -196,6 +216,11 @@ class AgentOrchestrator:
         if self.knowledge:
             self.knowledge.subscribe_to_bot_events(self.events)
 
+        # Register event handlers for storing messages to the knowledge graph
+        # These handlers will save and link messages when events are dispatched
+        # Note: _chat_id will be set later in start_chat(), handlers check for it
+        self._register_event_handlers()
+
     def add_task(self, instruction: str, metadata: dict | None = None):
         # Implement rate limiting
         if (
@@ -206,9 +231,6 @@ class AgentOrchestrator:
             return
 
         self._last_add_task_time = time.time()
-
-        # Register event handlers for graph message storage
-        self._register_event_handlers()
 
         # Dispatch load event synchronously for backward compatibility
         if self.on_load:
@@ -243,123 +265,105 @@ class AgentOrchestrator:
             logger.debug("Event handlers already registered, skipping")
             return
 
-        self.events.subscribe(
-            BotEvents.MESSAGE_SENT,
-            lambda message: self._handle_message_sent(message),
-        )
-        self.events.subscribe(
-            BotEvents.MESSAGE_RECEIVED,
-            lambda message: self._handle_message_received(message),
-        )
-        self.events.subscribe(
-            BotEvents.TOOL_USE,
-            lambda tool_name, args: self._handle_tool_use(tool_name, args),
-        )
-        self.events.subscribe(
-            BotEvents.TOOL_RESULT,
-            lambda tool_name, result, status=None: self._handle_tool_result(
-                tool_name, result, status
-            ),
-        )
-        self.events.subscribe(
-            BotEvents.THOUGHT,
-            lambda thought: self._handle_thought(thought),
-        )
-        self.events.subscribe(
-            BotEvents.SUMMARIZED,
-            lambda summary, turn_count: self._handle_summarized(summary, turn_count),
-        )
+        # Subscribe async handlers directly - async_dispatch will detect and await them
+        self.events.subscribe(BotEvents.MESSAGE_SENT, self._handle_message_sent)
+        self.events.subscribe(BotEvents.MESSAGE_RECEIVED, self._handle_message_received)
+        self.events.subscribe(BotEvents.TOOL_USE, self._handle_tool_use)
+        self.events.subscribe(BotEvents.TOOL_RESULT, self._handle_tool_result)
+        self.events.subscribe(BotEvents.THOUGHT, self._handle_thought)
+        self.events.subscribe(BotEvents.SUMMARIZED, self._handle_summarized)
 
         self._event_handlers_registered = True
-        logger.debug("Registered event handlers for graph message storage")
+        logger.info(
+            f"Registered event handlers for graph message storage. "
+            f"Chat ID will be set in start_chat(). Events subscribed: "
+            f"MESSAGE_SENT={BotEvents.MESSAGE_SENT}, "
+            f"MESSAGE_RECEIVED={BotEvents.MESSAGE_RECEIVED}"
+        )
 
-    def _handle_message_sent(self, message: str):
-        """Handle MESSAGE_SENT event by delegating to message service."""
-        if self.message_service:
-            self._run_async(
-                self.message_service.save_message(
-                    content=message,
-                    role="user",
-                    session_id=self._session_id,
-                    chat_id=self._chat_id,
-                    message_type="message",
-                    file_node_id=getattr(self, "_current_file_id", None),
-                )
+    async def _handle_message_sent(self, message: str):
+        """Handle MESSAGE_SENT event by saving and linking message."""
+        try:
+            logger.info(
+                f"Event handler: MESSAGE_SENT for chat {self._chat_id}, message: {message[:50]}..."
+            )
+            await self._save_and_link_message(
+                content=message,
+                role="user",
+                message_type="message",
+                file_node_id=getattr(self, "_current_file_id", None),
+            )
+            logger.info(
+                f"Successfully saved and linked user message for chat {self._chat_id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error in _handle_message_sent for chat {self._chat_id}: {e}",
+                exc_info=True,
             )
 
-    def _handle_message_received(self, message: str):
-        """Handle MESSAGE_RECEIVED event by delegating to message service."""
-        if self.message_service:
-            self._run_async(
-                self.message_service.save_message(
-                    content=message,
-                    role="model",
-                    session_id=self._session_id,
-                    chat_id=self._chat_id,
-                    message_type="message",
-                )
+    async def _handle_message_received(self, message: str):
+        """Handle MESSAGE_RECEIVED event by saving and linking message."""
+        try:
+            logger.info(
+                f"Event handler: MESSAGE_RECEIVED for chat {self._chat_id}, message: {message[:50]}..."
+            )
+            await self._save_and_link_message(
+                content=message,
+                role="model",
+                message_type="message",
+            )
+            logger.info(
+                f"Successfully saved and linked model message for chat {self._chat_id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error in _handle_message_received for chat {self._chat_id}: {e}",
+                exc_info=True,
             )
 
-    def _handle_tool_use(self, tool_name: str, args: dict):
-        """Handle TOOL_USE event by delegating to message service."""
-        if self.message_service:
-            self._run_async(
-                self.message_service.save_message(
-                    content=f"Using tool: {tool_name} with args: {args}",
-                    role="model",
-                    session_id=self._session_id,
-                    chat_id=self._chat_id,
-                    message_type="tool_use",
-                    tool_name=tool_name,
-                    tool_args=args,
-                )
-            )
+    async def _handle_tool_use(self, tool_name: str, args: dict):
+        """Handle TOOL_USE event by saving and linking message."""
+        await self._save_and_link_message(
+            content=f"Using tool: {tool_name} with args: {args}",
+            role="model",
+            message_type="tool_use",
+            tool_name=tool_name,
+            tool_args=args,
+        )
 
-    def _handle_tool_result(self, tool_name: str, result: Any, status: str = None):
-        """Handle TOOL_RESULT event by delegating to message service."""
-        if self.message_service:
-            self._run_async(
-                self.message_service.save_message(
-                    content=f"Tool {tool_name} result: {result}",
-                    role="model",
-                    session_id=self._session_id,
-                    chat_id=self._chat_id,
-                    message_type="tool_result",
-                    tool_name=tool_name,
-                )
-            )
+    async def _handle_tool_result(
+        self, tool_name: str, result: Any, status: str = None
+    ):
+        """Handle TOOL_RESULT event by saving and linking message."""
+        await self._save_and_link_message(
+            content=f"Tool {tool_name} result: {result}",
+            role="model",
+            message_type="tool_result",
+            tool_name=tool_name,
+        )
 
-    def _handle_thought(self, thought: str):
-        """Handle THOUGHT event by delegating to message service."""
-        if self.message_service:
-            self._run_async(
-                self.message_service.save_message(
-                    content=thought,
-                    role="model",
-                    session_id=self._session_id,
-                    chat_id=self._chat_id,
-                    message_type="thought",
-                )
-            )
+    async def _handle_thought(self, thought: str):
+        """Handle THOUGHT event by saving and linking message."""
+        await self._save_and_link_message(
+            content=thought,
+            role="model",
+            message_type="thought",
+        )
 
-    def _handle_summarized(self, summary: str):
-        """Handle SUMMARIZED event by delegating to message service.
+    async def _handle_summarized(self, summary: str, turn_count: int = None):
+        """Handle SUMMARIZED event by saving and linking message.
 
         Args:
             summary: The conversation summary
+            turn_count: Optional turn count (not used but kept for compatibility)
         """
-
-        if self.message_service:
-            self._run_async(
-                self.message_service.save_message(
-                    content=summary,
-                    role="user",
-                    session_id=self._session_id,
-                    chat_id=self._chat_id,
-                    internal=True,
-                    message_type="summary",
-                )
-            )
+        await self._save_and_link_message(
+            content=summary,
+            role="user",
+            internal=True,
+            message_type="summary",
+        )
 
     def get_effective_token_budget(self) -> int:
         """Get the effective token budget based on model's context window and configured percentage.
@@ -391,7 +395,7 @@ class AgentOrchestrator:
         Returns:
             True if summarization is needed, False otherwise
         """
-        if not self.message_service or not self._chat_id:
+        if not self._chat_id:
             return False
 
         try:
@@ -509,77 +513,22 @@ class AgentOrchestrator:
         Returns:
             List of messages in LLM format: [{"role": "user/model", "parts": ["content"]}]
         """
-        # Delegate to message service if available
-        if self.message_service:
-            # If using token limits, get messages within budget
-            if use_token_limit:
-                token_budget = self.get_effective_token_budget()
-                return await self.message_service.get_messages_within_token_limit(
-                    chat_id=self._chat_id,
-                    max_tokens=token_budget,
-                    prefer_summaries=True,
-                )
-
-            # Otherwise use count-based limit
-            if limit is None:
-                limit = self.fallback_message_limit
-
-            return await self.message_service.get_recent_messages(
-                chat_id=self._chat_id, limit=limit, prefer_summaries=True
+        # If using token limits, get messages within budget
+        if use_token_limit:
+            token_budget = self.get_effective_token_budget()
+            return await self.message_service.get_messages_within_token_limit(
+                chat_id=self._chat_id,
+                max_tokens=token_budget,
+                prefer_summaries=True,
             )
 
-        # Fallback to old implementation if service not available
-        if not self.knowledge or not self.knowledge.repository:
-            logger.warning(
-                "Cannot retrieve messages: knowledge module or repository is None"
-            )
-            return []
-
-        if not self._chat_id:
-            logger.debug("No chat_id provided - starting fresh chat with no history")
-            return []
-
-        # Calculate limit if not provided
+        # Otherwise use count-based limit
         if limit is None:
             limit = self.fallback_message_limit
 
-        try:
-            # Get all messages from the graph
-            nodes = await self.knowledge.repository.get_chat_messages(
-                chat_id=self._chat_id, limit=None
-            )
-
-            # Find the most recent summary
-            most_recent_summary_idx = -1
-            for i in range(len(nodes) - 1, -1, -1):
-                node = nodes[i]
-                if node.properties and node.properties.get("message_type") == "summary":
-                    most_recent_summary_idx = i
-                    break
-
-            # If we found a summary, only include messages from that point forward
-            if most_recent_summary_idx >= 0:
-                nodes = nodes[most_recent_summary_idx:]
-                logger.info(
-                    f"Found summary at index {most_recent_summary_idx}, "
-                    f"using {len(nodes)} messages from that point forward"
-                )
-            else:
-                # No summary found, take the last N messages to stay within context window
-                nodes = nodes[-limit:] if len(nodes) > limit else nodes
-                logger.info(f"No summary found, using last {len(nodes)} messages")
-
-            # Convert to LLM format
-            messages = convert_nodes_to_llm_format(nodes)
-
-            logger.info(
-                f"Retrieved {len(messages)} messages from graph for chat {self._chat_id}"
-            )
-            return messages
-
-        except Exception as e:
-            logger.error(f"Failed to retrieve messages from graph: {e}", exc_info=True)
-            return []
+        return await self.message_service.get_recent_messages(
+            chat_id=self._chat_id, limit=limit, prefer_summaries=True
+        )
 
     async def list_prompts(self):
         """List available prompts from the toolchain.
@@ -650,10 +599,6 @@ class AgentOrchestrator:
         Returns:
             File node ID if successful, None otherwise
         """
-        if not self.file_service:
-            logger.error("File service not initialized, cannot upload file")
-            return None
-
         return await self.file_service.upload_file(
             file_content=file_content,
             filename=filename,
@@ -663,6 +608,65 @@ class AgentOrchestrator:
             session_id=self._session_id,
             ai_description_callback=ai_description_callback,
         )
+
+    async def _save_and_link_message(
+        self,
+        content: str,
+        role: str,
+        internal: bool = False,
+        message_type: str = "message",
+        tool_name: Optional[str] = None,
+        tool_args: Optional[dict] = None,
+        file_node_id: Optional[str] = None,
+    ) -> None:
+        """Save a message and link it to the current chat.
+
+        This ensures the order: create message, then link to chat.
+
+        Args:
+            content: The message content
+            role: The role of the speaker (e.g., 'user', 'model')
+            internal: Whether this is an internal/system message
+            message_type: The type of message
+            tool_name: Optional tool name for tool_use and tool_result messages
+            tool_args: Optional tool arguments for tool_use messages
+            file_node_id: Optional file node ID for attachments
+        """
+        logger.info(
+            f"_save_and_link_message called: role={role}, chat_id={self._chat_id}, "
+            f"internal={internal}, message_type={message_type}"
+        )
+        # Step 1: Create message (agnostic of chat)
+        message_node_id = await self.message_service.save_message(
+            content=content,
+            role=role,
+            internal=internal,
+            message_type=message_type,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            file_node_id=file_node_id,
+        )
+
+        # Step 2: Link message to chat if chat_id is available
+        if message_node_id and self._chat_id:
+            try:
+                linked = await self.chat_service.link_message(
+                    chat_id=self._chat_id,
+                    message_node_id=message_node_id,
+                )
+                if not linked:
+                    logger.warning(
+                        f"Failed to link message {message_node_id} to chat {self._chat_id}"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Error linking message {message_node_id} to chat {self._chat_id}: {e}",
+                    exc_info=True,
+                )
+        elif message_node_id and not self._chat_id:
+            logger.warning(
+                f"Message {message_node_id} created but no chat_id available to link it"
+            )
 
     async def _add_message_with_chat_node(
         self,
@@ -677,7 +681,7 @@ class AgentOrchestrator:
         """Create a corresponding ChatMessage node in the knowledge graph.
 
         DEPRECATED: This method is kept for backward compatibility but delegates
-        to MessageService when available.
+        to _save_and_link_message.
 
         Args:
             message: The message content
@@ -688,104 +692,15 @@ class AgentOrchestrator:
             tool_args: Optional tool arguments for tool_use messages
             file_node_id: Optional file node ID for attachments
         """
-        # Delegate to message service if available
-        if self.message_service and self._session_id:
-            await self.message_service.save_message(
-                content=message,
-                role=role,
-                session_id=self._session_id,
-                chat_id=self._chat_id,
-                internal=internal,
-                message_type=message_type,
-                tool_name=tool_name,
-                tool_args=tool_args,
-                file_node_id=file_node_id,
-            )
-            return
-
-        # Fallback to direct implementation if service not available
-        if not self.knowledge:
-            logger.warning(
-                f"Cannot save message to graph: knowledge module is None (role={role})"
-            )
-            return
-
-        if not self._session_id:
-            logger.warning(
-                f"Cannot save message to graph: session_id is None (role={role})"
-            )
-            return
-
-        try:
-            # Get current message count from graph for this chat
-            if self._chat_id:
-                current_messages = await self.knowledge.repository.get_chat_messages(
-                    chat_id=self._chat_id
-                )
-                message_num = len(current_messages) + 1
-            else:
-                # Fallback: use timestamp-based ID
-                message_num = int(datetime.datetime.utcnow().timestamp() * 1000)
-
-            chat_node_id = f"chat:{self._session_id}:{message_num}"
-
-            logger.info(
-                f"Saving message to graph: node_id={chat_node_id}, role={role}, chat_id={self._chat_id}, internal={internal}, message_type={message_type}"
-            )
-
-            # Build properties with role, internal flag, message type, and optional tool data
-            properties = {
-                "role": role,
-                "internal": internal,
-                "message_type": message_type,
-            }
-
-            # Add tool-specific properties if provided
-            if tool_name:
-                properties["tool_name"] = tool_name
-            if tool_args:
-                properties["tool_args"] = tool_args
-
-            await self.knowledge.repository.add_node(
-                node_id=chat_node_id,
-                node_type="ChatMessage",
-                label=f"Chat Message {message_num}",
-                content=message,
-                properties=properties,
-            )
-            await self.knowledge.repository.add_edge(
-                source_id=self._session_id,
-                target_id=chat_node_id,
-                edge_type="CONTAINS",
-            )
-
-            # Also link from chat node if chat_id is available
-            if self._chat_id:
-                logger.info(
-                    f"Linking message to chat node: chat:{self._chat_id} -> {chat_node_id}"
-                )
-                await self.knowledge.repository.add_edge(
-                    source_id=f"chat:{self._chat_id}",
-                    target_id=chat_node_id,
-                    edge_type="CONTAINS",
-                )
-            else:
-                logger.info("No chat_id available, skipping chat-to-message link")
-
-            # Link file attachment if provided
-            if file_node_id:
-                logger.info(
-                    f"Linking file to message: {chat_node_id} -> {file_node_id}"
-                )
-                await self.knowledge.repository.add_edge(
-                    source_id=chat_node_id,
-                    target_id=file_node_id,
-                    edge_type="HAS_ATTACHMENT",
-                )
-
-            logger.info(f"Successfully saved message to graph: {chat_node_id}")
-        except Exception as e:
-            logger.error(f"Failed to create chat node: {e}", exc_info=True)
+        await self._save_and_link_message(
+            content=message,
+            role=role,
+            internal=internal,
+            message_type=message_type,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            file_node_id=file_node_id,
+        )
 
     async def start_chat(
         self,
@@ -818,8 +733,6 @@ class AgentOrchestrator:
             logger.info("No user_id provided, using default")
         else:
             logger.info(f"Starting chat with user_id: {user_id}")
-
-        user_node_id = f"user:{user_id}"
 
         # Initialize or update Knowledge module with the chat_id
         if self.knowledge is None and self.toolchain is not None:
@@ -854,120 +767,56 @@ class AgentOrchestrator:
             # Update existing Knowledge module with new chat_id
             # This requires recreating certain session-specific components
             self.knowledge.session_id = self._session_id
-            self.knowledge._mem_transcript_key = (
-                f"chat:session:{self._session_id}:transcript"
-            )
-            self.knowledge._mem_summary_key = f"chat:session:{self._session_id}:summary"
+            self.knowledge._mem_summary_key = f"chat:{self._session_id}:summary"
             # Reset turn index for new session
             self.knowledge._turn_index = 0
             # Clear associated memories tracking for new session
             self.knowledge._associated_memories = set()
 
-        # Initialize services now that we have access to the repository
-        if self.knowledge and self.knowledge.repository:
-            # Initialize file service first since message service depends on it
-            if not self.file_service:
-                self.file_service = FileService(self.knowledge.repository)
-                logger.debug("Initialized FileService")
+        # Verify user exists and get user node
+        try:
 
-            if not self.message_service:
-                self.message_service = MessageService(
-                    self.knowledge.repository, file_service=self.file_service
+            user_node = await self.user_service.get_user(user_id)
+            if not user_node:
+                raise ValueError(
+                    f"User {user_id} not found in knowledge graph. "
+                    "User should be created during registration."
                 )
-                logger.debug("Initialized MessageService")
 
-            if not self.user_service:
-                self.user_service = UserService(self.knowledge.repository)
-                logger.debug("Initialized UserService")
+            logger.debug(f"Retrieved user node for user {user_id}")
 
-            if not self.identity_service:
-                self.identity_service = IdentityService(
-                    self.knowledge.repository,
-                    identity_search_terms=self.identity_search_terms,
+            # Get or create Chat node if chat_id is provided
+            if chat_id:
+                # Use chat_service to get or create the chat
+                display_name = chat_name or f"Chat {chat_id[:8]}"
+                chat_node = await self.chat_service.get_or_create_chat(
+                    chat_id=chat_id,
+                    chat_name=display_name,
+                    user_id=user_id,
                 )
-                logger.debug("Initialized IdentityService")
 
-            # Initialize token usage service with message service's token estimator
-            # Pass provider so service can monitor it (inversion of control)
-            if not hasattr(self, "token_service"):
-                from services.token_usage import TokenUsageService
-
-                self.token_service = TokenUsageService(
-                    token_estimator=self.message_service.token_estimator,
-                    events=self.events,
-                    provider=self.provider,
-                )
-                logger.debug("Initialized TokenUsageService")
-
-            # Register event handlers for database persistence
-            # This ensures thoughts, tool calls, etc. are saved to the knowledge graph
-            self._register_event_handlers()
-
-        # Create nodes and edges in the knowledge graph
-        if self.knowledge and self.knowledge.repository:
-            try:
-                # Create user node using UserService
-                if self.user_service:
-                    await self.user_service.create_user(user_id)
-                else:
-                    # Fallback to direct creation
-                    await self.knowledge.repository.add_node(
-                        node_id=user_node_id,
-                        node_type="User",
-                        label=f"User {user_id}",
-                        content=f"User with ID {user_id}",
-                        properties={"user_id": user_id},
+                if chat_node:
+                    logger.info(
+                        f"Got or created Chat node {chat_id} for user {user_id}"
                     )
-                    logger.info(f"Created User node: {user_node_id}")
-
-                # Create Chat node if chat_id is provided
-                if chat_id:
-                    chat_node_id = f"chat:{chat_id}"
-
-                    # CHECK IF CHAT ALREADY EXISTS to prevent duplicates
-                    existing_chat = await self.knowledge.repository.get_node(
-                        chat_node_id
+                    # Ensure the chat is linked to the user
+                    # (link_chat handles checking if edge already exists)
+                    link_success = await self.chat_service.link_chat(
+                        chat_id=chat_id, user_id=user_id
                     )
-
-                    if existing_chat:
-                        logger.info(f"Chat {chat_node_id} already exists, reusing it")
-                        # Verify the edge exists
-                        try:
-                            edges = await self.knowledge.repository.get_edges(
-                                source_id=chat_node_id,
-                                target_id=user_node_id,
-                                edge_type="BELONGS_TO",
-                            )
-                            if not edges:
-                                # Edge missing, recreate it
-                                await self.knowledge.repository.add_edge(
-                                    source_id=chat_node_id,
-                                    target_id=user_node_id,
-                                    edge_type="BELONGS_TO",
-                                )
-                                logger.info("Recreated missing BELONGS_TO edge")
-                        except Exception as e:
-                            logger.warning(f"Failed to verify chat edge: {e}")
-                    else:
-                        # Only create if it doesn't exist - use repository.create_chat
-                        display_name = chat_name or f"Chat {chat_id[:8]}"
-                        chat_node = await self.knowledge.repository.create_chat(
-                            chat_id=chat_id,
-                            chat_name=display_name,
-                            user_id=user_id,
+                    if not link_success:
+                        logger.warning(
+                            f"Failed to link chat {chat_id} to user {user_id}"
                         )
-                        if chat_node:
-                            logger.info(f"Created NEW Chat node: {chat_node_id}")
-                        else:
-                            logger.warning(
-                                f"Failed to create chat node: {chat_node_id}"
-                            )
 
-            except Exception as e:
-                logger.error(
-                    f"Failed to create session/user/chat nodes or edges: {e}",
-                    exc_info=True,
-                )
+                else:
+                    logger.warning(f"Failed to get or create chat node {chat_id}")
+
+        except Exception as e:
+            logger.error(
+                f"Failed to create session/user/chat nodes or edges: {e}",
+                exc_info=True,
+            )
 
         # Provide model to knowledge module
         if self.knowledge:
@@ -979,74 +828,36 @@ class AgentOrchestrator:
         identity_memory = None
         identity_summary = None
 
-        if self.identity_service:
-            # Use IdentityService for loading identity
-            try:
-                identity_memory = await self.identity_service.get_identity_memory()
-                logger.info(
-                    f"Identity loaded successfully: {len(identity_memory)} chars"
-                )
-            except Exception as e:
-                logger.error(f"Failed to load identity: {e}", exc_info=True)
-                identity_memory = "## Identity Loading Failed\n\nCannot load identity."
-        elif self.knowledge and self.knowledge.repository:
-            # Fallback: create identity service from knowledge repository
-            try:
-                identity_service = IdentityService(repository=self.knowledge.repository)
-                identity_memory = await identity_service.get_identity_memory()
-                logger.info(
-                    f"Identity loaded via fallback: {len(identity_memory)} chars"
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to load identity via fallback: {e}", exc_info=True
-                )
-                identity_memory = "## Identity Loading Failed\n\nCannot load identity."
-        else:
-            logger.warning("No identity service or knowledge repository available")
-            identity_memory = (
-                "## Identity Loading Failed\n\nNo knowledge repository available."
-            )
+        # Use IdentityService for loading identity
+        try:
+            identity_memory = await self.identity_service.get_identity_memory()
+            logger.info(f"Identity loaded successfully: {len(identity_memory)} chars")
+        except Exception as e:
+            logger.error(f"Failed to load identity: {e}", exc_info=True)
+            identity_memory = "## Identity Loading Failed\n\nCannot load identity."
 
         # Summarize the identity to reduce token usage using IdentityService
         if identity_memory and not identity_memory.startswith(
             "## Identity Loading Failed"
         ):
-            if self.identity_service:
-                try:
-                    identity_summary = await self.identity_service.summarize_identity(
-                        identity_memory, self.generate
-                    )
-                    logger.info(f"Identity summarized: {len(identity_summary)} chars")
-                except Exception as e:
-                    logger.error(f"Failed to summarize identity: {e}", exc_info=True)
-                    # Fallback to direct summarization
-                    identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
-                    identity_summary = await self.generate(identity_summary_prompt)
-            else:
+
+            try:
+                identity_summary = await self.identity_service.summarize_identity(
+                    identity_memory, self.generate
+                )
+                logger.info(f"Identity summarized: {len(identity_summary)} chars")
+            except Exception as e:
+                logger.error(f"Failed to summarize identity: {e}", exc_info=True)
                 # Fallback to direct summarization
-                try:
-                    identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
-                    identity_summary = await self.generate(identity_summary_prompt)
-                    logger.info(
-                        f"Identity summarized via fallback: {len(identity_summary)} chars"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to summarize identity via fallback: {e}", exc_info=True
-                    )
-                    identity_summary = "Identity summary unavailable."
-        else:
-            identity_summary = "Identity unavailable."
+                identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
+                identity_summary = await self.generate(identity_summary_prompt)
 
         # Format identity instruction
         if identity_summary and not identity_summary.startswith("Identity unavailable"):
-            if self.identity_service:
-                identity_instruction = (
-                    self.identity_service.format_identity_instruction(identity_summary)
-                )
-            else:
-                identity_instruction = f"# Your Identity\n\n{identity_summary}\n\nPlease remember this is who you are and act accordingly in all responses."
+
+            identity_instruction = self.identity_service.format_identity_instruction(
+                identity_summary
+            )
 
             logger.info(
                 f"Adding identity instruction to chat: {len(identity_instruction)} chars"
@@ -1079,41 +890,11 @@ class AgentOrchestrator:
             await self._summarize_conversation()
 
         # Get truncated history from the graph (last N messages)
+        # Identity messages are already in the graph and will be included here
         truncated_history = await self._get_recent_messages()
 
-        # Ensure identity is included in history if it was added
-        # (messages might not be visible in graph query yet due to transaction timing)
-        if identity_instruction and truncated_history:
-            # Check if identity is already in history
-            has_identity = any(
-                msg.get("role") == "user"
-                and isinstance(msg.get("parts"), list)
-                and len(msg.get("parts", [])) > 0
-                and "Your Identity" in str(msg.get("parts", [])[0])
-                for msg in truncated_history
-            )
-            if not has_identity:
-                # Prepend identity instruction to history
-                identity_msg = {"role": "user", "parts": [identity_instruction]}
-                truncated_history = [identity_msg] + truncated_history
-                logger.info(
-                    "Added identity instruction to history (not found in graph query)"
-                )
-        elif identity_instruction and not truncated_history:
-            # No history yet, create initial history with identity
-            truncated_history = [
-                {"role": "user", "parts": [identity_instruction]},
-                {
-                    "role": "model",
-                    "parts": [
-                        "I understand my identity and purpose. I'm ready to help you."
-                    ],
-                },
-            ]
-            logger.info("Created initial history with identity instruction")
-
         # Estimate tokens for initial history and dispatch estimate event
-        if truncated_history and hasattr(self, "token_service"):
+        if truncated_history:
             try:
                 history_tokens = self.token_service.estimate_messages_list(
                     truncated_history
@@ -1182,30 +963,31 @@ class AgentOrchestrator:
 
         # Dispatch message sent event WITH ORIGINAL MESSAGE (for storage)
         # The processed_message goes to LLM, but we save the original to keep history clean
+        logger.info(
+            f"Dispatching MESSAGE_SENT event for chat {self._chat_id}, "
+            f"message: {message[:50]}..., handlers registered: {self._event_handlers_registered}"
+        )
         await self.events.async_dispatch(BotEvents.MESSAGE_SENT, message)
 
         # Estimate tokens for user message and expected response
-        if self.message_service and hasattr(self, "token_service"):
-            try:
-                # Estimate user message tokens
-                message_tokens = self.token_service.estimate_user_message(message)
-                await self.token_service.emit_estimate(message_tokens, "message")
+        try:
+            # Estimate user message tokens
+            message_tokens = self.token_service.estimate_user_message(message)
+            await self.token_service.emit_estimate(message_tokens, "message")
 
-                # Estimate expected response tokens
-                is_complex = self.token_service.detect_complexity(message)
-                response_tokens = self.token_service.estimate_expected_response(
-                    message, is_complex
-                )
-                await self.token_service.emit_estimate(
-                    response_tokens, "expected_response"
-                )
+            # Estimate expected response tokens
+            is_complex = self.token_service.detect_complexity(message)
+            response_tokens = self.token_service.estimate_expected_response(
+                message, is_complex
+            )
+            await self.token_service.emit_estimate(response_tokens, "expected_response")
 
-                logger.debug(
-                    f"Estimated {message_tokens} tokens for message, "
-                    f"{response_tokens} for expected response (complex={is_complex})"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to estimate message tokens: {e}")
+            logger.debug(
+                f"Estimated {message_tokens} tokens for message, "
+                f"{response_tokens} for expected response (complex={is_complex})"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to estimate message tokens: {e}")
 
         executed_tool_calls = []
 
@@ -1215,24 +997,23 @@ class AgentOrchestrator:
             # Handle provider-specific initial errors
             logger.error(f"Initial message resulted in error: {e}", exc_info=True)
 
-            # Log to knowledge graph if available
-            if self.knowledge:
-                try:
-                    error_node_id = f"error:{task_id}:initial_error:{datetime.datetime.utcnow().timestamp()}"
-                    await self.knowledge.repository.add_node(
-                        node_id=error_node_id,
-                        node_type="Error",
-                        label="Initial Message Error",
-                        properties={
-                            "task_id": task_id,
-                            "error_type": type(e).__name__,
-                            "message": str(e),
-                            "original_message": processed_message[:500],
-                            "timestamp": datetime.datetime.utcnow().isoformat(),
-                        },
-                    )
-                except Exception as log_exc:
-                    logger.warning(f"Failed to log error to knowledge graph: {log_exc}")
+            # Log to knowledge graph
+            try:
+                error_node_id = f"error:{task_id}:initial_error:{datetime.datetime.utcnow().timestamp()}"
+                await self.knowledge.repository.add_node(
+                    node_id=error_node_id,
+                    node_type="Error",
+                    label="Initial Message Error",
+                    properties={
+                        "task_id": task_id,
+                        "error_type": type(e).__name__,
+                        "message": str(e),
+                        "original_message": processed_message[:500],
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
+                    },
+                )
+            except Exception as log_exc:
+                logger.warning(f"Failed to log error to knowledge graph: {log_exc}")
 
             # Try to recover
             logger.info("Attempting recovery by asking for a simpler response")
@@ -1266,31 +1047,27 @@ class AgentOrchestrator:
         text = self.provider.extract_text(response)
 
         # Dispatch message received event
+        logger.info(
+            f"Dispatching MESSAGE_RECEIVED event for chat {self._chat_id}, "
+            f"response: {text[:50]}..., handlers registered: {self._event_handlers_registered}"
+        )
         await self.events.async_dispatch(BotEvents.MESSAGE_RECEIVED, text)
 
-        # Extract and dispatch token usage if available
-        # Token service will handle this automatically if configured
-        if hasattr(self, "token_service"):
-            token_usage = self.token_service.extract_actual_usage(response)
-            if token_usage:
-                await self.token_service.emit_usage(token_usage)
-        else:
-            # Fallback for backward compatibility
-            token_usage = self.provider.extract_token_usage(response)
-            if token_usage:
-                await self.events.async_dispatch(BotEvents.TOKEN_USAGE, token_usage)
+        # Extract and dispatch token usage
+        token_usage = self.token_service.extract_actual_usage(response)
+        if token_usage:
+            await self.token_service.emit_usage(token_usage)
 
         # Let Knowledge module handle turn completion
-        if self.knowledge:
-            try:
-                await self.knowledge.handle_turn_complete(
-                    user_message=message,
-                    assistant_message=text,
-                    tool_calls=executed_tool_calls,
-                )
-            except Exception as e:
-                logger.error("Knowledge processing failed: %s", e)
-                logger.error(traceback.format_exc())
+        try:
+            await self.knowledge.handle_turn_complete(
+                user_message=message,
+                assistant_message=text,
+                tool_calls=executed_tool_calls,
+            )
+        except Exception as e:
+            logger.error("Knowledge processing failed: %s", e)
+            logger.error(traceback.format_exc())
 
         # Clear file_id after processing
         self._current_file_id = None
@@ -1307,71 +1084,12 @@ class AgentOrchestrator:
         Only summarizes messages since the last summary to avoid re-summarizing
         already summarized content and to stay within token limits.
         """
-        # Delegate to message service if available
-        if self.message_service and self._chat_id:
-            return await self.message_service.format_for_summary(
-                chat_id=self._chat_id, since_last_summary=True
-            )
+        if not self._chat_id:
+            return ""
 
-        # Fallback to direct implementation
-        if self.knowledge and self.knowledge.repository and self._chat_id:
-            try:
-                nodes = await self.knowledge.repository.get_chat_messages(
-                    chat_id=self._chat_id
-                )
-
-                # Find the most recent summary to avoid re-summarizing old content
-                most_recent_summary_idx = -1
-                for i in range(len(nodes) - 1, -1, -1):
-                    node = nodes[i]
-                    if (
-                        node.properties
-                        and node.properties.get("message_type") == "summary"
-                    ):
-                        most_recent_summary_idx = i
-                        break
-
-                # Only format messages after the last summary
-                if most_recent_summary_idx >= 0:
-                    # Skip the summary itself, only get messages after it
-                    nodes = nodes[most_recent_summary_idx + 1 :]
-                    logger.info(
-                        f"Formatting {len(nodes)} messages for summary "
-                        f"(since last summary at index {most_recent_summary_idx})"
-                    )
-
-                if nodes:
-                    return format_nodes_for_summary(nodes)
-            except Exception as e:
-                logger.warning(f"Failed to format history from graph: {e}")
-
-        # Fallback to SDK chat history if available
-        if (
-            self.chat
-            and hasattr(self.chat, "history")
-            and self.chat.history is not None
-        ):
-            # For SDK history, we need a different formatter since it's not Node objects
-            # Just create a simple text dump
-            lines = []
-            try:
-                for item in self.chat.history:
-                    role = getattr(
-                        getattr(item, "role", None), "name", None
-                    ) or getattr(item, "role", "")
-                    parts = getattr(item, "parts", [])
-                    texts = []
-                    for p in parts:
-                        txt = getattr(p, "text", None)
-                        if txt:
-                            texts.append(txt)
-                    if texts:
-                        lines.append(f"{role}: {' '.join(texts)}")
-                return "\n".join(lines[-400:])
-            except Exception as e:
-                logger.warning(f"Failed to format SDK history: {e}")
-
-        return ""
+        return await self.message_service.format_for_summary(
+            chat_id=self._chat_id, since_last_summary=True
+        )
 
     async def _summarize_conversation(self) -> None:
         """Summarize the conversation to reduce token usage.
@@ -1412,7 +1130,34 @@ def main():
         # Create provider
         config = ProviderConfig(model_name="gemini-1.5-pro")
         provider = GeminiProvider(config)
-        orchestrator = AgentOrchestrator(provider=provider)
+
+        # Create services (required for dependency injection)
+        from database.database import get_database_manager
+        from database.repository import KnowledgeRepository
+        from services import create_services
+        from utils.events import Events
+
+        db_manager = get_database_manager()
+        db_manager.connect()
+        repository = KnowledgeRepository(db_manager)
+
+        events = Events()
+        services = create_services(
+            repository=repository,
+            identity_search_terms=None,
+            events=events,
+            provider=provider,
+        )
+
+        orchestrator = AgentOrchestrator(
+            provider=provider,
+            message_service=services["message_service"],
+            user_service=services["user_service"],
+            identity_service=services["identity_service"],
+            file_service=services["file_service"],
+            chat_service=services["chat_service"],
+            token_service=services["token_service"],
+        )
         logger.info("Sparky initialized! Type 'quit' to exit.\n")
         run_async(orchestrator.start_chat())
 

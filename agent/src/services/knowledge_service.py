@@ -30,11 +30,14 @@ class KnowledgeService:
 
     This service acts as the glue layer between the knowledge repository and
     other parts of the codebase. It handles:
-    - Memory management (transcripts, summaries, lessons)
+    - Memory management (summaries, lessons)
     - Tool call tracking and indexing
     - Session management in the knowledge graph
     - Automatic memory associations
     - Event-driven knowledge operations
+
+    Note: Transcripts are no longer stored as memory nodes - they are rebuilt
+    on-demand from messages via MessageService.
 
     The service communicates with other components via events for clean
     separation of concerns.
@@ -138,11 +141,9 @@ class KnowledgeService:
             self.summary_every = 5
             self.reflect_every = 10
 
-        # Memory keys
-        self._mem_transcript_key = f"chat:session:{self.session_id}:transcript"
-        self._mem_summary_key = f"chat:session:{self.session_id}:summary"
+        # Memory keys (using chat_id format, session_id is actually chat_id)
+        self._mem_summary_key = f"chat:{self.session_id}:summary"
         self._mem_lessons_key = "chat:lessons"
-        self._mem_initialized = False
 
         # Turn tracking
         self._turn_index = 0
@@ -644,81 +645,20 @@ Cannot proceed without identity."""
         # Note: Tool calls are now tracked via TOOL_USE and TOOL_RESULT events
         # No need to extract knowledge here
 
-        # Handle auto-memory if enabled (just save transcript, no summarization/reflection)
-        if not (self.auto_memory and self.repository):
-            return
-
-        if not self._mem_initialized:
-            await self.initialize_transcript()
-
-        if not self.repository:
-            logger.error(
-                "AutoMemory: Repository not initialized, skipping turn processing"
-            )
-            return
-
-        self._turn_index += 1
-        turn = self._turn_index
-
-        # Build entry with tool call information
-        entry = f"\\n[Turn {turn}]\\nUser: {user_message}\\n"
-
-        # Add tool calls section if any occurred
-        if self._current_turn_tool_calls:
-            entry += f"\\n[Tool Calls: {len(self._current_turn_tool_calls)}]\\n"
-            for tool_call in self._current_turn_tool_calls:
-                # Create a summary of arguments (first few key-value pairs)
-                args_summary = ""
-                if tool_call["arguments"]:
-                    args_items = list(tool_call["arguments"].items())[
-                        :2
-                    ]  # First 2 args
-                    args_summary = ", ".join([f"{k}={v}" for k, v in args_items])
-                    if len(tool_call["arguments"]) > 2:
-                        args_summary += "..."
-
-                # Truncate result for summary (first 100 chars)
-                result_summary = (
-                    tool_call["result"][:100] + "..."
-                    if len(tool_call["result"]) > 100
-                    else tool_call["result"]
-                )
-
-                entry += f"- {tool_call['tool_name']}({args_summary}) -> {tool_call['status']}\\n"
-                entry += f"  Result: {result_summary}\\n"
-
-        entry += f"\\nAssistant: {assistant_message}\\n"
-
-        try:
-            logger.debug("AutoMemory: Appending turn %d to transcript", turn)
-            if self.repository:
-                await self.repository.append_memory(
-                    key=self._mem_transcript_key, content=entry
-                )
-            logger.info("AutoMemory: ✓ Appended Turn %d", turn)
-
-            # Note: We don't re-associate here - transcript was associated during initialization
-            # to avoid creating duplicate edges in the knowledge graph
-
-            # Emit memory saved event
-            await self.events.async_dispatch(
-                KnowledgeEvents.MEMORY_SAVED, self._mem_transcript_key, entry
-            )
-        except Exception as e:
-            logger.warning(
-                "AutoMemory append failed: %s: %s",
-                type(e).__name__,
-                e,
-            )
+        # Note: Transcripts are no longer stored as memory nodes.
+        # Instead, transcripts are rebuilt on-demand from messages via MessageService.
+        # Auto-memory is now only used for summaries and lessons.
 
         # Clear tool calls for next turn
         self._current_turn_tool_calls.clear()
 
         # Emit turn processed event
-        await self.events.async_dispatch(KnowledgeEvents.TURN_PROCESSED, turn)
+        await self.events.async_dispatch(
+            KnowledgeEvents.TURN_PROCESSED, self._turn_index
+        )
 
     async def _on_summarized(self, summary: str, turn_count: int):
-        """Handle bot summarized event: persist and link summary to session and transcript."""
+        """Handle bot summarized event: persist and link summary to session."""
         if not self.repository:
             logger.debug(
                 "Knowledge: Repository not initialized; skipping summary persistence"
@@ -738,7 +678,6 @@ Cannot proceed without identity."""
             await self._ensure_ontology_structure()
             session_node_id = f"session:{self.session_id}"
             memory_summary_id = f"memory:{self._mem_summary_key}"
-            memory_transcript_id = f"memory:{self._mem_transcript_key}"
 
             # Ensure session node exists
             await self.repository.add_node(
@@ -748,12 +687,9 @@ Cannot proceed without identity."""
                 properties={"session_id": self.session_id},
             )
 
-            # Ensure memory nodes exist in the graph
+            # Ensure memory node exists in the graph
             await self._ensure_memory_in_graph(
                 self._mem_summary_key, "Chat Session Summary"
-            )
-            await self._ensure_memory_in_graph(
-                self._mem_transcript_key, "Chat Session Transcript"
             )
 
             # Auto-associate summary to concepts (e.g., Conversation)
@@ -761,16 +697,11 @@ Cannot proceed without identity."""
                 self._mem_summary_key, "Chat Session Summary"
             )
 
-            # Link session -> summary and summary -> transcript
+            # Link session -> summary
             await self.repository.add_edge(
                 source_id=session_node_id,
                 target_id=memory_summary_id,
                 edge_type="HAS_SUMMARY",
-            )
-            await self.repository.add_edge(
-                source_id=memory_summary_id,
-                target_id=memory_transcript_id,
-                edge_type="SUMMARIZES",
             )
 
             logger.info(
@@ -784,70 +715,6 @@ Cannot proceed without identity."""
             )
         except Exception as e:
             logger.warning("Knowledge: Failed to persist/link summary: %s", e)
-
-    async def initialize_transcript(self):
-        """Initializes the session transcript in memory and links it to the session in the graph."""
-
-        header = f"# Session {self.session_id}\\nStarted UTC: {_dt.datetime.utcnow().isoformat()}\\n"
-        try:
-            # Save transcript to memory using repository
-            if self.repository:
-                await self.repository.save_memory(
-                    key=self._mem_transcript_key,
-                    content=header,
-                    overwrite=True,
-                )
-            logger.info(
-                "AutoMemory: initialized transcript at %s",
-                self._mem_transcript_key,
-            )
-            self._mem_initialized = True
-
-            # Create session structure in knowledge graph
-            if self.repository:
-                await self._ensure_ontology_structure()
-
-                session_node_id = f"session:{self.session_id}"
-                memory_node_id = f"memory:{self._mem_transcript_key}"
-
-                # Create session node
-                await self.repository.add_node(
-                    node_id=session_node_id,
-                    node_type="Session",
-                    label=f"Session {self.session_id}",
-                    properties={
-                        "session_id": self.session_id,
-                        "started": _dt.datetime.utcnow().isoformat(),
-                    },
-                )
-
-                # Link session to concept:session
-                await self.repository.add_edge(
-                    source_id="concept:session",
-                    target_id=session_node_id,
-                    edge_type="HAS_INSTANCE",
-                )
-
-                # Create memory node for transcript (already created by save_memory, but ensure it's linked)
-                # Link session to transcript
-                await self.repository.add_edge(
-                    source_id=session_node_id,
-                    target_id=memory_node_id,
-                    edge_type="HAS_TRANSCRIPT",
-                )
-
-                logger.info("KG: Created session structure for %s", self.session_id)
-
-            # Emit memory saved event
-            await self.events.async_dispatch(
-                KnowledgeEvents.MEMORY_SAVED, self._mem_transcript_key, header
-            )
-        except Exception as e:
-            logger.warning(
-                "AutoMemory init failed: %s: %s",
-                type(e).__name__,
-                e,
-            )
 
     async def _handle_tool_call(
         self,
@@ -990,7 +857,7 @@ Cannot proceed without identity."""
         """Associate a memory with a knowledge graph node.
 
         Args:
-            memory_key: The memory key (e.g., "chat:session:123:transcript")
+            memory_key: The memory key (e.g., "chat:123:summary")
             node_id: The knowledge graph node ID
             relationship: The type of relationship (default: "RELATES_TO")
         """
@@ -1120,13 +987,14 @@ Cannot proceed without identity."""
         This analyzes the memory key and creates appropriate associations:
         - core:* memories → concept:self (direct link)
         - chat:lessons → concept:self + concept:learning
-        - chat:session:* → concept:conversation (linked to self)
+        - chat:*:summary → concept:conversation (linked to self)
         - plans:* → concept:planning (linked to self)
         - goals:* → concept:goals (linked to self)
         - tasks:* → concept:tasks (linked to self)
         - tools:* → concept:capabilities (linked to self)
 
         All concepts are linked to concept:self so they're discoverable when loading from concepts.
+        Note: Transcripts are no longer stored as memory nodes - they are rebuilt from messages.
 
         Args:
             memory_key: The memory key to associate
@@ -1161,30 +1029,32 @@ Cannot proceed without identity."""
                 )
                 logger.debug("KG: ✓ Associated %s with concept:self", memory_key)
 
-            elif memory_key.startswith("chat:session:"):
-                # Session transcripts/summaries associate with concept:conversation
-                logger.info("KG: Linking '%s' → concept:conversation", memory_key)
-                # First ensure concept:conversation exists
-                await self.repository.add_node(
-                    node_id="concept:conversation",
-                    node_type="Concept",
-                    label="Conversation",
-                    properties={"description": "Conversation history and context"},
-                )
-                # Link conversation to self
-                await self.repository.add_edge(
-                    source_id="concept:conversation",
-                    target_id="concept:self",
-                    edge_type="ASPECT_OF",
-                )
-                await self.repository.add_edge(
-                    source_id=memory_node_id,
-                    target_id="concept:conversation",
-                    edge_type="INSTANCE_OF",
-                )
-                logger.debug(
-                    "KG: ✓ Associated %s with concept:conversation", memory_key
-                )
+            elif memory_key.startswith("chat:") and memory_key.endswith(":summary"):
+                # Chat summaries associate with concept:conversation
+                # Exclude chat:lessons which is handled separately
+                if memory_key != "chat:lessons":
+                    logger.info("KG: Linking '%s' → concept:conversation", memory_key)
+                    # First ensure concept:conversation exists
+                    await self.repository.add_node(
+                        node_id="concept:conversation",
+                        node_type="Concept",
+                        label="Conversation",
+                        properties={"description": "Conversation history and context"},
+                    )
+                    # Link conversation to self
+                    await self.repository.add_edge(
+                        source_id="concept:conversation",
+                        target_id="concept:self",
+                        edge_type="ASPECT_OF",
+                    )
+                    await self.repository.add_edge(
+                        source_id=memory_node_id,
+                        target_id="concept:conversation",
+                        edge_type="INSTANCE_OF",
+                    )
+                    logger.debug(
+                        "KG: ✓ Associated %s with concept:conversation", memory_key
+                    )
 
             elif memory_key.startswith("chat:lessons"):
                 # Lessons associate with both self and learning

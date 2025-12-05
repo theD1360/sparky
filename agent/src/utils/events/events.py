@@ -31,12 +31,21 @@ class Events(EventsInterface):
         tmp = []
         for event in self._events:
             if event.name == name:
-                if iscoroutinefunction(event.handler):
-                    output = await event.handler(*args, **kwargs)
-                else:
-                    output = event.handler(*args, **kwargs)
-
-                tmp.append(output)
+                try:
+                    if iscoroutinefunction(event.handler):
+                        output = await event.handler(*args, **kwargs)
+                    else:
+                        output = event.handler(*args, **kwargs)
+                    tmp.append(output)
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(
+                        f"Error in event handler for '{name}': {e}",
+                        exc_info=True,
+                    )
+                    # Continue processing other handlers even if one fails
+                    tmp.append(None)
 
         return tmp
 

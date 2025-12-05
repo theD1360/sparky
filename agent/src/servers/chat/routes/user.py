@@ -7,6 +7,7 @@ from database.repository import KnowledgeRepository
 from fastapi import APIRouter, Depends, HTTPException, status
 from middleware.auth_middleware import get_current_user
 from pydantic import BaseModel
+from services.chat_service import ChatService
 
 router = APIRouter(prefix="/api/user", tags=["user"])
 
@@ -145,9 +146,10 @@ async def update_chat_name(
             await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
+        chat_service = ChatService(repository)
 
         # Update chat name
-        updated_chat = await repository.update_chat_name(chat_id, request.chat_name)
+        updated_chat = await chat_service.rename_chat(chat_id, request.chat_name)
 
         if not updated_chat:
             raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
@@ -198,9 +200,10 @@ async def delete_chat(
             await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
+        chat_service = ChatService(repository)
 
         # Delete chat
-        result = await repository.delete_chat(chat_id)
+        result = await chat_service.delete_chat(chat_id)
 
         if not result:
             raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
@@ -245,9 +248,10 @@ async def archive_chat(
             await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
+        chat_service = ChatService(repository)
 
         # Archive chat
-        archived_chat = await repository.archive_chat(chat_id)
+        archived_chat = await chat_service.archive_chat(chat_id)
 
         if not archived_chat:
             raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")
@@ -300,9 +304,10 @@ async def unarchive_chat(
             await db_manager.connect()
 
         repository = KnowledgeRepository(db_manager)
+        chat_service = ChatService(repository)
 
         # Unarchive chat
-        unarchived_chat = await repository.unarchive_chat(chat_id)
+        unarchived_chat = await chat_service.unarchive_chat(chat_id)
 
         if not unarchived_chat:
             raise HTTPException(status_code=404, detail=f"Chat '{chat_id}' not found")

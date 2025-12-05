@@ -661,7 +661,17 @@ class KnowledgeRepository:
             if content is not None:
                 existing.content = content
             if properties is not None:
-                existing.properties = properties
+                # Merge properties instead of overwriting to preserve existing values
+                if existing.properties:
+                    # Merge new properties into existing ones (new values override old ones)
+                    merged_properties = existing.properties.copy()
+                    merged_properties.update(properties)
+                    existing.properties = merged_properties
+                else:
+                    # No existing properties, just set the new ones
+                    existing.properties = properties
+                # Mark properties as modified for SQLAlchemy to detect changes
+                flag_modified(existing, "properties")
             existing.updated_at = datetime.now(timezone.utc)
             await session.flush()
             is_postgres = self.db_manager.engine.dialect.name == "postgresql"
@@ -3211,7 +3221,8 @@ class KnowledgeRepository:
             logger.warning(f"Cannot archive chat: chat {chat_id} not found")
             return None
         async with self.db_manager.get_session() as session:
-            db_node = session.query(Node).filter(Node.id == chat_node_id).first()
+            result = await session.execute(select(Node).filter(Node.id == chat_node_id))
+            db_node = result.scalar_one_or_none()
             if not db_node:
                 return None
             if not db_node.properties:
@@ -3241,7 +3252,8 @@ class KnowledgeRepository:
             logger.warning(f"Cannot unarchive chat: chat {chat_id} not found")
             return None
         async with self.db_manager.get_session() as session:
-            db_node = session.query(Node).filter(Node.id == chat_node_id).first()
+            result = await session.execute(select(Node).filter(Node.id == chat_node_id))
+            db_node = result.scalar_one_or_none()
             if not db_node:
                 return None
             if not db_node.properties:

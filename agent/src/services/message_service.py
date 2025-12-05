@@ -4,8 +4,8 @@ Handles message CRUD operations, token estimation, history management,
 and summary preference logic.
 """
 
-import datetime
 import logging
+import uuid
 
 # Import TYPE_CHECKING to avoid circular imports
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -55,8 +55,6 @@ class MessageService:
         self,
         content: str,
         role: str,
-        session_id: Optional[str] = None,  # Deprecated: kept for backward compatibility
-        chat_id: Optional[str] = None,
         internal: bool = False,
         message_type: str = "message",
         tool_name: Optional[str] = None,
@@ -65,11 +63,12 @@ class MessageService:
     ) -> Optional[str]:
         """Save a message to the knowledge graph.
 
+        Messages are created independently of chats. They must be linked to chats
+        separately using chat_service.link_message().
+
         Args:
             content: The message content
             role: The role of the speaker (e.g., 'user', 'model')
-            session_id: Deprecated - Session identifier (kept for backward compatibility)
-            chat_id: Chat identifier (required)
             internal: Whether this is an internal/system message
             message_type: Type of message ('message', 'tool_use', 'tool_result', 'thought', 'summary', 'internal')
             tool_name: Optional tool name for tool_use and tool_result messages
@@ -79,36 +78,50 @@ class MessageService:
         Returns:
             The node ID of the created message, or None if failed
         """
-        if not chat_id:
-            logger.warning(
-                f"Cannot save message to graph: chat_id is None (role={role})"
-            )
-            return None
-
         try:
-            # Get current message count from graph for this chat
-            # Get messages for accurate count
-            current_messages = await self.repository.get_chat_messages(chat_id=chat_id)
-            message_num = len(current_messages) + 1
-            logger.debug(
-                f"Calculated message_num={message_num} for chat {chat_id} "
-                f"(found {len(current_messages)} existing messages)"
-            )
-
-            chat_node_id = f"chat:{chat_id}:{message_num}"
+            # Generate unique UUID-based message node ID
+            message_uuid = str(uuid.uuid4())
+            message_node_id = f"message:{message_uuid}"
 
             logger.info(
-                f"Saving message to graph: node_id={chat_node_id}, role={role}, "
-                f"chat_id={chat_id}, internal={internal}, "
-                f"message_type={message_type}"
+                f"Saving message to graph: node_id={message_node_id}, role={role}, "
+                f"internal={internal}, message_type={message_type}"
             )
 
             # Build properties with role, internal flag, message type, and optional tool data
+            # Validate and normalize role
+            if not isinstance(role, str):
+                logger.warning(
+                    "Invalid role type: %s, value: %s. Converting to string.",
+                    type(role),
+                    role,
+                )
+                role = str(role) if role else "user"
+
+            # Normalize role: strip whitespace and convert to lowercase for validation
+            role_normalized = role.strip().lower()
+            if role_normalized not in ("user", "model"):
+                logger.warning(
+                    "Invalid role value: '%s', defaulting to 'user'.",
+                    role,
+                )
+                role = "user"
+            else:
+                # Use the normalized lowercase version for consistency
+                role = role_normalized
+
             properties = {
                 "role": role,
                 "internal": internal,
                 "message_type": message_type,
             }
+
+            logger.debug(
+                "Saving message with role='%s', internal=%s, message_type='%s'",
+                role,
+                internal,
+                message_type,
+            )
 
             # Add tool-specific properties if provided
             if tool_name:
@@ -116,64 +129,44 @@ class MessageService:
             if tool_args:
                 properties["tool_args"] = tool_args
 
+            # Use short UUID for label
+            label = f"Chat Message {message_uuid[:8]}"
+
             await self.repository.add_node(
-                node_id=chat_node_id,
+                node_id=message_node_id,
                 node_type="ChatMessage",
-                label=f"Chat Message {message_num}",
+                label=label,
                 content=content,
                 properties=properties,
             )
-            logger.debug(f"Created ChatMessage node: {chat_node_id}")
-
-            # Link message to chat node
-            chat_node_full_id = f"chat:{chat_id}"
-            try:
-                # Verify chat node exists before linking
-                chat_node = await self.repository.get_node(chat_node_full_id)
-                if chat_node:
-                    await self.repository.add_edge(
-                        source_id=chat_node_full_id,
-                        target_id=chat_node_id,
-                        edge_type="CONTAINS",
-                    )
-                    logger.debug(
-                        f"Linked message to chat node: {chat_node_full_id} -[CONTAINS]-> {chat_node_id}"
-                    )
-                else:
-                    logger.warning(
-                        f"Chat node {chat_node_full_id} not found, cannot link message"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Failed to link message to chat node for chat_id={chat_id}: {e}"
-                )
+            logger.debug(f"Created ChatMessage node: {message_node_id}")
 
             # Link file attachment if provided
             if file_node_id:
                 logger.debug(
-                    f"Linking file attachment: {chat_node_id} -> {file_node_id}"
+                    f"Linking file attachment: {message_node_id} -> {file_node_id}"
                 )
                 # Use file service if available, otherwise use direct repository
                 if self.file_service:
                     await self.file_service.link_file_to_message(
-                        file_node_id, chat_node_id
+                        file_node_id, message_node_id
                     )
                 else:
                     await self.repository.add_edge(
-                        source_id=chat_node_id,
+                        source_id=message_node_id,
                         target_id=file_node_id,
                         edge_type="HAS_ATTACHMENT",
                     )
                 logger.info(
-                    f"Successfully linked file to message: {chat_node_id} -[HAS_ATTACHMENT]-> {file_node_id}"
+                    f"Successfully linked file to message: {message_node_id} -[HAS_ATTACHMENT]-> {file_node_id}"
                 )
 
-            logger.info(f"Successfully saved message to graph: {chat_node_id}")
-            return chat_node_id
+            logger.info(f"Successfully saved message to graph: {message_node_id}")
+            return message_node_id
 
         except Exception as e:
             logger.error(
-                f"Failed to create chat node for session={session_id}, chat_id={chat_id}: {e}",
+                f"Failed to create message node: {e}",
                 exc_info=True,
             )
             return None
@@ -211,7 +204,9 @@ class MessageService:
                 f"Retrieved {len(nodes)} total messages for chat {chat_id} from graph"
             )
             if nodes:
-                logger.debug(f"First message: {nodes[0].id}, Last message: {nodes[-1].id}")
+                logger.debug(
+                    f"First message: {nodes[0].id}, Last message: {nodes[-1].id}"
+                )
 
             if prefer_summaries:
                 # Find the most recent summary

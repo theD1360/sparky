@@ -96,8 +96,47 @@ class AgentLoop:
         config = ProviderConfig(model_name=model_name)
         provider = GeminiProvider(config)
 
+        # Create services for dependency injection
+        # Note: Services will be recreated in execute_task when repository is available
+        # This initial bot won't be used until start_chat is called
+        from services import create_services
+
+        try:
+            from database.database import get_database_manager
+            from database.repository import KnowledgeRepository
+
+            db_manager = get_database_manager()
+            if not db_manager.engine:
+                db_manager.connect()
+            repository = KnowledgeRepository(db_manager)
+
+            events = Events()
+            services = create_services(
+                repository=repository,
+                identity_search_terms=None,
+                events=events,
+                provider=provider,
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to create services for initial bot: {e}. "
+                "Bot will be recreated in execute_task with proper services."
+            )
+            # Create dummy services - bot won't work until recreated in execute_task
+            # This is a temporary workaround for the initial bot instance
+            raise RuntimeError(
+                "Services must be created before AgentOrchestrator. "
+                "Ensure database is available."
+            ) from e
+
         self.bot = AgentOrchestrator(
             provider=provider,
+            message_service=services["message_service"],
+            user_service=services["user_service"],
+            identity_service=services["identity_service"],
+            file_service=services["file_service"],
+            chat_service=services["chat_service"],
+            token_service=services["token_service"],
             toolchain=toolchain,
             middlewares=[
                 SelfModificationGuard(),
@@ -290,8 +329,33 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
                 config = ProviderConfig(model_name=model_name)
                 provider = GeminiProvider(config)
 
+                # Create services for dependency injection (required)
+                from database.database import get_database_manager
+                from database.repository import KnowledgeRepository
+                from services import create_services
+
+                db_manager = get_database_manager()
+                if not db_manager.engine:
+                    await db_manager.connect()
+                repository = KnowledgeRepository(db_manager)
+
+                events = Events()
+                services = create_services(
+                    repository=repository,
+                    identity_search_terms=None,
+                    events=events,
+                    provider=provider,
+                )
+                logger.debug("Created services for task bot via dependency injection")
+
                 bot = AgentOrchestrator(
                     provider=provider,
+                    message_service=services["message_service"],
+                    user_service=services["user_service"],
+                    identity_service=services["identity_service"],
+                    file_service=services["file_service"],
+                    chat_service=services["chat_service"],
+                    token_service=services["token_service"],
                     toolchain=self.toolchain,
                     middlewares=[
                         SelfModificationGuard(),
