@@ -7,9 +7,7 @@ import os
 import time
 import traceback
 from typing import Any, Coroutine, List, Optional
-from uuid import uuid4
 
-from badmcp.tool_chain import ToolChain
 from database.database import get_database_manager
 from database.repository import KnowledgeRepository
 from events import BotEvents
@@ -24,10 +22,19 @@ from services import (
 from utils.async_util import run_async
 from utils.events import Events
 
-from .history_utils import convert_nodes_to_llm_format, format_nodes_for_summary
+from .langchain_toolchain import LangChainToolchain
 from .logging_config import setup_logging
+from .memory import KnowledgeGraphChatMessageHistory
 from .middleware import BaseMiddleware, MiddlewareRegistry, ToolCallContext
-from .providers import GeminiProvider, LLMProvider, ProviderConfig
+
+# LangChain message types
+try:
+    from langchain_core.messages import HumanMessage, SystemMessage
+except ImportError:
+    # Fallback if langchain_core is not available
+    HumanMessage = None
+    SystemMessage = None
+from .providers import LLMProvider
 from .tool_registry import ToolResult
 
 setup_logging()
@@ -67,7 +74,7 @@ class AgentOrchestrator:
         on_tool_use: Optional[Coroutine] = None,
         on_tool_result: Optional[Coroutine] = None,
         on_thought: Optional[Coroutine] = None,
-        toolchain: Optional[ToolChain] = None,
+        langchain_toolchain: Optional[LangChainToolchain] = None,
         knowledge: Optional[Any] = None,
         identity_search_terms: Optional[List[str]] = None,
         identity_max_depth: int = 2,
@@ -109,7 +116,7 @@ class AgentOrchestrator:
         self.events = Events()
 
         self.provider = provider
-        self.toolchain = toolchain
+        self.langchain_toolchain = langchain_toolchain
 
         # Fallback message count limit (only used when token limit is disabled)
         # Token budget is the primary mechanism for limiting context
@@ -189,11 +196,18 @@ class AgentOrchestrator:
         if on_load:
             self.events.subscribe(BotEvents.LOAD, on_load)
 
-        # Configure and initialize the provider
+        # Configure the provider
         self.provider.configure()
-        self.model, self._safe_to_original = self.provider.initialize_model(toolchain)
+        # Tools will be loaded asynchronously in start_chat or when needed
+        # Initialize model without tools for now (tools added later)
+        # Pass summary_token_threshold for SummarizationMiddleware
+        self.model, self._safe_to_original = self.provider.initialize_model(
+            None,
+            execute_tool_callback=self.execute_tool_call,
+            summary_token_threshold=self.summary_token_threshold,
+        )
 
-        self.chat = None
+        self.memory = None  # LangChain memory instance (replaces self.chat)
 
         # Store the knowledge instance if provided
         # Otherwise, it will be created in start_chat with the session_id
@@ -222,6 +236,12 @@ class AgentOrchestrator:
         self._register_event_handlers()
 
     def add_task(self, instruction: str, metadata: dict | None = None):
+        """Add a task to the task queue.
+
+        Args:
+            instruction: Task instruction (currently unused, kept for API compatibility)
+            metadata: Optional task metadata (currently unused, kept for API compatibility)
+        """
         # Implement rate limiting
         if (
             self._last_add_task_time is not None
@@ -231,6 +251,7 @@ class AgentOrchestrator:
             return
 
         self._last_add_task_time = time.time()
+        # TODO: Implement actual task queuing when needed
 
         # Dispatch load event synchronously for backward compatibility
         if self.on_load:
@@ -244,8 +265,8 @@ class AgentOrchestrator:
     def _run_async(self, coro):
         """Helper to run async function from sync context."""
         try:
-            loop = asyncio.get_running_loop()
             # If we're in an async context, create a task
+            asyncio.get_running_loop()
             asyncio.create_task(coro)
         except RuntimeError:
             # No event loop running, create a new one
@@ -275,17 +296,20 @@ class AgentOrchestrator:
 
         self._event_handlers_registered = True
         logger.info(
-            f"Registered event handlers for graph message storage. "
-            f"Chat ID will be set in start_chat(). Events subscribed: "
-            f"MESSAGE_SENT={BotEvents.MESSAGE_SENT}, "
-            f"MESSAGE_RECEIVED={BotEvents.MESSAGE_RECEIVED}"
+            "Registered event handlers for graph message storage. "
+            "Chat ID will be set in start_chat(). Events subscribed: "
+            "MESSAGE_SENT=%s, MESSAGE_RECEIVED=%s",
+            BotEvents.MESSAGE_SENT,
+            BotEvents.MESSAGE_RECEIVED,
         )
 
     async def _handle_message_sent(self, message: str):
         """Handle MESSAGE_SENT event by saving and linking message."""
         try:
             logger.info(
-                f"Event handler: MESSAGE_SENT for chat {self._chat_id}, message: {message[:50]}..."
+                "Event handler: MESSAGE_SENT for chat %s, message: %.50s...",
+                self._chat_id,
+                message,
             )
             await self._save_and_link_message(
                 content=message,
@@ -294,11 +318,14 @@ class AgentOrchestrator:
                 file_node_id=getattr(self, "_current_file_id", None),
             )
             logger.info(
-                f"Successfully saved and linked user message for chat {self._chat_id}"
+                "Successfully saved and linked user message for chat %s",
+                self._chat_id,
             )
         except Exception as e:
             logger.error(
-                f"Error in _handle_message_sent for chat {self._chat_id}: {e}",
+                "Error in _handle_message_sent for chat %s: %s",
+                self._chat_id,
+                e,
                 exc_info=True,
             )
 
@@ -306,7 +333,9 @@ class AgentOrchestrator:
         """Handle MESSAGE_RECEIVED event by saving and linking message."""
         try:
             logger.info(
-                f"Event handler: MESSAGE_RECEIVED for chat {self._chat_id}, message: {message[:50]}..."
+                "Event handler: MESSAGE_RECEIVED for chat %s, message: %.50s...",
+                self._chat_id,
+                message,
             )
             await self._save_and_link_message(
                 content=message,
@@ -314,11 +343,14 @@ class AgentOrchestrator:
                 message_type="message",
             )
             logger.info(
-                f"Successfully saved and linked model message for chat {self._chat_id}"
+                "Successfully saved and linked model message for chat %s",
+                self._chat_id,
             )
         except Exception as e:
             logger.error(
-                f"Error in _handle_message_received for chat {self._chat_id}: {e}",
+                "Error in _handle_message_received for chat %s: %s",
+                self._chat_id,
+                e,
                 exc_info=True,
             )
 
@@ -335,7 +367,13 @@ class AgentOrchestrator:
     async def _handle_tool_result(
         self, tool_name: str, result: Any, status: str = None
     ):
-        """Handle TOOL_RESULT event by saving and linking message."""
+        """Handle TOOL_RESULT event by saving and linking message.
+
+        Args:
+            tool_name: Name of the tool that was executed
+            result: Result from the tool execution
+            status: Status of the tool execution (currently unused, kept for API compatibility)
+        """
         await self._save_and_link_message(
             content=f"Tool {tool_name} result: {result}",
             role="model",
@@ -356,6 +394,7 @@ class AgentOrchestrator:
 
         Args:
             summary: The conversation summary
+            turn_count: Number of turns summarized (currently unused, kept for API compatibility)
             turn_count: Optional turn count (not used but kept for compatibility)
         """
         await self._save_and_link_message(
@@ -383,128 +422,15 @@ class AgentOrchestrator:
         )
         return effective_budget
 
-    async def _should_summarize(self) -> bool:
-        """Check if conversation should be summarized based on token usage.
-
-        Returns True if messages since last summary exceed the token threshold.
-        Includes safeguards to prevent premature summarization:
-        - Requires minimum of 10 message exchanges (20 total messages)
-        - Requires conversation to be at least 5 minutes old
-        - Requires token threshold to be exceeded
-
-        Returns:
-            True if summarization is needed, False otherwise
-        """
-        if not self._chat_id:
-            return False
-
-        try:
-            # Get all messages from the graph
-            nodes = await self.knowledge.repository.get_chat_messages(
-                chat_id=self._chat_id, limit=None
-            )
-
-            if not nodes:
-                logger.debug("No messages found, skipping summarization check")
-                return False
-
-            # Find the most recent summary
-            most_recent_summary_idx = -1
-            for i in range(len(nodes) - 1, -1, -1):
-                node = nodes[i]
-                if node.properties and node.properties.get("message_type") == "summary":
-                    most_recent_summary_idx = i
-                    break
-
-            # Get messages since last summary (or all if no summary exists)
-            if most_recent_summary_idx >= 0:
-                messages_to_check = nodes[most_recent_summary_idx + 1 :]
-            else:
-                messages_to_check = nodes
-
-            # Safeguard 1: Minimum message count (at least 20 messages = ~10 exchanges)
-            # Don't summarize very short conversations
-            if len(messages_to_check) < 20:
-                logger.debug(
-                    "Skipping summarization: only %d messages (need at least 20)",
-                    len(messages_to_check),
-                )
-                return False
-
-            # Safeguard 2: Conversation age check (at least 5 minutes old)
-            # Don't summarize very recent conversations
-            if messages_to_check:
-                first_message = messages_to_check[0]
-                if first_message.created_at:
-                    conversation_age = (
-                        datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
-                        - first_message.created_at
-                    )
-                    min_age_minutes = 5
-                    if conversation_age.total_seconds() < min_age_minutes * 60:
-                        logger.debug(
-                            "Skipping summarization: conversation only %.1f minutes old (need at least %d)",
-                            conversation_age.total_seconds() / 60,
-                            min_age_minutes,
-                        )
-                        return False
-
-            # Convert to LLM format for token estimation
-            # Note: Using internal method as MessageService doesn't expose this publicly
-            # pylint: disable=protected-access
-            messages = self.message_service._convert_nodes_to_llm_format(
-                messages_to_check
-            )
-            # pylint: enable=protected-access
-
-            if not messages:
-                logger.debug(
-                    "No messages to check after conversion, skipping summarization"
-                )
-                return False
-
-            # Estimate tokens
-            estimated_tokens = self.message_service.estimate_tokens(messages)
-
-            # Get effective budget and threshold
-            effective_budget = self.get_effective_token_budget()
-            threshold_tokens = int(effective_budget * self.summary_token_threshold)
-
-            should_summarize = estimated_tokens >= threshold_tokens
-
-            if should_summarize:
-                logger.info(
-                    "Summarization needed: %d messages, %d tokens >= %d threshold (%.1f%% of %d budget)",
-                    len(messages_to_check),
-                    estimated_tokens,
-                    threshold_tokens,
-                    self.summary_token_threshold * 100,
-                    effective_budget,
-                )
-            else:
-                logger.debug(
-                    "No summarization needed: %d tokens < %d threshold (%d messages)",
-                    estimated_tokens,
-                    threshold_tokens,
-                    len(messages_to_check),
-                )
-
-            return should_summarize
-        # pylint: disable=broad-except
-        except Exception as e:
-            # pylint: enable=broad-except
-            logger.warning("Failed to check if summarization needed: %s", e)
-            return False
+    # _should_summarize() method removed - summarization is now handled by LangChain's SummarizationMiddleware
 
     async def _get_recent_messages(
         self, limit: Optional[int] = None, use_token_limit: bool = True
     ) -> List[dict]:
         """Retrieve recent messages from the knowledge graph and convert to LLM format.
 
-        Prioritizes summaries over old chat history to reduce token usage:
-        - If summaries exist, only includes messages after the most recent summary
-        - Includes the summary itself to provide context
-        - This prevents loading all historical messages when they've been summarized
+        DEPRECATED: This method is kept for backward compatibility.
+        Messages are now loaded via LangChain memory (KnowledgeGraphChatMessageHistory).
 
         Args:
             limit: Maximum number of messages to retrieve. If None, uses fallback_message_limit.
@@ -513,7 +439,27 @@ class AgentOrchestrator:
         Returns:
             List of messages in LLM format: [{"role": "user/model", "parts": ["content"]}]
         """
-        # If using token limits, get messages within budget
+        # If memory is available, load from it
+        if self.memory:
+            try:
+                messages = await self.memory.aget_messages()
+                # Convert LangChain messages to LLM format
+                llm_format = []
+                for msg in messages:
+                    # Check message type (handle case where imports might fail)
+                    if HumanMessage and isinstance(msg, HumanMessage):
+                        role = "user"
+                    elif SystemMessage and isinstance(msg, SystemMessage):
+                        role = "system"
+                    else:
+                        role = "model"
+                    content = str(msg.content) if hasattr(msg, "content") else ""
+                    llm_format.append({"role": role, "parts": [content]})
+                return llm_format
+            except Exception as e:
+                logger.warning("Failed to load messages from memory: %s", e)
+
+        # Fallback to message service (for backward compatibility)
         if use_token_limit:
             token_budget = self.get_effective_token_budget()
             return await self.message_service.get_messages_within_token_limit(
@@ -522,7 +468,6 @@ class AgentOrchestrator:
                 prefer_summaries=True,
             )
 
-        # Otherwise use count-based limit
         if limit is None:
             limit = self.fallback_message_limit
 
@@ -534,35 +479,52 @@ class AgentOrchestrator:
         """List available prompts from the toolchain.
 
         Returns:
-            List of (client_index, prompt) tuples
+            List of (server_name, prompt_name) tuples
         """
-        if not self.toolchain:
+        if not self.langchain_toolchain:
             return []
-        return await self.toolchain.list_all_prompts()
+        return await self.langchain_toolchain.list_prompts()
 
     async def get_prompt(self, name: str, arguments: Optional[dict] = None):
         """Get and render a prompt by name.
 
         Args:
-            name: Prompt name
+            name: Prompt name (format: "server_name:prompt_name" or just "prompt_name")
             arguments: Optional arguments for the prompt
 
         Returns:
             Rendered prompt text
         """
-        if not self.toolchain:
+        if not self.langchain_toolchain:
             raise ValueError("No toolchain available for prompts")
-        return await self.toolchain.get_prompt(name, arguments or {})
+
+        # Parse server_name:prompt_name format or try all servers
+        if ":" in name:
+            server_name, prompt_name = name.split(":", 1)
+        else:
+            # Try to find prompt in any server
+            prompts = await self.langchain_toolchain.list_prompts()
+            for srv_name, prompt_name in prompts:
+                if prompt_name == name:
+                    server_name = srv_name
+                    break
+            else:
+                raise ValueError(f"Prompt '{name}' not found in any server")
+            prompt_name = name
+
+        return await self.langchain_toolchain.get_prompt(
+            server_name, prompt_name, arguments or {}
+        )
 
     async def list_resources(self):
         """List available resources from the toolchain.
 
         Returns:
-            List of (client_index, resource) tuples
+            List of (server_name, resource_uri) tuples
         """
-        if not self.toolchain:
+        if not self.langchain_toolchain:
             return []
-        return await self.toolchain.list_all_resources()
+        return await self.langchain_toolchain.list_resources()
 
     async def read_resource(self, uri: str):
         """Read a resource by URI.
@@ -573,9 +535,9 @@ class AgentOrchestrator:
         Returns:
             Resource content as string
         """
-        if not self.toolchain:
+        if not self.langchain_toolchain:
             raise ValueError("No toolchain available for resources")
-        return await self.toolchain.read_resource(uri)
+        return await self.langchain_toolchain.read_resource(uri)
 
     async def upload_file(
         self,
@@ -633,8 +595,11 @@ class AgentOrchestrator:
             file_node_id: Optional file node ID for attachments
         """
         logger.info(
-            f"_save_and_link_message called: role={role}, chat_id={self._chat_id}, "
-            f"internal={internal}, message_type={message_type}"
+            "_save_and_link_message called: role=%s, chat_id=%s, internal=%s, message_type=%s",
+            role,
+            self._chat_id,
+            internal,
+            message_type,
         )
         # Step 1: Create message (agnostic of chat)
         message_node_id = await self.message_service.save_message(
@@ -656,16 +621,22 @@ class AgentOrchestrator:
                 )
                 if not linked:
                     logger.warning(
-                        f"Failed to link message {message_node_id} to chat {self._chat_id}"
+                        "Failed to link message %s to chat %s",
+                        message_node_id,
+                        self._chat_id,
                     )
             except Exception as e:
                 logger.error(
-                    f"Error linking message {message_node_id} to chat {self._chat_id}: {e}",
+                    "Error linking message %s to chat %s: %s",
+                    message_node_id,
+                    self._chat_id,
+                    e,
                     exc_info=True,
                 )
         elif message_node_id and not self._chat_id:
             logger.warning(
-                f"Message {message_node_id} created but no chat_id available to link it"
+                "Message %s created but no chat_id available to link it",
+                message_node_id,
             )
 
     async def _add_message_with_chat_node(
@@ -732,10 +703,10 @@ class AgentOrchestrator:
             user_id = "default"
             logger.info("No user_id provided, using default")
         else:
-            logger.info(f"Starting chat with user_id: {user_id}")
+            logger.info("Starting chat with user_id: %s", user_id)
 
         # Initialize or update Knowledge module with the chat_id
-        if self.knowledge is None and self.toolchain is not None:
+        if self.knowledge is None and self.langchain_toolchain is not None:
             # Create repository first
             db_url = os.getenv("SPARKY_DB_URL")
             if not db_url:
@@ -760,7 +731,7 @@ class AgentOrchestrator:
                     logger.info("Initialized KnowledgeService with repository")
                 except Exception as e:
                     logger.error(
-                        f"Failed to initialize KnowledgeService: {e}", exc_info=True
+                        "Failed to initialize KnowledgeService: %s", e, exc_info=True
                     )
 
         elif self.knowledge is not None:
@@ -783,7 +754,7 @@ class AgentOrchestrator:
                     "User should be created during registration."
                 )
 
-            logger.debug(f"Retrieved user node for user {user_id}")
+            logger.debug("Retrieved user node for user %s", user_id)
 
             # Get or create Chat node if chat_id is provided
             if chat_id:
@@ -797,7 +768,7 @@ class AgentOrchestrator:
 
                 if chat_node:
                     logger.info(
-                        f"Got or created Chat node {chat_id} for user {user_id}"
+                        "Got or created Chat node %s for user %s", chat_id, user_id
                     )
                     # Ensure the chat is linked to the user
                     # (link_chat handles checking if edge already exists)
@@ -806,15 +777,16 @@ class AgentOrchestrator:
                     )
                     if not link_success:
                         logger.warning(
-                            f"Failed to link chat {chat_id} to user {user_id}"
+                            "Failed to link chat %s to user %s", chat_id, user_id
                         )
 
                 else:
-                    logger.warning(f"Failed to get or create chat node {chat_id}")
+                    logger.warning("Failed to get or create chat node %s", chat_id)
 
         except Exception as e:
             logger.error(
-                f"Failed to create session/user/chat nodes or edges: {e}",
+                "Failed to create session/user/chat nodes or edges: %s",
+                e,
                 exc_info=True,
             )
 
@@ -831,9 +803,9 @@ class AgentOrchestrator:
         # Use IdentityService for loading identity
         try:
             identity_memory = await self.identity_service.get_identity_memory()
-            logger.info(f"Identity loaded successfully: {len(identity_memory)} chars")
+            logger.info("Identity loaded successfully: %d chars", len(identity_memory))
         except Exception as e:
-            logger.error(f"Failed to load identity: {e}", exc_info=True)
+            logger.error("Failed to load identity: %s", e, exc_info=True)
             identity_memory = "## Identity Loading Failed\n\nCannot load identity."
 
         # Summarize the identity to reduce token usage using IdentityService
@@ -845,9 +817,9 @@ class AgentOrchestrator:
                 identity_summary = await self.identity_service.summarize_identity(
                     identity_memory, self.generate
                 )
-                logger.info(f"Identity summarized: {len(identity_summary)} chars")
+                logger.info("Identity summarized: %d chars", len(identity_summary))
             except Exception as e:
-                logger.error(f"Failed to summarize identity: {e}", exc_info=True)
+                logger.error("Failed to summarize identity: %s", e, exc_info=True)
                 # Fallback to direct summarization
                 identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
                 identity_summary = await self.generate(identity_summary_prompt)
@@ -860,7 +832,8 @@ class AgentOrchestrator:
             )
 
             logger.info(
-                f"Adding identity instruction to chat: {len(identity_instruction)} chars"
+                "Adding identity instruction to chat: %d chars",
+                len(identity_instruction),
             )
         else:
             logger.warning(
@@ -884,36 +857,77 @@ class AgentOrchestrator:
             )
             self.initial_context_added = True
 
-        # Check if summarization is needed before loading messages
-        if await self._should_summarize():
-            logger.info("Proactively summarizing conversation before loading messages")
-            await self._summarize_conversation()
+        # Summarization is now handled automatically by LangChain's SummarizationMiddleware
+        # No need for proactive summarization checks
 
-        # Get truncated history from the graph (last N messages)
-        # Identity messages are already in the graph and will be included here
-        truncated_history = await self._get_recent_messages()
+        # Create LangChain memory with knowledge graph backend
+        if chat_id:
+            # Create custom ChatMessageHistory that persists to knowledge graph
+            chat_memory = KnowledgeGraphChatMessageHistory(
+                chat_id=chat_id,
+                message_service=self.message_service,
+                chat_service=self.chat_service,
+                events=self.events,
+            )
+            # Load existing messages from knowledge graph
+            existing_messages = await chat_memory.aget_messages()
 
-        # Estimate tokens for initial history and dispatch estimate event
-        if truncated_history:
+            # Estimate tokens for initial history and dispatch estimate event
+            if existing_messages:
+                try:
+                    # Convert LangChain messages to LLM format for token estimation
+                    llm_format = []
+                    for msg in existing_messages:
+                        # Check message type (handle case where imports might fail)
+                        if HumanMessage and isinstance(msg, HumanMessage):
+                            role = "user"
+                        elif SystemMessage and isinstance(msg, SystemMessage):
+                            role = "system"
+                        else:
+                            role = "model"
+                        content = str(msg.content) if hasattr(msg, "content") else ""
+                        llm_format.append({"role": role, "parts": [content]})
+
+                    history_tokens = self.token_service.estimate_messages_list(
+                        llm_format
+                    )
+                    logger.info("Estimated %d tokens for chat history", history_tokens)
+                    await self.token_service.emit_estimate(history_tokens, "history")
+                except Exception as e:
+                    logger.warning("Failed to estimate history tokens: %s", e)
+
+            # Store memory instance
+            self.memory = chat_memory
+        else:
+            # No chat_id - create empty memory
+            self.memory = None
+
+        # Load tools if toolchain is available and not already loaded
+        if self.langchain_toolchain and not hasattr(self, "_tools_loaded"):
             try:
-                history_tokens = self.token_service.estimate_messages_list(
-                    truncated_history
-                )
-                logger.info(f"Estimated {history_tokens} tokens for chat history")
-                await self.token_service.emit_estimate(history_tokens, "history")
+                langchain_tools = await self.langchain_toolchain.get_langchain_tools()
+                # Re-initialize model with tools if we have them
+                if langchain_tools:
+                    self.model, self._safe_to_original = self.provider.initialize_model(
+                        langchain_tools,
+                        execute_tool_callback=self.execute_tool_call,
+                        summary_token_threshold=self.summary_token_threshold,
+                    )
+                    self._tools_loaded = True
             except Exception as e:
-                logger.warning(f"Failed to estimate history tokens: {e}")
+                logger.warning("Failed to load tools: %s", e)
 
-        enable_auto_fc = self.toolchain is None
-        self.chat = await self.provider.start_chat(
-            history=truncated_history,
+        enable_auto_fc = self.langchain_toolchain is None
+        memory_result = await self.provider.start_chat(
+            history=None,  # History loaded via memory
             enable_auto_function_calling=enable_auto_fc,
+            memory=self.memory,
         )
 
         # Dispatch chat started event
-        await self.events.async_dispatch(BotEvents.CHAT_STARTED, self.chat)
+        await self.events.async_dispatch(BotEvents.CHAT_STARTED, memory_result)
 
-        return self.chat
+        return memory_result
 
     async def execute_tool_call(self, tool_name: str, tool_args: dict) -> ToolResult:
         """
@@ -940,8 +954,10 @@ class AgentOrchestrator:
         Note: This can be cancelled via asyncio.Task.cancel() from outside.
         Raises asyncio.CancelledError if cancelled.
         """
-        if not self.chat:
-            raise ValueError("Chat not initialized")
+        if not self.memory and (
+            not hasattr(self.provider, "memory") or not self.provider.memory
+        ):
+            raise ValueError("Chat not initialized - memory not set")
 
         # Store file_id temporarily for use by event handlers
         self._current_file_id = file_id
@@ -964,8 +980,10 @@ class AgentOrchestrator:
         # Dispatch message sent event WITH ORIGINAL MESSAGE (for storage)
         # The processed_message goes to LLM, but we save the original to keep history clean
         logger.info(
-            f"Dispatching MESSAGE_SENT event for chat {self._chat_id}, "
-            f"message: {message[:50]}..., handlers registered: {self._event_handlers_registered}"
+            "Dispatching MESSAGE_SENT event for chat %s, message: %.50s..., handlers registered: %s",
+            self._chat_id,
+            message,
+            self._event_handlers_registered,
         )
         await self.events.async_dispatch(BotEvents.MESSAGE_SENT, message)
 
@@ -983,19 +1001,26 @@ class AgentOrchestrator:
             await self.token_service.emit_estimate(response_tokens, "expected_response")
 
             logger.debug(
-                f"Estimated {message_tokens} tokens for message, "
-                f"{response_tokens} for expected response (complex={is_complex})"
+                "Estimated %d tokens for message, %d for expected response (complex=%s)",
+                message_tokens,
+                response_tokens,
+                is_complex,
             )
         except Exception as e:
-            logger.warning(f"Failed to estimate message tokens: {e}")
+            logger.warning("Failed to estimate message tokens: %s", e)
 
         executed_tool_calls = []
 
         try:
-            response = await self.provider.send_message(processed_message)
+            # Pass events and executed_tool_calls to provider for callback setup
+            response = await self.provider.send_message(
+                processed_message,
+                events=self.events,
+                executed_tool_calls=executed_tool_calls,
+            )
         except Exception as e:
             # Handle provider-specific initial errors
-            logger.error(f"Initial message resulted in error: {e}", exc_info=True)
+            logger.error("Initial message resulted in error: %s", e, exc_info=True)
 
             # Log to knowledge graph
             try:
@@ -1013,7 +1038,7 @@ class AgentOrchestrator:
                     },
                 )
             except Exception as log_exc:
-                logger.warning(f"Failed to log error to knowledge graph: {log_exc}")
+                logger.warning("Failed to log error to knowledge graph: %s", log_exc)
 
             # Try to recover
             logger.info("Attempting recovery by asking for a simpler response")
@@ -1026,14 +1051,18 @@ class AgentOrchestrator:
                 response = await self.provider.send_message(recovery_message)
             except Exception as recovery_error:
                 logger.error(
-                    f"Recovery attempt failed: {recovery_error}", exc_info=True
+                    "Recovery attempt failed: %s", recovery_error, exc_info=True
                 )
                 return (
                     f"I encountered an error and was unable to recover. "
                     f"Error details: {str(e)}"
                 )
 
-        if self.toolchain:
+        # If using create_agent, tool calls are already handled automatically
+        # Only call handle_tool_calls if not using an agent
+        if self.langchain_toolchain and (
+            not hasattr(self.provider, "agent") or not self.provider.agent
+        ):
             response = await self.provider.handle_tool_calls(
                 response=response,
                 execute_tool_callback=self.execute_tool_call,
@@ -1048,8 +1077,10 @@ class AgentOrchestrator:
 
         # Dispatch message received event
         logger.info(
-            f"Dispatching MESSAGE_RECEIVED event for chat {self._chat_id}, "
-            f"response: {text[:50]}..., handlers registered: {self._event_handlers_registered}"
+            "Dispatching MESSAGE_RECEIVED event for chat %s, response: %.50s..., handlers registered: %s",
+            self._chat_id,
+            text,
+            self._event_handlers_registered,
         )
         await self.events.async_dispatch(BotEvents.MESSAGE_RECEIVED, text)
 
@@ -1078,65 +1109,24 @@ class AgentOrchestrator:
         """Generate a one-off response without chat history."""
         return await self.provider.generate_content(prompt)
 
-    async def _format_history_for_summary(self) -> str:
-        """Create a concise text dump of recent conversation for summarization.
-
-        Only summarizes messages since the last summary to avoid re-summarizing
-        already summarized content and to stay within token limits.
-        """
-        if not self._chat_id:
-            return ""
-
-        return await self.message_service.format_for_summary(
-            chat_id=self._chat_id, since_last_summary=True
-        )
-
-    async def _summarize_conversation(self) -> None:
-        """Summarize the conversation to reduce token usage.
-
-        Summarizes messages since the last summary and saves the result to the
-        knowledge graph. The summary will be automatically included when loading
-        messages for future chat sessions.
-
-        Returns:
-            None
-        """
-        try:
-            logger.info("Summarizing conversation...")
-            history_text = await self._format_history_for_summary()
-            prompt = (
-                "Summarize the key points of this conversation. Focus on tasks, decisions, and outcomes. Be concise.\n\n"
-                + history_text
-            )
-            summary = await self.generate(prompt)
-
-            if not (summary or "").strip():
-                logger.warning("Empty summary generated; using fallback text")
-                summary = "No conversation content to summarize yet."
-
-            # Fire summarized event to save summary to knowledge graph
-            await self.events.async_dispatch(BotEvents.SUMMARIZED, summary)
-
-            logger.info("Conversation summarized successfully")
-        # pylint: disable=broad-except
-        except Exception as e:
-            # pylint: enable=broad-except
-            logger.warning("Failed to summarize conversation: %s", e)
+    # _format_history_for_summary() and _summarize_conversation() methods removed
+    # Summarization is now handled automatically by LangChain's SummarizationMiddleware
+    # Summaries are detected and persisted by KnowledgeGraphChatMessageHistory
 
 
 def main():
     """Example usage of the AgentOrchestrator class."""
     try:
         # Create provider
+        # Import here to avoid circular dependencies and keep example self-contained
+        from services import create_services
+        from sparky.providers import GeminiProvider, ProviderConfig
+
         config = ProviderConfig(model_name="gemini-1.5-pro")
         provider = GeminiProvider(config)
 
         # Create services (required for dependency injection)
-        from database.database import get_database_manager
-        from database.repository import KnowledgeRepository
-        from services import create_services
-        from utils.events import Events
-
+        # Use already imported get_database_manager, KnowledgeRepository, Events
         db_manager = get_database_manager()
         db_manager.connect()
         repository = KnowledgeRepository(db_manager)

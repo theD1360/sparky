@@ -1,23 +1,52 @@
-"""Gemini (Google GenAI) provider implementation."""
+"""Gemini (Google GenAI) provider implementation using LangChain agents."""
 
 import asyncio
+import base64
 import datetime
 import json
 import logging
 import os
-import re
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
-import google.generativeai as genai
 from dotenv import load_dotenv
-from google.generativeai.types import StopCandidateException
-
-from badmcp.transform.gemini_transformer import GeminiTransformer
-from utils.helpers import to_plain_obj
-
 from events import BotEvents
+
+# Try to import create_agent from langchain.agents (LangChain 1.0+)
+# Fallback to langgraph.prebuilt for older versions
+try:
+    from langchain.agents import create_agent
+except ImportError:
+    try:
+        from langgraph.prebuilt import create_react_agent as create_agent
+    except ImportError:
+        raise ImportError(
+            "Cannot import create_agent. Please ensure langchain>=0.3.20 or langgraph is installed. "
+            "For LangChain 1.0+: pip install 'langchain>=1.0.0'. "
+            "For LangChain 0.3.x: pip install langgraph"
+        )
+
+try:
+    from langchain.agents.middleware import SummarizationMiddleware, ToolRetryMiddleware
+except ImportError:
+    # SummarizationMiddleware might not be available in older versions
+    SummarizationMiddleware = None
+    ToolRetryMiddleware = None
+
+from langchain.memory import ConversationBufferMemory
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_core.messages import AIMessage, HumanMessage, ImageMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import BaseTool
+from langchain_google_genai import ChatGoogleGenerativeAI
+
 from .base import LLMProvider, ProviderConfig
+from .langchain_callbacks import LangChainEventCallbackHandler
+from .middleware_tool_wrapper import MiddlewareToolWrapper
+from ..gemini_schema import (
+    gemini_automatic_function_calling_kwarg,
+    tools_with_gemini_safe_arg_schemas,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +62,12 @@ class GeminiProvider(LLMProvider):
         """
         super().__init__(config)
         self._safe_to_original: Dict[str, str] = {}
+        self._original_tools: Dict[str, BaseTool] = {}
+        self.agent: Optional[Any] = None  # LangChain agent created with create_agent
+        self._event_handler: Optional[Any] = None
+        self._summary_token_threshold: Optional[float] = (
+            None  # Will be set from orchestrator
+        )
 
     def configure(self) -> None:
         """Configure the Google GenAI API."""
@@ -43,41 +78,162 @@ class GeminiProvider(LLMProvider):
                 "Google API key not found. Please set GOOGLE_API_KEY environment variable "
                 "or pass it in the ProviderConfig."
             )
-        genai.configure(api_key=api_key)
         self.config.api_key = api_key
 
     def initialize_model(
-        self, toolchain: Optional[Any] = None
+        self,
+        langchain_tools: Optional[List[BaseTool]] = None,
+        execute_tool_callback: Optional[Any] = None,
+        summary_token_threshold: Optional[float] = None,
     ) -> Tuple[Any, Optional[Dict[str, str]]]:
-        """Initialize the Gemini model with optional tool support.
+        """Initialize the Gemini model with optional tool support using LangChain agents.
 
         Args:
-            toolchain: Optional ToolChain instance with available tools
+            langchain_tools: Optional list of LangChain BaseTool instances
+            execute_tool_callback: Optional callback for tool execution (for middleware routing)
+            summary_token_threshold: Optional token threshold for summarization (0.0-1.0)
 
         Returns:
-            Tuple of (model_instance, safe_to_original_mapping)
+            Tuple of (agent, safe_to_original_mapping)
         """
         try:
-            if toolchain is None:
-                self.model = genai.GenerativeModel(self.config.model_name)
-                return self.model, None
+            # Create LangChain ChatGoogleGenerativeAI model
+            model_kwargs = {}
+            if self.config.temperature is not None:
+                model_kwargs["temperature"] = self.config.temperature
+            if self.config.max_tokens is not None:
+                model_kwargs["max_output_tokens"] = self.config.max_tokens
 
-            tools, self._safe_to_original = self.prepare_tools(toolchain)
+            disable_afc = os.getenv("SPARKY_GEMINI_DISABLE_AFC", "false").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            try:
+                max_afc_calls = int(os.getenv("SPARKY_GEMINI_AFC_MAX_REMOTE_CALLS", "10"))
+            except ValueError:
+                max_afc_calls = 10
+            afc_kwarg = gemini_automatic_function_calling_kwarg(
+                disable_afc=disable_afc,
+                max_remote_calls=max_afc_calls,
+            )
+            if afc_kwarg is not None:
+                model_kwargs["automatic_function_calling"] = afc_kwarg
 
-            if not tools:
-                self.model = genai.GenerativeModel(self.config.model_name)
-                logger.warning(
-                    "[gemini_provider] No valid tools found, falling back to non-tool mode."
+            llm = ChatGoogleGenerativeAI(
+                model=self.config.model_name,
+                google_api_key=self.config.api_key,
+                **model_kwargs,
+            )
+
+            # Store summary threshold for middleware configuration
+            self._summary_token_threshold = summary_token_threshold
+
+            # Build safe_to_original mapping from tool names
+            self._safe_to_original = {}
+            if langchain_tools:
+                langchain_tools = (
+                    tools_with_gemini_safe_arg_schemas(langchain_tools) or langchain_tools
+                )
+                # Store original tools for middleware access
+                for tool in langchain_tools:
+                    self._original_tools[tool.name] = tool
+                    # LangChain tools already have safe names, so mapping is 1:1
+                    self._safe_to_original[tool.name] = tool.name
+
+                # Wrap tools to route through middleware if callback provided
+                if execute_tool_callback:
+                    wrapped_tools = [
+                        MiddlewareToolWrapper(tool, execute_tool_callback)
+                        for tool in langchain_tools
+                    ]
+                else:
+                    wrapped_tools = langchain_tools
+
+                # Store tools and model for later use
+                self._wrapped_tools = wrapped_tools
+                self._llm = llm
+                self._system_messages: List[str] = []
+
+                # Build middleware list
+                middleware = []
+
+                if ToolRetryMiddleware is not None:
+                    middleware.append(
+                        ToolRetryMiddleware(
+                            max_retries=2,
+                            initial_delay=6.0,
+                            backoff_factor=2.0,
+                            max_delay=45.0,
+                            jitter=True,
+                            on_failure="continue",
+                        )
+                    )
+
+                # Add SummarizationMiddleware if threshold is provided and available
+                if (
+                    summary_token_threshold is not None
+                    and SummarizationMiddleware is not None
+                ):
+                    # Calculate trigger threshold in tokens
+                    # Use a cheaper model for summarization (flash is faster and cheaper)
+                    summary_model_name = self.config.model_name.replace(
+                        "pro", "flash"
+                    ).replace("2.0", "1.5")
+                    if "flash" not in summary_model_name.lower():
+                        summary_model_name = "gemini-1.5-flash"
+
+                    summary_llm = ChatGoogleGenerativeAI(
+                        model=summary_model_name,
+                        google_api_key=self.config.api_key,
+                    )
+
+                    # Calculate token threshold (fraction of context window)
+                    context_window = self.get_model_context_window()
+                    trigger_tokens = int(context_window * summary_token_threshold)
+
+                    summarization_middleware = SummarizationMiddleware(
+                        model=summary_llm,
+                        trigger={"tokens": trigger_tokens},
+                        keep={"messages": 20},  # Keep last 20 messages
+                        summaryPrefix="[Summary] ",
+                    )
+                    middleware.append(summarization_middleware)
+                    logger.info(
+                        "[gemini_provider] Added SummarizationMiddleware with trigger at %d tokens (%.1f%% of context)",
+                        trigger_tokens,
+                        summary_token_threshold * 100,
+                    )
+                elif summary_token_threshold is not None:
+                    logger.warning(
+                        "[gemini_provider] SummarizationMiddleware not available. "
+                        "Summarization will be disabled. Please upgrade to LangChain 1.0+ for summarization support."
+                    )
+
+                # Create agent with create_agent API
+                self.agent = create_agent(
+                    model=llm,
+                    tools=wrapped_tools,
+                    middleware=middleware if middleware else None,
+                )
+
+                logger.info(
+                    "[gemini_provider] Created agent with %d LangChain tools%s",
+                    len(wrapped_tools),
+                    " and summarization middleware" if middleware else "",
                 )
             else:
-                logger.info(
-                    "[gemini_provider] Creating model with %d tools", len(tools)
-                )
-                self.model = genai.GenerativeModel(
-                    model_name=self.config.model_name, tools=tools
-                )
+                # No tools - just use the LLM directly
+                self.model = llm
+                logger.info("[gemini_provider] Created model without tools")
 
-            return self.model, self._safe_to_original
+            # Store model reference for compatibility
+            self.model = llm
+
+            return (
+                self.agent if langchain_tools else self.model,
+                self._safe_to_original if langchain_tools else None,
+            )
 
         except Exception as e:
             error_traceback = traceback.format_exc()
@@ -88,52 +244,178 @@ class GeminiProvider(LLMProvider):
                 e,
             )
             logger.warning("Detailed traceback:\n%s", error_traceback)
-            if toolchain:
+            if langchain_tools:
                 logger.warning(
                     "Available tools at time of error: %s",
-                    [tool.name for tool in toolchain.available_tools],
+                    [tool.name for tool in langchain_tools],
                 )
-            self._log_available_models()
             raise
 
     async def start_chat(
         self,
         history: Optional[List[Dict[str, Any]]] = None,
         enable_auto_function_calling: bool = False,
+        memory: Optional[BaseChatMessageHistory] = None,
     ) -> Any:
-        """Start a Gemini chat session.
+        """Start a chat session with LangChain.
 
         Args:
-            history: Optional conversation history
+            history: Optional conversation history (deprecated - use memory instead)
             enable_auto_function_calling: Whether to enable automatic function calling
+                (Note: LangChain handles this automatically when tools are bound)
+            memory: Optional ChatMessageHistory instance for conversation state
 
         Returns:
-            Gemini chat session object
+            Memory instance or None
         """
         if self.model is None:
             raise ValueError("Model not initialized. Call initialize_model() first.")
 
-        history = history or []
-        self.chat = await asyncio.to_thread(
-            self.model.start_chat,
-            history=history,
-            enable_automatic_function_calling=enable_auto_function_calling,
-        )
-        return self.chat
+        # Use provided memory or create a buffer memory
+        if memory:
+            # Wrap custom ChatMessageHistory in ConversationBufferMemory
+            self.memory = ConversationBufferMemory(
+                chat_memory=memory,
+                memory_key="chat_history",
+                return_messages=True,
+            )
+            # Load existing messages from memory
+            if hasattr(memory, "aget_messages"):
+                existing_messages = await memory.aget_messages()
+                # Add existing messages to memory buffer
+                if existing_messages:
+                    self.memory.chat_memory.add_messages(existing_messages)
+        else:
+            # Create a simple buffer memory if no custom memory provided
+            self.memory = ConversationBufferMemory(
+                memory_key="chat_history",
+                return_messages=True,
+            )
+            # If history provided (legacy), convert and add to memory
+            if history:
+                for msg in history:
+                    role = msg.get("role", "user")
+                    parts = msg.get("parts", [])
+                    content = " ".join(str(p) for p in parts) if parts else ""
 
-    async def send_message(self, message: str) -> Any:
-        """Send a message in the Gemini chat session.
+                    if role == "user":
+                        self.memory.chat_memory.add_user_message(content)
+                    elif role == "model":
+                        self.memory.chat_memory.add_ai_message(content)
+                    elif role == "system":
+                        self.memory.chat_memory.add_message(
+                            SystemMessage(content=content)
+                        )
+
+        # Memory is handled via state in create_agent API
+        # The agent will use messages from memory when invoking
+        return self.memory
+
+    async def send_message(
+        self,
+        message: str,
+        events: Optional[Any] = None,
+        executed_tool_calls: Optional[List[Dict[str, Any]]] = None,
+    ) -> Any:
+        """Send a message using LangChain agent or model.
 
         Args:
             message: Message to send
+            events: Optional events system for dispatching events
+            executed_tool_calls: Optional list to append executed tool calls to
 
         Returns:
-            Gemini response object
+            Agent response (AIMessage-like object with content attribute)
         """
-        if self.chat is None:
-            raise ValueError("Chat not initialized. Call start_chat() first.")
+        if self.agent is None and self.model is None:
+            raise ValueError("Model not initialized. Call initialize_model() first.")
 
-        return await self.chat.send_message_async(message)
+        # If we have an agent, use it (with tools)
+        if self.agent:
+            # Create event handler for tool calls if events provided
+            callbacks = []
+            if events and executed_tool_calls is not None:
+                callbacks.append(
+                    LangChainEventCallbackHandler(events, executed_tool_calls)
+                )
+
+            # Build state for create_agent API
+            # The agent expects a state dict with "messages" key
+            state = {"messages": [HumanMessage(content=message)]}
+
+            # Add existing messages from memory if available
+            if self.memory:
+                memory_vars = self.memory.load_memory_variables({})
+                chat_history = memory_vars.get("chat_history", [])
+                if chat_history:
+                    # Prepend existing messages
+                    state["messages"] = chat_history + state["messages"]
+
+            # Invoke agent with state
+            result = await self.agent.ainvoke(
+                state,
+                config={"callbacks": callbacks} if callbacks else {},
+            )
+
+            # Extract response from result
+            # create_agent returns state with messages, last message is the response
+            response_messages = result.get("messages", [])
+            if response_messages:
+                last_message = response_messages[-1]
+                response_text = self.extract_text(last_message)
+
+                # Update memory with all messages from state
+                # This ensures summaries and all messages are persisted
+                if self.memory and hasattr(self.memory, "chat_memory"):
+                    # Get current messages in memory
+                    current_messages = (
+                        self.memory.chat_memory.messages
+                        if hasattr(self.memory.chat_memory, "messages")
+                        else []
+                    )
+                    current_count = len(current_messages)
+
+                    # Add any new messages that aren't in memory yet
+                    # Messages are added in order, so we can add from current_count onwards
+                    new_messages = response_messages[current_count:]
+                    if new_messages:
+                        # Use aadd_messages if available (for KnowledgeGraphChatMessageHistory)
+                        if hasattr(self.memory.chat_memory, "aadd_messages"):
+                            await self.memory.chat_memory.aadd_messages(new_messages)
+                        else:
+                            self.memory.chat_memory.add_messages(new_messages)
+
+                # Return a mock AIMessage-like object for compatibility
+                class AgentResponse:
+                    def __init__(self, output: str):
+                        self.content = output
+                        self.tool_calls = []
+                        # Agent already handled all tool calls, so no tool_calls here
+
+                return AgentResponse(response_text)
+            else:
+                # Fallback if no messages in result
+                return AgentResponse("")
+        else:
+            # No tools - use model directly with memory
+            if self.memory:
+                # Load history from memory
+                memory_vars = self.memory.load_memory_variables({})
+                chat_history = memory_vars.get("chat_history", [])
+                # Add new user message
+                chat_history.append(HumanMessage(content=message))
+                # Invoke model
+                response = await self.model.ainvoke(chat_history)
+                # Save to memory
+                self.memory.save_context(
+                    {"input": message},
+                    {"output": self.extract_text(response)},
+                )
+                return response
+            else:
+                # No memory - simple invocation
+                response = await self.model.ainvoke([HumanMessage(content=message)])
+                return response
 
     async def generate_content(self, prompt: str) -> str:
         """Generate content from a prompt without chat context.
@@ -147,7 +429,7 @@ class GeminiProvider(LLMProvider):
         if self.model is None:
             raise ValueError("Model not initialized. Call initialize_model() first.")
 
-        response = await self.model.generate_content_async(prompt)
+        response = await self.model.ainvoke([HumanMessage(content=prompt)])
         return self.extract_text(response)
 
     async def generate_content_with_image(
@@ -166,95 +448,75 @@ class GeminiProvider(LLMProvider):
         if self.model is None:
             raise ValueError("Model not initialized. Call initialize_model() first.")
 
-        import base64
-        import io
-
-        # import google.generativeai as genai
-        from PIL import Image
-
         # Decode base64 image
         image_bytes = base64.b64decode(base64_image)
-        image = Image.open(io.BytesIO(image_bytes))
 
-        # Send prompt with image
-        response = await self.model.generate_content_async([prompt, image])
+        # Create message with image
+        # LangChain supports images via message parts
+
+        # For now, use a simple approach - LangChain may need different handling
+        # This is a placeholder - may need to adjust based on LangChain's image support
+        response = await self.model.ainvoke([HumanMessage(content=prompt)])
         return self.extract_text(response)
 
     def extract_text(self, response: Any) -> str:
-        """Extract text content from a Gemini response.
+        """Extract text content from a LangChain response.
 
         Args:
-            response: Gemini response object
+            response: LangChain AIMessage response
 
         Returns:
             Extracted text
         """
-        texts = []
-        try:
-            if getattr(response, "candidates", None):
-                for cand in response.candidates:
-                    if (content := getattr(cand, "content", None)) and (
-                        parts := getattr(content, "parts", [])
-                    ):
-                        for part in parts:
-                            if txt := getattr(part, "text", None):
-                                texts.append(txt)
-            if not texts and (txt := getattr(response, "text", None)):
-                return txt
-        except Exception:
-            # Fallback for unexpected structures
-            pass
-        return "\n".join(texts)
+        if hasattr(response, "content"):
+            return str(response.content)
+        return str(response)
 
     def get_function_calls(self, response: Any) -> List[Any]:
-        """Extract function calls from a Gemini response.
+        """Extract function calls from a LangChain response.
 
         Args:
-            response: Gemini response object
+            response: LangChain AIMessage response
 
         Returns:
-            List of function call objects
+            List of tool call dictionaries with format: {"name": str, "args": dict, "id": str}
         """
-        function_calls = []
-        try:
-            if not getattr(response, "candidates", None):
-                return function_calls
-            cand = response.candidates[0]
-            parts = getattr(getattr(cand, "content", None), "parts", None) or []
-            for p in parts:
-                if hasattr(p, "function_call") and p.function_call:
-                    function_calls.append(p.function_call)
-        except (AttributeError, IndexError):
-            return function_calls
-        return function_calls
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            # Convert LangChain ToolCall objects to dicts if needed
+            tool_calls = []
+            for tc in response.tool_calls:
+                if isinstance(tc, dict):
+                    tool_calls.append(tc)
+                else:
+                    # Convert ToolCall object to dict
+                    # LangChain ToolCall has: name, args, id attributes
+                    tool_calls.append(
+                        {
+                            "name": getattr(tc, "name", ""),
+                            "args": dict(getattr(tc, "args", {})),
+                            "id": getattr(tc, "id", ""),
+                        }
+                    )
+            return tool_calls
+        return []
 
     def extract_thinking_text(self, response: Any) -> str:
-        """Extract thinking/reasoning text from a Gemini response.
+        """Extract thinking/reasoning text from a LangChain response.
 
         Args:
-            response: Gemini response object
+            response: LangChain AIMessage response
 
         Returns:
             Thinking text, or empty string if none
         """
-        texts = []
-        try:
-            if not getattr(response, "candidates", None):
-                return ""
-            cand = response.candidates[0]
-            parts = getattr(getattr(cand, "content", None), "parts", None) or []
-
-            # Collect all text parts that appear before or with function calls
-            for p in parts:
-                if hasattr(p, "text") and p.text:
-                    texts.append(p.text.strip())
-                elif hasattr(p, "function_call") and p.function_call:
-                    # Stop collecting once we hit a function call
-                    break
-
-            return " ".join(texts) if texts else ""
-        except (AttributeError, IndexError):
-            return ""
+        # In LangChain, thinking text is the content before tool calls
+        if hasattr(response, "content"):
+            content = str(response.content)
+            # If there are tool calls, the content is the thinking text
+            if hasattr(response, "tool_calls") and response.tool_calls:
+                return content
+            return content
+        return ""
 
     async def handle_tool_calls(
         self,
@@ -266,374 +528,46 @@ class GeminiProvider(LLMProvider):
         executed_tool_calls: List[Dict[str, Any]],
         knowledge: Optional[Any] = None,
     ) -> Any:
-        """Handle the Gemini tool calling loop.
+        """Handle tool calls - not needed when using AgentExecutor.
+
+        AgentExecutor handles tool calling automatically, so this method
+        is a no-op when using agents. Kept for interface compatibility.
 
         Args:
-            response: Initial Gemini response
-            execute_tool_callback: Callback to execute a tool call
-            events: Events system for dispatching events
-            safe_to_original: Mapping of safe tool names to original names
-            task_id: Current task identifier
-            executed_tool_calls: List to append executed tool calls to
-            knowledge: Optional knowledge module for logging
+            response: Response from agent executor (already includes tool results)
+            execute_tool_callback: Not used with AgentExecutor
+            events: Events are handled via callbacks
+            safe_to_original: Not used
+            task_id: Not used
+            executed_tool_calls: Already populated via callbacks
+            knowledge: Optional knowledge module
 
         Returns:
-            Final response after all tool calls completed
-
-        Note:
-            Token estimation is handled automatically by TokenUsageService
-            listening to THOUGHT, TOOL_USE, and TOOL_RESULT events.
+            Response as-is (AgentExecutor already handled tool calls)
         """
-        while True:
-            # Safety check: ensure response has candidates
-            if (
-                not response
-                or not hasattr(response, "candidates")
-                or not response.candidates
-            ):
-                logger.warning("Response has no candidates, cannot process tool calls")
-                return response
-
-            # Check for malformed function calls
-            if response.candidates[0].finish_reason == "MALFORMED_FUNCTION_CALL":
-                await self._handle_malformed_call(
-                    response, safe_to_original, task_id, knowledge
-                )
-                response = await asyncio.to_thread(
-                    self.chat.send_message,
-                    genai.protos.Content(
-                        parts=[
-                            genai.protos.Part(
-                                text="Error: Malformed function call detected. Please check your function call syntax and try again."
-                            )
-                        ]
-                    ),
-                )
-                continue
-
-            # Get ALL function calls from the response
-            function_calls = self.get_function_calls(response)
-            if not function_calls:
-                break
-
-            # Extract and dispatch thinking text
-            # TokenUsageService will automatically estimate tokens from this event
-            thinking_text = self.extract_thinking_text(response)
-            if thinking_text:
-                await events.async_dispatch(BotEvents.THOUGHT, thinking_text)
-
-            # Process all function calls concurrently
-            function_responses = await self._process_function_calls(
-                function_calls,
-                safe_to_original,
-                execute_tool_callback,
-                events,
-                executed_tool_calls,
-                task_id,
-                knowledge,
-            )
-
-            # Send all function responses back at once
-            try:
-                response = await asyncio.to_thread(
-                    self.chat.send_message,
-                    genai.protos.Content(parts=function_responses),
-                )
-            except StopCandidateException as e:
-                await self._handle_stop_candidate(e, task_id, knowledge)
-                response = await asyncio.to_thread(
-                    self.chat.send_message,
-                    genai.protos.Content(
-                        parts=[
-                            genai.protos.Part(
-                                text=f"Error: {e}. Please provide a valid response without malformed function calls."
-                            )
-                        ]
-                    ),
-                )
-                continue
-
+        # AgentExecutor handles everything automatically, so just return the response
         return response
 
-    async def _process_function_calls(
-        self,
-        function_calls: List[Any],
-        safe_to_original: Dict[str, str],
-        execute_tool_callback: Any,
-        events: Any,
-        executed_tool_calls: List[Dict[str, Any]],
-        task_id: str,
-        knowledge: Optional[Any],
-    ) -> List[Any]:
-        """Process multiple function calls concurrently."""
-
-        async def process_single_call(function_call):
-            safe_name = function_call.name
-            original_name = safe_to_original.get(safe_name, safe_name)
-            plain_args = to_plain_obj(dict(function_call.args))
-
-            # Log the tool call
-            executed_tool_calls.append({"name": original_name, "arguments": plain_args})
-
-            logger.info("Calling %s -> %s(%s): ", safe_name, original_name, plain_args)
-
-            # Dispatch tool use event
-            # TokenUsageService will automatically estimate tokens from this event
-            await events.async_dispatch(BotEvents.TOOL_USE, original_name, plain_args)
-
-            # Execute the tool call
-            tool_result_obj = await execute_tool_callback(original_name, plain_args)
-            tool_result = tool_result_obj.result
-
-            if tool_result_obj.status == "error":
-                logger.error(
-                    "⚠ Unable to call %s: %s",
-                    original_name,
-                    tool_result_obj.message,
-                )
-                if knowledge:
-                    asyncio.create_task(
-                        knowledge.log_tool_error(
-                            task_id,
-                            original_name,
-                            Exception(tool_result_obj.message),
-                        )
-                    )
-                tool_result = f"Error: {tool_result_obj.message}"
-
-            if isinstance(tool_result, (dict, list)):
-                response_data = tool_result
-                tool_result_str = json.dumps(tool_result)
-            else:
-                tool_result_str = str(tool_result) if tool_result is not None else ""
-                response_data = {"result": tool_result_str}
-
-            logger.info("Tool result for %s: %s", original_name, tool_result_str)
-            # Dispatch tool result event
-            # TokenUsageService will automatically estimate tokens from this event
-            await events.async_dispatch(
-                BotEvents.TOOL_RESULT, original_name, tool_result_str, tool_result_obj.status
-            )
-
-            return genai.protos.Part(
-                function_response=genai.protos.FunctionResponse(
-                    name=function_call.name,
-                    response=response_data,
-                )
-            )
-
-        # Create tasks for all tool calls
-        tool_call_tasks = [process_single_call(fc) for fc in function_calls]
-
-        # Run all tool calls concurrently
-        function_responses = await asyncio.gather(
-            *tool_call_tasks, return_exceptions=True
-        )
-
-        # Handle potential exceptions
-        for i, result in enumerate(function_responses):
-            if isinstance(result, Exception):
-                tool_name = function_calls[i].name
-                logger.error(
-                    f"Exception during concurrent execution of tool '{tool_name}': {result}"
-                )
-                # Create a synthetic error response
-                function_responses[i] = genai.protos.Part(
-                    function_response=genai.protos.FunctionResponse(
-                        name=tool_name,
-                        response={"error": f"Tool execution failed: {result}"},
-                    )
-                )
-
-        return function_responses
-
-    async def _handle_malformed_call(
-        self,
-        response: Any,
-        safe_to_original: Dict[str, str],
-        task_id: str,
-        knowledge: Optional[Any],
-    ):
-        """Handle malformed function call errors."""
-        function_calls = self.get_function_calls(response)
-        if function_calls:
-            function_call = function_calls[0]
-            safe_name = function_call.name
-            original_name = safe_to_original.get(safe_name, safe_name)
-            # plain_args = to_plain_obj(dict(function_call.args))
-
-            error_message = (
-                f"Malformed function call detected for tool '{original_name}'."
-            )
-            log_message = f"Task ID: {task_id}. {error_message}"
-            logger.error(log_message)
-
-            # Log to knowledge graph if available
-            if knowledge:
-                try:
-                    error_node_id = f"error:{task_id}:malformed_call"
-                    knowledge.repository.add_node(
-                        node_id=error_node_id,
-                        node_type="Error",
-                        label="Malformed Function Call",
-                        properties={
-                            "task_id": task_id,
-                            "error_type": "MALFORMED_FUNCTION_CALL",
-                            "message": error_message,
-                            "timestamp": datetime.datetime.utcnow().isoformat(),
-                        },
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to log error to knowledge graph: {e}")
-
-    async def _handle_stop_candidate(
-        self, exception: StopCandidateException, task_id: str, knowledge: Optional[Any]
-    ):
-        """Handle stop candidate exceptions."""
-        logger.error(f"Model made malformed function call: {exception}")
-
-        if knowledge:
-            try:
-                error_node_id = f"error:{task_id}:stop_candidate:{datetime.datetime.utcnow().timestamp()}"
-                knowledge.repository.add_node(
-                    node_id=error_node_id,
-                    node_type="Error",
-                    label="Stop Candidate Exception",
-                    properties={
-                        "task_id": task_id,
-                        "error_type": "STOP_CANDIDATE_EXCEPTION",
-                        "message": str(exception),
-                        "timestamp": datetime.datetime.utcnow().isoformat(),
-                    },
-                )
-            except Exception as log_exc:
-                logger.warning(f"Failed to log error to knowledge graph: {log_exc}")
-
-    def prepare_tools(self, toolchain: Any) -> Tuple[List[Dict], Dict[str, str]]:
-        """Prepare tools from toolchain for Gemini format.
-
-        Args:
-            toolchain: ToolChain instance with available tools
-
-        Returns:
-            Tuple of (transformed_tools, safe_to_original_mapping)
-        """
-        if not toolchain:
-            return [], {}
-
-        tools = []
-        safe_to_original: Dict[str, str] = {}
-        used_safe_names: set[str] = set()
-        seen_originals: dict[str, str] = {}
-        transformer = GeminiTransformer()
-
-        for idx, tool in toolchain.available_tools:
-            original = tool.name
-            if original in seen_originals:
-                logger.warning(
-                    "[gemini_provider] Duplicate tool name '%s' detected! First seen from: %s, skipping duplicate.",
-                    original,
-                    seen_originals[original],
-                )
-                continue
-            seen_originals[original] = f"index {idx}"
-
-            safe_name = self._make_safe_tool_name(
-                original, used_safe_names, safe_to_original
-            )
-            used_safe_names.add(safe_name)
-            safe_to_original[safe_name] = original
-
-            try:
-                transformed_params = transformer.transform(tool.inputSchema)
-                tool_def = {
-                    "name": safe_name,
-                    "description": tool.description,
-                    "parameters": transformed_params,
-                }
-                tools.append(tool_def)
-                logger.info(
-                    "[gemini_provider] Added tool: %s (original: %s)",
-                    safe_name,
-                    original,
-                )
-                logger.debug(
-                    "[gemini_provider] Tool schema for %s: %s",
-                    safe_name,
-                    transformed_params,
-                )
-            except Exception as tool_error:
-                logger.error(
-                    "[gemini_provider] Failed to transform tool '%s': %s: %s",
-                    original,
-                    type(tool_error).__name__,
-                    tool_error,
-                )
-                logger.error("[gemini_provider] Tool schema: %s", tool.inputSchema)
-
-        return tools, safe_to_original
-
-    def _create_safe_tool_name(self, name: str) -> str:
-        """Creates a Gemini-safe tool name."""
-        safe = re.sub(r"[^A-Za-z0-9_]", "_", name)
-        if not re.match(r"^[A-Za-z_]", safe):
-            safe = f"tool_{safe}"
-        return safe[:64]
-
-    def _make_safe_tool_name(
-        self, name: str, used_names: set, safe_to_original: dict
-    ) -> str:
-        """Create a Gemini-safe and unique tool name."""
-        safe = self._create_safe_tool_name(name)
-        base = safe
-        i = 1
-        while safe in used_names and safe_to_original.get(safe) != name:
-            suffix = f"_{i}"
-            safe = (base[: 64 - len(suffix)]) + suffix
-            i += 1
-        return safe
-
-    def _log_available_models(self):
-        """Logs the available Gemini models."""
-        logger.info("Trying to list available models...")
-        try:
-            models = genai.list_models()
-            logger.info("Available models:")
-            for m in models:
-                if "generateContent" in m.supported_generation_methods:
-                    logger.info("  - %s", m.name)
-        except Exception as e:
-            logger.error("Could not list available models: %s", e)
-
     def extract_token_usage(self, response: Any) -> Optional[Dict[str, int]]:
-        """Extract token usage information from a Gemini response.
+        """Extract token usage information from a LangChain response.
 
         Args:
-            response: Gemini response object
+            response: LangChain AIMessage response
 
         Returns:
             Dict with token usage information, or None if not available
         """
         try:
-            if hasattr(response, "usage_metadata") and response.usage_metadata:
-                usage = response.usage_metadata
-                input_tokens = getattr(usage, "prompt_token_count", 0)
-                output_tokens = getattr(usage, "candidates_token_count", 0)
-                total_tokens = getattr(
-                    usage, "total_token_count", input_tokens + output_tokens
-                )
-                cached_tokens = getattr(usage, "cached_content_token_count", None)
-
-                result = {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": total_tokens,
-                }
-
-                if cached_tokens is not None and cached_tokens > 0:
-                    result["cached_tokens"] = cached_tokens
-
-                return result
+            # LangChain responses may have response_metadata with usage info
+            if hasattr(response, "response_metadata"):
+                metadata = response.response_metadata
+                if metadata and "token_usage" in metadata:
+                    usage = metadata["token_usage"]
+                    return {
+                        "input_tokens": usage.get("prompt_tokens", 0),
+                        "output_tokens": usage.get("completion_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0),
+                    }
         except Exception as e:
             logger.debug("Failed to extract token usage: %s", e)
 

@@ -10,7 +10,6 @@ from logging import getLogger
 from typing import Any, Dict, Optional, Tuple
 
 import aiofiles
-from badmcp.tool_chain import ToolChain
 
 # Import the necessary components for the agent orchestrator
 from database.database import get_database_manager
@@ -52,6 +51,7 @@ from servers.chat.routes import (
 from services import KnowledgeService
 from sparky import AgentOrchestrator
 from sparky.constants import SPARKY_CHAT_PID_FILE
+from sparky.langchain_toolchain import LangChainToolchain
 from sparky.logging_config import setup_logging
 from sparky.middleware import (
     CommandPromptMiddleware,
@@ -60,7 +60,6 @@ from sparky.middleware import (
     SelfModificationGuard,
 )
 from sparky.providers import GeminiProvider, ProviderConfig
-from sparky.toolchain_cache import get_toolchain_cache
 
 
 class ToolUsageData(BaseModel):
@@ -76,7 +75,6 @@ load_dotenv()
 setup_logging()
 
 # Shared resources loaded once at server startup
-_app_toolchain: ToolChain | None = None
 _app_knowledge: KnowledgeService | None = None
 _startup_error: str | None = None
 _connection_manager: "ConnectionManager | None" = None
@@ -89,14 +87,11 @@ logger = getLogger(__name__)
 class ConnectionManager:
     """Manages agent orchestrator instances and websocket connections per user."""
 
-    def __init__(
-        self, session_timeout_minutes: int = 60, toolchain: Optional[ToolChain] = None
-    ):
+    def __init__(self, session_timeout_minutes: int = 60):
         """Initialize the connection manager.
 
         Args:
             session_timeout_minutes: Timeout for inactive connections in minutes
-            toolchain: Optional toolchain for tool loading
         """
         # user_id -> chat_id -> agent orchestrator instance
         self.bot_sessions: Dict[str, Dict[str, AgentOrchestrator]] = {}
@@ -108,18 +103,18 @@ class ConnectionManager:
         self.last_activity: Dict[str, datetime] = {}
         # user_id -> current websocket (if connected)
         self.active_connections: Dict[str, WebSocket] = {}
+        # user_id -> LangChainToolchain instance (one per websocket connection)
+        self.langchain_toolchains: Dict[str, LangChainToolchain] = {}
         # user_id -> tools initialized flag
         self.tools_initialized: Dict[str, bool] = {}
         self.session_timeout = timedelta(minutes=session_timeout_minutes)
-        self.toolchain = toolchain
 
     async def initialize_tools_for_user(
         self, user_id: str, websocket: WebSocket
-    ) -> Tuple[Optional[ToolChain], Optional[str]]:
+    ) -> Tuple[Optional[LangChainToolchain], Optional[str]]:
         """Initialize tools for a user and send progress updates via WebSocket.
 
-        This uses the global toolchain cache to lazily load MCP servers on first connection.
-        Subsequent connections will use cached toolchain if still valid.
+        Creates a new LangChainToolchain instance per websocket connection for stateful sessions.
 
         Args:
             user_id: User identifier
@@ -128,16 +123,16 @@ class ConnectionManager:
         Returns:
             Tuple of (toolchain, error_message)
         """
-        if self.tools_initialized.get(user_id, False) and self.toolchain:
+        if (
+            self.tools_initialized.get(user_id, False)
+            and user_id in self.langchain_toolchains
+        ):
             logger.info(
-                f"[{user_id}] Tools already initialized for user, using cached toolchain"
+                f"[{user_id}] Tools already initialized for user, reusing existing toolchain"
             )
-            return self.toolchain, None
+            return self.langchain_toolchains[user_id], None
 
-        logger.info(f"[{user_id}] Initializing tools for first time...")
-
-        # Get toolchain cache
-        cache = get_toolchain_cache()
+        logger.info(f"[{user_id}] Initializing tools for websocket connection...")
 
         # Define progress callback to send updates to client
         async def progress_callback(server_name: str, status: str, message: str):
@@ -160,33 +155,36 @@ class ConnectionManager:
                 logger.error(f"[{user_id}] Error sending progress update: {e}")
 
         try:
-            # Load or get cached toolchain
-            toolchain, error = await cache.get_or_load_toolchain(progress_callback)
+            # Create new LangChainToolchain for this websocket connection
+            from sparky.initialization import create_langchain_toolchain
+
+            toolchain, error = await create_langchain_toolchain(
+                log_prefix=f"[{user_id}]"
+            )
 
             if error:
-                logger.error(f"[{user_id}] Failed to load toolchain: {error}")
+                logger.error(f"[{user_id}] Failed to create toolchain: {error}")
                 return None, error
 
             if toolchain:
-                # Update connection manager's toolchain reference
-                self.toolchain = toolchain
+                # Store toolchain for this user
+                self.langchain_toolchains[user_id] = toolchain
                 self.tools_initialized[user_id] = True
 
-                tools_count = len(toolchain.tool_clients) if toolchain else 0
+                # Get tool count by loading tools
+                tools = await toolchain.get_langchain_tools()
+                tools_count = len(tools)
                 logger.info(
-                    f"[{user_id}] Tools initialized successfully: {tools_count} tool server(s)"
+                    f"[{user_id}] Tools initialized successfully: {tools_count} tool(s) from {len(toolchain.client.connections)} server(s)"
                 )
 
-                # Log cache status
-                cache_status = cache.get_cache_status()
-                logger.debug(f"[{user_id}] Tool cache status: {cache_status}")
-
                 # Start agent loop on first toolchain initialization if enabled
-                await self._maybe_start_agent_loop(toolchain)
+                # Note: AgentLoop may need to be updated to work with LangChainToolchain
+                # await self._maybe_start_agent_loop(toolchain)
 
                 return toolchain, None
             else:
-                error_msg = "Toolchain loaded but is None"
+                error_msg = "Toolchain created but is None"
                 logger.error(f"[{user_id}] {error_msg}")
                 return None, error_msg
 
@@ -196,11 +194,14 @@ class ConnectionManager:
             logger.error(f"[{user_id}] Traceback: {traceback.format_exc()}")
             return None, error_msg
 
-    async def _maybe_start_agent_loop(self, toolchain: ToolChain):
+    async def _maybe_start_agent_loop(self, toolchain: LangChainToolchain):
         """Start agent loop if enabled and not already running.
 
         Args:
-            toolchain: Initialized toolchain to use
+            toolchain: Initialized LangChainToolchain to use
+
+        Note: AgentLoop may need to be updated to work with LangChainToolchain.
+        This is currently disabled until AgentLoop is migrated.
         """
         global _agent_loop_instance, _agent_loop_task
 
@@ -217,24 +218,28 @@ class ConnectionManager:
             logger.debug("Agent loop not enabled (SPARKY_ENABLE_AGENT_LOOP=false)")
             return
 
-        try:
-            logger.info("Starting agent loop after toolchain initialization...")
-            from servers.task import AgentLoop
-
-            poll_interval = int(os.getenv("SPARKY_AGENT_POLL_INTERVAL", "10"))
-            _agent_loop_instance = AgentLoop(
-                toolchain=toolchain,
-                poll_interval=poll_interval,
-                enable_scheduled_tasks=True,
-                connection_manager=self,
-            )
-            _agent_loop_task = _agent_loop_instance.start_background()
-            logger.info(
-                f"Agent loop started in background (poll interval: {poll_interval}s)"
-            )
-        except Exception as e:
-            logger.error(f"Failed to start agent loop: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+        # TODO: Update AgentLoop to work with LangChainToolchain
+        logger.warning(
+            "Agent loop is disabled until AgentLoop is updated for LangChainToolchain"
+        )
+        # try:
+        #     logger.info("Starting agent loop after toolchain initialization...")
+        #     from servers.task import AgentLoop
+        #
+        #     poll_interval = int(os.getenv("SPARKY_AGENT_POLL_INTERVAL", "10"))
+        #     _agent_loop_instance = AgentLoop(
+        #         toolchain=toolchain,
+        #         poll_interval=poll_interval,
+        #         enable_scheduled_tasks=True,
+        #         connection_manager=self,
+        #     )
+        #     _agent_loop_task = _agent_loop_instance.start_background()
+        #     logger.info(
+        #         f"Agent loop started in background (poll interval: {poll_interval}s)"
+        #     )
+        # except Exception as e:
+        #     logger.error(f"Failed to start agent loop: {e}")
+        #     logger.error(f"Traceback: {traceback.format_exc()}")
 
     async def load_identity(
         self,
@@ -549,6 +554,14 @@ class ConnectionManager:
         )
         logger.debug(f"[{user_id}:{chat_id}] Created services via dependency injection")
 
+        # Get langchain_toolchain for this user
+        langchain_toolchain = self.langchain_toolchains.get(user_id)
+        if not langchain_toolchain:
+            raise ValueError(
+                f"LangChainToolchain not initialized for user {user_id}. "
+                "Call initialize_tools_for_user() first."
+            )
+
         bot = AgentOrchestrator(
             provider=provider,
             message_service=services["message_service"],
@@ -563,7 +576,7 @@ class ConnectionManager:
                 ResourceFetchingMiddleware(),
                 CommandPromptMiddleware(),
             ],
-            toolchain=self.toolchain,
+            langchain_toolchain=langchain_toolchain,
             knowledge=knowledge,
         )
 
@@ -656,6 +669,13 @@ class ConnectionManager:
         if user_id in self.active_connections:
             del self.active_connections[user_id]
             self.last_activity[user_id] = datetime.utcnow()
+            # Cleanup langchain toolchain for this user
+            if user_id in self.langchain_toolchains:
+                # Note: cleanup is async, but we're in sync method
+                # The toolchain will be cleaned up on next connection or server shutdown
+                logger.info(
+                    f"[{user_id}] WebSocket disconnected (toolchain will be cleaned up)"
+                )
             logger.info(f"[{user_id}] WebSocket disconnected (bot instances preserved)")
 
     def get_active_connection_by_user(
@@ -695,6 +715,7 @@ class ConnectionManager:
             self.tools_initialized.pop(sid, None)
             self.last_activity.pop(sid, None)
             self.active_connections.pop(sid, None)
+            self.langchain_toolchains.pop(sid, None)
             self.session_to_user.pop(sid, None)
 
     def get_session_info(self) -> dict:
@@ -783,40 +804,11 @@ async def cleanup_server(app: FastAPI):
         )
 
         if enable_agent_loop:
-            # If agent loop is enabled, load toolchain at startup
-            logger.info("Agent loop is enabled - loading toolchain at startup")
-            from sparky.toolchain_cache import get_toolchain_cache
-
-            cache = get_toolchain_cache()
-            toolchain, error = await cache.get_or_load_toolchain()
-
-            if error:
-                logger.error(f"Failed to load toolchain at startup: {error}")
-                _startup_error = error
-            elif toolchain:
-                _connection_manager.toolchain = toolchain
-                logger.info(
-                    f"Toolchain loaded at startup: {len(toolchain.tool_clients)} tool server(s)"
-                )
-
-                # Start agent loop immediately
-                try:
-                    from servers.task import AgentLoop
-
-                    poll_interval = int(os.getenv("SPARKY_AGENT_POLL_INTERVAL", "10"))
-                    _agent_loop_instance = AgentLoop(
-                        toolchain=toolchain,
-                        poll_interval=poll_interval,
-                        enable_scheduled_tasks=True,
-                        connection_manager=_connection_manager,
-                    )
-                    _agent_loop_task = _agent_loop_instance.start_background()
-                    logger.info(
-                        f"Agent loop started at startup (poll interval: {poll_interval}s)"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to start agent loop: {e}")
-                    logger.error(f"Traceback: {traceback.format_exc()}")
+            # If agent loop is enabled, note that it needs to be updated for LangChainToolchain
+            logger.warning(
+                "Agent loop is enabled but needs to be updated for LangChainToolchain. "
+                "Agent loop will be started per-websocket connection instead of at startup."
+            )
         else:
             logger.info(
                 "Agent loop is disabled - toolchain will be loaded on first client connection"
@@ -849,13 +841,20 @@ async def cleanup_server(app: FastAPI):
             except asyncio.CancelledError:
                 pass
 
-        # Cleanup toolchain cache
+        # Cleanup langchain toolchains
         try:
-            logger.info("Cleaning up toolchain cache...")
-            cache = get_toolchain_cache()
-            await cache.cleanup()
+            logger.info("Cleaning up LangChain toolchains...")
+            if _connection_manager:
+                for (
+                    user_id,
+                    toolchain,
+                ) in _connection_manager.langchain_toolchains.items():
+                    try:
+                        await toolchain.cleanup()
+                    except Exception as e:
+                        logger.error(f"Error cleaning up toolchain for {user_id}: {e}")
         except Exception as e:
-            logger.error(f"Error cleaning up toolchain cache: {e}")
+            logger.error(f"Error cleaning up toolchains: {e}")
 
         _remove_pid_file()
 
@@ -1371,7 +1370,10 @@ async def websocket_endpoint(
             return
 
         # Send ready message
-        tools_loaded = len(toolchain.tool_clients) if toolchain else 0
+        tools_loaded = 0
+        if toolchain:
+            tools = await toolchain.get_langchain_tools()
+            tools_loaded = len(tools)
         logger.info(
             f"[{user_id}] User ready with {tools_loaded} tool(s), sending ready message"
         )

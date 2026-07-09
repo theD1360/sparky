@@ -24,23 +24,20 @@ async def list_prompts():
         List of available prompts with name and description
     """
     # Import here to avoid circular dependency
-    from servers.chat.chat_server import _app_toolchain
-    from sparky.toolchain_cache import get_toolchain_cache
+    from servers.chat.chat_server import _connection_manager
 
-    # Try cached toolchain first, fall back to _app_toolchain
-    toolchain = None
-    
-    # Check cache first
-    cache = get_toolchain_cache()
-    if cache._toolchain:
-        toolchain = cache._toolchain
-    elif _app_toolchain:
-        toolchain = _app_toolchain
-    
-    if toolchain:
-        prompts = await toolchain.list_all_prompts()
-        return [PromptInfo(name=p.name, description=p.description) for _, p in prompts]
+    # Get toolchain from connection manager (per-user toolchains)
+    # For API endpoint, we'll return prompts from the first available toolchain
+    # In the future, this could be user-specific
+    if _connection_manager and _connection_manager.langchain_toolchains:
+        # Get first available toolchain
+        toolchain = next(iter(_connection_manager.langchain_toolchains.values()))
+        prompts = await toolchain.list_prompts()
+        # Prompts are (server_name, prompt_name) tuples
+        # We don't have descriptions easily available, so return names only
+        return [
+            PromptInfo(name=prompt_name, description=None) for _, prompt_name in prompts
+        ]
     else:
         # Return empty if no toolchain available yet
         return []
-

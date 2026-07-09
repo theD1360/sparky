@@ -1,143 +1,176 @@
-# Tool Chain Caching System
+# LangChain Toolchain Management
 
 ## Overview
 
-The tool chain caching system provides intelligent, lazy-loaded MCP tool servers with per-server cache invalidation. This ensures:
+The toolchain management system provides per-user LangChain toolchain instances with lazy loading. This ensures:
 
-1. **Lazy Loading**: Tools are loaded only when the first web client connects, not at server startup
+1. **Lazy Loading**: Tools are loaded only when the first web client connects for a user, not at server startup
 2. **Real Progress**: The splash screen shows actual tool loading progress
-3. **Caching**: Tool servers are cached and shared across sessions for performance
-4. **Staggered Invalidation**: Each tool server has a unique TTL to prevent all servers from reloading simultaneously
+3. **Per-User Isolation**: Each user gets their own toolchain instance for stateful sessions
+4. **Automatic Cleanup**: Toolchains are cleaned up when users disconnect
 
 ## Architecture
 
 ### Components
 
-- **`ToolChainCache`**: Main caching class that manages tool server lifecycle
-- **`ToolServerCache`**: Individual cache entry for each tool server with TTL
-- **Global Singleton**: `get_toolchain_cache()` provides shared cache instance
+- **`LangChainToolchain`**: Wrapper around `MultiServerMCPClient` for LangChain integration
+- **`ConnectionManager`**: Manages per-user toolchain instances and WebSocket connections
+- **`create_langchain_toolchain()`**: Factory function to create toolchain instances from MCP config
 
 ### Flow
 
 ```
-1. First WebSocket Connection
-   ├─> ConnectionManager.initialize_tools_for_session()
-   ├─> ToolChainCache.get_or_load_toolchain()
-   │   ├─> Load each MCP server (with progress callbacks)
-   │   ├─> Cache with staggered TTL
-   │   └─> Build ToolChain
+1. First WebSocket Connection for a User
+   ├─> ConnectionManager.initialize_tools_for_user()
+   ├─> create_langchain_toolchain()
+   │   ├─> Load MCP server configurations
+   │   ├─> Create MultiServerMCPClient with all servers
+   │   └─> Return LangChainToolchain instance
+   ├─> Store in ConnectionManager.langchain_toolchains[user_id]
    └─> Send 'ready' message to client
 
-2. Subsequent Connections
-   ├─> Check if tools already initialized for session
-   ├─> If yes: Use existing toolchain reference
-   └─> If no: Use cached toolchain (no reload needed)
+2. Subsequent Connections (Same User)
+   ├─> Check if toolchain exists for user_id
+   ├─> If yes: Reuse existing toolchain
+   └─> If no: Create new toolchain (user reconnected)
 
-3. Cache Expiration
-   ├─> Each server checked independently
-   ├─> Expired servers reloaded on next connection
-   └─> Other servers remain cached
+3. User Disconnection
+   ├─> Cleanup toolchain via cleanup() method
+   └─> Remove from ConnectionManager.langchain_toolchains
 ```
 
-## Cache TTL Strategy
+## Key Differences from Previous System
 
-### Base TTL
-- Default: 60 minutes per server
+### Previous System (Deprecated)
+- Global singleton cache with TTL-based invalidation
+- Shared toolchain across all users
+- Staggered cache expiration
+- `ToolChainCache` and `ToolServerCache` classes
 
-### Staggering Mechanism
-1. **Hash-based variance**: Each server gets ±20% variance based on name hash (48-72 min)
-2. **Load-count offset**: Additional 0-30 min offset based on how many times loaded
-3. **Result**: Servers reload at different times, spreading the load
-
-### Example
-```
-Server A: 52 minutes (base=60, variance=-8, offset=0)
-Server B: 67 minutes (base=60, variance=+2, offset=5)
-Server C: 75 minutes (base=60, variance=+5, offset=10)
-```
+### Current System
+- **Per-user toolchains**: Each user gets their own `LangChainToolchain` instance
+- **No caching**: Toolchains are created fresh per user connection
+- **Stateful sessions**: Each toolchain maintains its own MCP session state
+- **Simpler architecture**: Direct creation, no TTL management
 
 ## Usage
 
-### Getting Cache Status
+### Creating a Toolchain
 
-HTTP endpoint for monitoring:
-```bash
-curl http://localhost:8000/api/admin/tool_cache_status
-```
-
-Response:
-```json
-{
-  "success": true,
-  "cache_initialized": true,
-  "total_servers": 3,
-  "servers": {
-    "filesystem": {
-      "loaded_at": "2025-11-13T10:30:00",
-      "age_minutes": 15.3,
-      "ttl_minutes": 65,
-      "expired": false,
-      "load_count": 1
-    },
-    "github": {
-      "loaded_at": "2025-11-13T10:30:01",
-      "age_minutes": 15.3,
-      "ttl_minutes": 58,
-      "expired": false,
-      "load_count": 1
-    }
-  }
-}
-```
-
-### Force Reload a Server
-
-Programmatically (future feature):
 ```python
-from sparky.toolchain_cache import get_toolchain_cache
+from sparky.initialization import create_langchain_toolchain
 
-cache = get_toolchain_cache()
-success = await cache.force_reload_server("filesystem")
+# Create toolchain with all configured servers
+toolchain, error = await create_langchain_toolchain()
+
+# Create toolchain with specific servers
+toolchain, error = await create_langchain_toolchain(
+    tools=["filesystem", "github"],
+    log_prefix="[user:123]"
+)
+```
+
+### Using Toolchain in Agent
+
+```python
+from sparky.agent_orchestrator import AgentOrchestrator
+
+# Toolchain is passed to AgentOrchestrator
+bot = AgentOrchestrator(
+    provider=provider,
+    langchain_toolchain=toolchain,  # Per-user toolchain
+    # ... other services
+)
+```
+
+### Getting Tools
+
+```python
+# Get all LangChain tools from the toolchain
+tools = await toolchain.get_langchain_tools()
+
+# Get tools from a specific server
+tools = await toolchain.get_langchain_tools(server_name="filesystem")
+```
+
+### Calling Tools Directly
+
+```python
+# Execute a tool by name
+result = await toolchain.call_tool("git_branch", {})
+```
+
+### Listing Prompts and Resources
+
+```python
+# List all prompts (returns (server_name, prompt_name) tuples)
+prompts = await toolchain.list_prompts()
+
+# Get a prompt
+prompt_text = await toolchain.get_prompt("server_name", "prompt_name", arguments={})
+
+# List all resources (returns (server_name, resource_uri) tuples)
+resources = await toolchain.list_resources()
+
+# Read a resource
+content = await toolchain.read_resource("resource://uri")
+```
+
+## Connection Manager Integration
+
+The `ConnectionManager` in `chat_server.py` manages toolchains per user:
+
+```python
+class ConnectionManager:
+    def __init__(self):
+        # user_id -> LangChainToolchain instance
+        self.langchain_toolchains: Dict[str, LangChainToolchain] = {}
+        self.tools_initialized: Dict[str, bool] = {}
+    
+    async def initialize_tools_for_user(self, user_id: str, websocket: WebSocket):
+        """Initialize tools for a user with progress updates."""
+        # Check if already initialized
+        if user_id in self.langchain_toolchains:
+            return self.langchain_toolchains[user_id], None
+        
+        # Create new toolchain
+        toolchain, error = await create_langchain_toolchain(
+            log_prefix=f"[{user_id}]"
+        )
+        
+        if toolchain:
+            self.langchain_toolchains[user_id] = toolchain
+            self.tools_initialized[user_id] = True
+        
+        return toolchain, error
 ```
 
 ## Benefits
 
 ### Performance
 - **Fast startup**: Server starts immediately without waiting for tools
-- **Shared cache**: Multiple sessions benefit from cached tools
-- **Selective reload**: Only expired servers reload, not all
+- **Lazy loading**: Tools loaded only when needed
+- **Parallel loading**: Multiple users can load tools concurrently
 
 ### User Experience
 - **True progress**: Splash screen shows actual loading status
-- **Faster connections**: Subsequent connections use cached tools
-- **No waiting**: No artificial delays in progress updates
+- **Isolated sessions**: Each user's toolchain is independent
+- **Stateful**: MCP sessions maintain state per user
 
 ### Reliability
-- **Staggered invalidation**: Prevents thundering herd problem
-- **Per-server control**: Each tool server managed independently
-- **Automatic cleanup**: Old clients properly stopped and cleaned up
+- **Per-user isolation**: One user's toolchain issues don't affect others
+- **Automatic cleanup**: Toolchains cleaned up on disconnect
+- **Error handling**: Failed toolchain creation doesn't block server
 
 ## Configuration
 
+### MCP Server Configuration
+
+Toolchains are created from MCP configuration files. See MCP documentation for server setup.
+
 ### Environment Variables
 
-Future enhancement - configurable TTL:
-```bash
-# Base TTL in minutes (default: 60)
-SPARKY_TOOL_CACHE_TTL=60
-
-# TTL variance percentage (default: 20)
-SPARKY_TOOL_CACHE_VARIANCE=20
-```
-
-### Code Configuration
-
-Modify `ToolChainCache.BASE_TTL_MINUTES`:
-```python
-class ToolChainCache:
-    # Base TTL for tool servers (in minutes)
-    BASE_TTL_MINUTES = 60  # Change this value
-```
+No specific environment variables for toolchain management. Uses standard MCP configuration.
 
 ## Monitoring
 
@@ -145,19 +178,18 @@ class ToolChainCache:
 
 Key log messages to monitor:
 ```
-INFO: Server ready - toolchain will be initialized on first client connection
-INFO: Loading 3 server(s) out of 3 total
-INFO: Successfully loaded server 'filesystem' (TTL: 65 min)
-INFO: Server 'github' cache expired (age: 61.2 min, ttl: 60 min), will reload
+INFO: [user:123] Creating LangChain toolchain...
+INFO: [user:123] Creating toolchain with 3 server(s): filesystem, github, database
+INFO: [user:123] LangChain toolchain created successfully
+INFO: [user:123] Tools initialized successfully: 45 tool(s) from 3 server(s)
 ```
 
-### Metrics
+### Connection Manager Status
 
-Track these metrics:
-- Cache hit rate (sessions using cached vs loading)
-- Tool loading duration per server
-- Cache age distribution
-- Reload frequency per server
+Check active toolchains via admin endpoints:
+```bash
+curl http://localhost:8000/api/admin/toolchain_status
+```
 
 ## Troubleshooting
 
@@ -165,38 +197,52 @@ Track these metrics:
 **Symptom**: Splash screen stuck on "Connecting to server..."
 
 **Solution**:
-1. Check server logs for errors
+1. Check server logs for errors (look for `[user:xxx]` prefix)
 2. Verify MCP config files are valid
-3. Check `/api/admin/tool_cache_status` for errors
+3. Check WebSocket connection status
+4. Verify user_id is being passed correctly
 
-### Issue: Frequent reloads
-**Symptom**: Tools reload on every connection
-
-**Solution**:
-1. Check if TTL is too short
-2. Verify cache is not being cleared
-3. Check for exceptions during tool initialization
-
-### Issue: All servers reload at once
-**Symptom**: Performance degradation when cache expires
+### Issue: Toolchain not found for user
+**Symptom**: Error "LangChainToolchain not initialized for user"
 
 **Solution**:
-1. This should NOT happen with staggering
-2. If it does, check hash function
-3. Increase TTL variance percentage
+1. Ensure `initialize_tools_for_user()` is called before creating AgentOrchestrator
+2. Check that user_id matches between initialization and usage
+3. Verify toolchain was created successfully (check logs)
 
-## Future Enhancements
+### Issue: Tools not working
+**Symptom**: Tool calls fail or return errors
 
-1. **Configurable TTL**: Per-server TTL configuration
-2. **Manual control**: API endpoints to reload/clear cache
-3. **Health checks**: Periodic server health validation
-4. **Metrics**: Prometheus/Grafana integration
-5. **Warm cache**: Pre-load popular tools on startup (optional)
+**Solution**:
+1. Check MCP server logs
+2. Verify server configurations are correct
+3. Check network connectivity for HTTP/SSE servers
+4. Verify stdio server commands are correct
+
+## Cleanup
+
+Toolchains are automatically cleaned up when:
+- User disconnects from WebSocket
+- Server shuts down
+- Explicit cleanup is called
+
+```python
+# Manual cleanup
+await toolchain.cleanup()
+```
+
+## Migration Notes
+
+If migrating from the old `ToolChainCache` system:
+
+1. **No global cache**: Each user gets their own toolchain
+2. **No TTL**: Toolchains exist for the lifetime of the user connection
+3. **Different API**: Use `LangChainToolchain` methods instead of `ToolChain` methods
+4. **LangChain integration**: Tools are LangChain `BaseTool` instances, not MCP tools directly
 
 ## Related Files
 
-- `agent/src/sparky/toolchain_cache.py` - Main implementation
-- `agent/src/servers/chat/chat_server.py` - Integration
-- `agent/src/badmcp/tool_chain.py` - Tool chain core
-- `web_ui/src/SplashScreen.js` - Progress display
-
+- `agent/src/sparky/langchain_toolchain.py` - LangChainToolchain implementation
+- `agent/src/sparky/initialization.py` - Toolchain creation functions
+- `agent/src/servers/chat/chat_server.py` - ConnectionManager integration
+- `agent/src/sparky/agent_orchestrator.py` - Agent integration

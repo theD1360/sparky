@@ -83,12 +83,14 @@ class SelfModificationGuard(BaseMiddleware):
         Returns:
             The name of the current git branch, or empty string if not found
         """
-        if not context.bot_instance or not context.bot_instance.toolchain:
+        if not context.bot_instance or not context.bot_instance.langchain_toolchain:
             return ""
 
         try:
-            # Call git_branch tool directly through the toolchain
-            result = await context.bot_instance.toolchain.call("git_branch", {})
+            # Call git_branch tool directly through the langchain_toolchain
+            result = await context.bot_instance.langchain_toolchain.call_tool(
+                "git_branch", {}
+            )
 
             if result and isinstance(result, dict):
                 branches = result.get("branches", [])
@@ -99,4 +101,4 @@ class SelfModificationGuard(BaseMiddleware):
             logger.debug("Error getting current git branch: %s", str(e))
 
         return ""  # Default to empty string if not found
-
+        return ""  # Default to empty string if not found

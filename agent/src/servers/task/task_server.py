@@ -14,10 +14,10 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from badmcp.control import Control
-from badmcp.tool_chain import ToolChain
 from events import TaskEvents
 from services import TaskService
 from sparky import AgentOrchestrator
+from sparky.langchain_toolchain import LangChainToolchain
 from sparky.middleware import (
     CommandPromptMiddleware,
     ResourceFetchingMiddleware,
@@ -36,7 +36,7 @@ class AgentLoop:
 
     def __init__(
         self,
-        toolchain: ToolChain,
+        toolchain: LangChainToolchain,
         control: Optional[Control] = None,
         poll_interval: int = 10,
         enable_scheduled_tasks: bool = True,
@@ -46,8 +46,8 @@ class AgentLoop:
         """Initialize the agent loop.
 
         Args:
-            toolchain: The MCP toolchain to use for executing tasks
-            control: Optional Control instance for managing tool servers
+            toolchain: The LangChainToolchain to use for executing tasks
+            control: Optional Control instance for managing tool servers (deprecated)
             poll_interval: Seconds to wait between polling for new tasks
             enable_scheduled_tasks: Whether to enable scheduled tasks
             config_path: Optional path to scheduled tasks config file
@@ -137,7 +137,7 @@ class AgentLoop:
             file_service=services["file_service"],
             chat_service=services["chat_service"],
             token_service=services["token_service"],
-            toolchain=toolchain,
+            langchain_toolchain=toolchain,
             middlewares=[
                 SelfModificationGuard(),
                 ResourceFetchingMiddleware(),
@@ -356,7 +356,7 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
                     file_service=services["file_service"],
                     chat_service=services["chat_service"],
                     token_service=services["token_service"],
-                    toolchain=self.toolchain,
+                    langchain_toolchain=self.toolchain,
                     middlewares=[
                         SelfModificationGuard(),
                         ResourceFetchingMiddleware(),
@@ -801,15 +801,15 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
 
 
 async def run_agent_loop(
-    toolchain: ToolChain,
+    toolchain: LangChainToolchain,
     control: Optional[Control] = None,
     poll_interval: int = 1,
 ):
     """Convenience function to run the agent loop.
 
     Args:
-        toolchain: The MCP toolchain to use
-        control: Optional Control instance
+        toolchain: The LangChainToolchain to use
+        control: Optional Control instance (deprecated)
         poll_interval: Seconds between polls
     """
     loop = AgentLoop(toolchain, control, poll_interval)

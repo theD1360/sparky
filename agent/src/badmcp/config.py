@@ -12,7 +12,7 @@ from mcp import StdioServerParameters
 
 logger = logging.getLogger(__name__)
 
-MCPServerType = Literal["stdio", "http", "sse"]
+MCPServerType = Literal["stdio", "http", "sse", "streamable_http"]
 
 
 @dataclass
@@ -23,10 +23,13 @@ class MCPServerConfig:
     command: Optional[str] = None
     args: Optional[List[str]] = None
     type: Optional[MCPServerType] = None
+    transport: Optional[str] = None
     url: Optional[str] = None
     env: Optional[Dict[str, str]] = None
+    headers: Optional[Dict[str, str]] = None
     description: Optional[str] = None
     bearerToken: Optional[str] = None
+    disabled: bool = False
 
     @property
     def is_stdio(self) -> bool:
@@ -183,12 +186,15 @@ class MCPConfig:
         return MCPServerConfig(
             name=name,
             type=config.get("type"),
+            transport=config.get("transport"),
             command=config.get("command"),
             args=config.get("args"),
             url=config.get("url"),
             env=config.get("env"),
+            headers=config.get("headers"),
             bearerToken=config.get("bearerToken"),
             description=config.get("description"),
+            disabled=config.get("disabled", False) is True,
         )
 
     def get_server(self, name: str) -> Optional[MCPServerConfig]:

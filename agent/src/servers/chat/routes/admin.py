@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 try:
     import psutil
+
     PSUTIL_AVAILABLE = True
 except ImportError:
     PSUTIL_AVAILABLE = False
@@ -80,34 +81,65 @@ ENV_VAR_DESCRIPTIONS = {
 }
 
 # Sensitive keys that should be masked
-SENSITIVE_KEYS = {"GEMINI_API_KEY", "DATABASE_URL", "API_KEY", "SECRET", "PASSWORD", "TOKEN"}
+SENSITIVE_KEYS = {
+    "GEMINI_API_KEY",
+    "DATABASE_URL",
+    "API_KEY",
+    "SECRET",
+    "PASSWORD",
+    "TOKEN",
+}
 
 
 @router.get("/tool_cache_status", response_model=CacheStatusResponse)
 async def get_tool_cache_status():
-    """Get status of the tool chain cache.
+    """Get status of toolchains (per-websocket).
 
     Returns:
-        Dictionary with cache status for all tool servers
+        Dictionary with toolchain status
     """
     try:
-        from sparky.toolchain_cache import get_toolchain_cache
+        from servers.chat.chat_server import _connection_manager
 
-        cache = get_toolchain_cache()
-        status = cache.get_cache_status()
-        return {
-            "success": True,
-            "cache_initialized": cache._initialized,
-            "servers": status,
-            "total_servers": len(status),
-        }
+        if _connection_manager and _connection_manager.langchain_toolchains:
+            # Return info about active toolchains
+            toolchains_info = {}
+            for user_id, toolchain in _connection_manager.langchain_toolchains.items():
+                toolchains_info[user_id] = {
+                    "active": True,
+                    "server_count": len(toolchain.client.connections),
+                }
+            return {
+                "success": True,
+                "cache_initialized": True,
+                "servers": toolchains_info,
+                "total_servers": sum(
+                    len(tc.client.connections)
+                    for tc in _connection_manager.langchain_toolchains.values()
+                ),
+            }
+        else:
+            return {
+                "success": True,
+                "cache_initialized": False,
+                "servers": {},
+                "total_servers": 0,
+            }
     except Exception as e:
-        return {"success": False, "error": str(e), "cache_initialized": False, "servers": {}, "total_servers": 0}
+        return {
+            "success": False,
+            "error": str(e),
+            "cache_initialized": False,
+            "servers": {},
+            "total_servers": 0,
+        }
 
 
 @router.post("/servers/{server_name}/reload")
 async def reload_server(server_name: str) -> ServerReloadResponse:
     """Force reload a specific MCP server.
+
+    Note: With per-websocket toolchains, this will reload for all active connections.
 
     Args:
         server_name: Name of the server to reload
@@ -116,15 +148,39 @@ async def reload_server(server_name: str) -> ServerReloadResponse:
         Reload status and message
     """
     try:
-        from sparky.toolchain_cache import get_toolchain_cache
+        from servers.chat.chat_server import _connection_manager
 
-        cache = get_toolchain_cache()
-        success = await cache.force_reload_server(server_name)
+        if not _connection_manager or not _connection_manager.langchain_toolchains:
+            return ServerReloadResponse(
+                success=False,
+                message="No active toolchains to reload",
+                server_name=server_name,
+            )
 
-        if success:
+        # Reload toolchains for all active connections
+        # This requires recreating the toolchain
+        reloaded_count = 0
+        for user_id in list(_connection_manager.langchain_toolchains.keys()):
+            try:
+                # Recreate toolchain for this user
+                from sparky.initialization import create_langchain_toolchain
+                from sparky.mcp_toolkit import clear_mcp_tool_cache
+
+                clear_mcp_tool_cache()
+
+                new_toolchain, error = await create_langchain_toolchain(
+                    log_prefix=f"[reload:{user_id}]"
+                )
+                if new_toolchain and not error:
+                    _connection_manager.langchain_toolchains[user_id] = new_toolchain
+                    reloaded_count += 1
+            except Exception as e:
+                logger.error(f"Error reloading toolchain for {user_id}: {e}")
+
+        if reloaded_count > 0:
             return ServerReloadResponse(
                 success=True,
-                message=f"Server '{server_name}' reloaded successfully",
+                message=f"Server '{server_name}' reloaded for {reloaded_count} connection(s)",
                 server_name=server_name,
             )
         else:
@@ -169,7 +225,9 @@ async def list_env_vars():
         return env_vars
     except Exception as e:
         logger.error(f"Error fetching env vars: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error fetching env vars: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching env vars: {str(e)}"
+        )
 
 
 @router.put("/env/{key}")
@@ -215,31 +273,35 @@ async def get_system_info():
     """
     try:
         logger.info("Fetching system information...")
-        
+
         if not PSUTIL_AVAILABLE:
             logger.error("psutil not available")
             raise HTTPException(
                 status_code=503,
-                detail="psutil library not available - cannot get system metrics"
+                detail="psutil library not available - cannot get system metrics",
             )
-        
+
         # Get process info
         process = psutil.Process()
         logger.debug(f"Got process: PID {process.pid}")
-        
+
         # Get system memory info
         mem = psutil.virtual_memory()
         memory_used_mb = mem.used / (1024 * 1024)
         memory_total_mb = mem.total / (1024 * 1024)
         memory_percent = mem.percent
-        logger.debug(f"Memory: {memory_percent}% ({memory_used_mb:.0f} / {memory_total_mb:.0f} MB)")
+        logger.debug(
+            f"Memory: {memory_percent}% ({memory_used_mb:.0f} / {memory_total_mb:.0f} MB)"
+        )
 
         # Get disk info
-        disk = psutil.disk_usage('/')
+        disk = psutil.disk_usage("/")
         disk_used_gb = disk.used / (1024 * 1024 * 1024)
         disk_total_gb = disk.total / (1024 * 1024 * 1024)
         disk_percent = disk.percent
-        logger.debug(f"Disk: {disk_percent}% ({disk_used_gb:.1f} / {disk_total_gb:.1f} GB)")
+        logger.debug(
+            f"Disk: {disk_percent}% ({disk_used_gb:.1f} / {disk_total_gb:.1f} GB)"
+        )
 
         # Get process uptime
         create_time = datetime.fromtimestamp(process.create_time())
@@ -256,7 +318,9 @@ async def get_system_info():
                 session_info = _connection_manager.get_session_info()
                 active_sessions = session_info.get("total_sessions", 0)
                 total_connections = session_info.get("active_connections", 0)
-                logger.debug(f"Sessions: {active_sessions}, Connections: {total_connections}")
+                logger.debug(
+                    f"Sessions: {active_sessions}, Connections: {total_connections}"
+                )
         except Exception as e:
             logger.warning(f"Could not get connection manager stats: {e}")
 
@@ -275,10 +339,11 @@ async def get_system_info():
         )
         logger.info("System information fetched successfully")
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error fetching system info: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error fetching system info: {str(e)}")
-
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching system info: {str(e)}"
+        )

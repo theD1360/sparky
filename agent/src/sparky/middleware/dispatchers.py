@@ -6,8 +6,8 @@ chains for different types of requests (tool calls, messages, responses).
 
 import functools
 
-from .base import MessageContext, ResponseContext, ToolCallContext
 from ..tool_registry import ToolResult
+from .base import MessageContext, ResponseContext, ToolCallContext
 
 
 class MessageDispatcher:
@@ -22,10 +22,10 @@ class MessageDispatcher:
 
     async def dispatch(self, message: str) -> MessageContext:
         """Process a message through the middleware chain.
-        
+
         Args:
             message: The user message string
-            
+
         Returns:
             MessageContext with potentially modified message
         """
@@ -87,9 +87,32 @@ class ToolDispatcher:
         # The final action in the chain is the actual tool execution
         async def final_action(ctx: ToolCallContext) -> ToolCallContext:
             try:
-                tool_result = await self._bot.toolchain.call(
-                    ctx.tool_name, ctx.tool_args
-                )
+                if not self._bot.langchain_toolchain:
+                    raise ValueError("LangChainToolchain not initialized")
+
+                # Get the original tool from provider if available
+                tool = None
+                if hasattr(self._bot.provider, "_original_tools"):
+                    tool = self._bot.provider._original_tools.get(ctx.tool_name)
+
+                # Fallback: get from toolchain
+                if not tool:
+                    tools = await self._bot.langchain_toolchain.get_langchain_tools()
+                    for t in tools:
+                        # Check both wrapped and unwrapped tools
+                        if hasattr(t, "original_tool"):
+                            if t.original_tool.name == ctx.tool_name:
+                                tool = t.original_tool
+                                break
+                        elif t.name == ctx.tool_name:
+                            tool = t
+                            break
+
+                if not tool:
+                    raise ValueError(f"Tool {ctx.tool_name} not found")
+
+                # Execute the tool directly
+                tool_result = await tool.ainvoke(ctx.tool_args)
                 ctx.result = ToolResult(status="success", result=tool_result)
             except Exception as e:
                 ctx.result = ToolResult(status="error", message=str(e))
@@ -103,4 +126,3 @@ class ToolDispatcher:
 
         final_context = await chain(context)
         return final_context.result
-

@@ -11,77 +11,60 @@ from logging import getLogger
 from typing import List, Optional, Tuple
 
 from badmcp.config import MCPConfig
-from badmcp.tool_chain import ToolChain
-from badmcp.tool_client import ToolClient
 from database.database import get_database_manager
 from database.repository import KnowledgeRepository
 from services import KnowledgeService
+from sparky.langchain_toolchain import LangChainToolchain
+from sparky.mcp_toolkit import log_mcp_startup_diagnostics
 
 logger = getLogger(__name__)
 
 
-async def initialize_toolchain(
+async def create_langchain_toolchain(
     tools: List[str] = None,
     log_prefix: str = "startup",
-) -> Tuple[Optional[ToolChain], Optional[str]]:
-    """Initialize the MCP toolchain with all configured servers.
+) -> Tuple[Optional[LangChainToolchain], Optional[str]]:
+    """Create a LangChain toolchain with all configured MCP servers.
 
     Args:
-        tools: List of tool names to load, if None, all tools will be loaded
+        tools: List of server names to include. If None, all servers will be included.
         log_prefix: Prefix for log messages (e.g., "startup", "agent")
 
     Returns:
         Tuple of (toolchain, error_message)
-        - toolchain: Initialized ToolChain instance or None on failure
+        - toolchain: LangChainToolchain instance or None on failure
         - error_message: Error message if initialization failed, None on success
     """
     try:
-        logger.info(f"[{log_prefix}] Loading MCP toolchain...")
+        logger.info(f"[{log_prefix}] Creating LangChain toolchain...")
         mcp_config = MCPConfig()
-        servers = mcp_config.get_all_servers()
-        if tools is None:
-            tools = [ToolClient(s) for s in servers.values()]
+        all_servers = mcp_config.get_all_servers()
+
+        # Filter servers if tools list is provided
+        if tools is not None:
+            servers = {
+                name: config for name, config in all_servers.items() if name in tools
+            }
         else:
-            tools = [ToolClient(s) for s in servers.values() if s.name in tools]
+            servers = all_servers
 
-        # Asynchronously start all clients in parallel using gather
-        results = await asyncio.gather(
-            *[tc.start() for tc in tools], return_exceptions=True
-        )
-
-        loaded_tools = []
-        for tc, result in zip(tools, results):
-            if isinstance(result, Exception):
-                logger.error(
-                    f"[{log_prefix}] Failed to load server '{tc.name}': {type(result).__name__}: {result}"
-                )
-                tb = traceback.format_exception(
-                    type(result), result, result.__traceback__
-                )
-                logger.error(f"[{log_prefix}] Traceback: {''.join(tb)}")
-            else:
-                loaded_tools.append(tc)
-                logger.info(f"[{log_prefix}] Successfully loaded tools from: {tc.name}")
-
-        if not loaded_tools:
-            error_msg = "No MCP servers loaded successfully"
+        if not servers:
+            error_msg = "No MCP servers configured"
             logger.error(f"[{log_prefix}] {error_msg}")
             return None, error_msg
 
-        toolchain = ToolChain(loaded_tools)
-        print(
-            f"[{log_prefix}] Initializing toolchain (loading tools, prompts, and resources)..."
-        )
-        await toolchain.initialize()
-        print(f"[{log_prefix}] Toolchain initialized")
         logger.info(
-            f"[{log_prefix}] MCP toolchain initialized with {len(loaded_tools)}/{len(tools)} servers"
+            f"[{log_prefix}] Creating toolchain with {len(servers)} server(s): {', '.join(servers.keys())}"
         )
+
+        toolchain = LangChainToolchain.from_mcp_config(servers)
+        await log_mcp_startup_diagnostics()
+        logger.info(f"[{log_prefix}] LangChain toolchain created successfully")
 
         return toolchain, None
 
     except Exception as e:
-        error_msg = f"Error initializing toolchain: {type(e).__name__}: {e}"
+        error_msg = f"Error creating LangChain toolchain: {type(e).__name__}: {e}"
         logger.error(f"[{log_prefix}] {error_msg}")
         logger.error(f"[{log_prefix}] Traceback: {traceback.format_exc()}")
         return None, error_msg
@@ -103,15 +86,15 @@ async def initialize_toolchain_with_knowledge(
     Returns:
         Tuple of (toolchain, knowledge, error_message)
     """
-    # Initialize toolchain
-    toolchain, error = await initialize_toolchain(log_prefix=log_prefix)
+    # Create toolchain
+    toolchain, error = await create_langchain_toolchain(log_prefix=log_prefix)
     if error:
         return None, None, error
 
     try:
         # Initialize Knowledge module
         logger.info(f"[{log_prefix}] Initializing shared Knowledge module...")
-        
+
         # Create repository first
         db_url = os.getenv("SPARKY_DB_URL")
         if not db_url:
@@ -123,7 +106,7 @@ async def initialize_toolchain_with_knowledge(
             db_manager = get_database_manager(db_url=db_url)
             db_manager.connect()
             repository = KnowledgeRepository(db_manager)
-            
+
             knowledge = KnowledgeService(
                 repository=repository,
                 session_id=session_id,

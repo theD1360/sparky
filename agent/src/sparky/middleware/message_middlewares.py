@@ -51,7 +51,7 @@ class CommandPromptMiddleware(BaseMiddleware):
         # Try to get the prompt from MCP servers
         try:
             bot = context.bot_instance
-            if not bot or not bot.toolchain:
+            if not bot or not bot.langchain_toolchain:
                 logger.warning("No toolchain available for command prompts")
                 return await next_call(context)
 
@@ -76,55 +76,33 @@ class CommandPromptMiddleware(BaseMiddleware):
                     )
                 return await next_call(context)
 
-            # Get the prompt schema to understand what arguments it expects
+            # Get the prompt - find which server has it
             prompt_result = None
-            for client, prompt in available_prompts:
-                if prompt.name == command_name:
-                    # Try to parse arguments from the command_input
-                    # For simple prompts, we'll pass the input as the first argument
+            for server_name, prompt_name in available_prompts:
+                if prompt_name == command_name:
+                    # For now, use simple argument parsing
+                    # We can enhance this later to get prompt schema from MCP
                     arguments = {}
-
-                    # Check if the prompt has arguments defined
-                    if hasattr(prompt, "arguments") and prompt.arguments:
-                        # Try to map the input to the first argument
-                        arg_list = list(prompt.arguments)
-
-                        # Check if first arg is required (no default value)
-                        first_arg = arg_list[0]
-                        is_required = (
-                            not hasattr(first_arg, "required") or first_arg.required
-                        )
-
-                        if len(arg_list) == 1:
-                            # Single argument
-                            if command_input or is_required:
-                                # Use the input (or empty string if required but no input)
-                                arguments[first_arg.name] = command_input
-                            # If not required and no input, don't pass the argument (use default)
+                    if command_input:
+                        # Try to parse key=value format
+                        if "=" in command_input:
+                            for part in command_input.split():
+                                if "=" in part:
+                                    key, value = part.split("=", 1)
+                                    arguments[key.strip()] = value.strip()
                         else:
-                            # Multiple arguments - try to parse them
-                            # Format: /command arg1=value1 arg2=value2
-                            # OR: /command value1 (for first arg only)
-                            if command_input and "=" in command_input:
-                                # Key=value format
-                                for part in command_input.split():
-                                    if "=" in part:
-                                        key, value = part.split("=", 1)
-                                        arguments[key.strip()] = value.strip()
-                            elif command_input:
-                                # Positional format - just use first arg
-                                arguments[first_arg.name] = command_input
-                            # If no input and arg has default, don't pass it
-                    else:
-                        # No arguments defined, pass empty dict or single input
-                        arguments = {"input": command_input} if command_input else {}
+                            # Single positional argument
+                            arguments["input"] = command_input
 
                     # Get the rendered prompt
                     try:
                         logger.info(
-                            f"Calling get_prompt('{command_name}', {arguments})"
+                            f"Calling get_prompt('{server_name}:{prompt_name}', {arguments})"
                         )
-                        prompt_result = await bot.get_prompt(command_name, arguments)
+                        # Use server_name:prompt_name format
+                        prompt_result = await bot.get_prompt(
+                            f"{server_name}:{prompt_name}", arguments
+                        )
                         break
                     except Exception as e:
                         logger.error(f"Error rendering prompt '{command_name}': {e}")
@@ -192,7 +170,7 @@ class ResourceFetchingMiddleware(BaseMiddleware):
 
         try:
             bot = context.bot_instance
-            if not bot or not bot.toolchain:
+            if not bot or not bot.langchain_toolchain:
                 logger.warning("No toolchain available for resource fetching")
                 return await next_call(context)
 
@@ -201,25 +179,25 @@ class ResourceFetchingMiddleware(BaseMiddleware):
 
             # Build a mapping of URIs and names to resources
             resource_map = {}
-            for client, resource in available_resources:
-                # Convert URI to string (it may be an AnyUrl object)
-                uri_str = str(resource.uri)
+            for server_name, resource_uri in available_resources:
+                # Convert URI to string
+                uri_str = str(resource_uri)
 
                 # Map by full URI
-                resource_map[uri_str] = (client, resource)
+                resource_map[uri_str] = (server_name, resource_uri)
 
                 # Also map by URI without scheme (e.g., "stats" for "knowledge://stats")
                 if "://" in uri_str:
                     _, path = uri_str.split("://", 1)
                     # Map the full path after scheme
-                    resource_map[path] = (client, resource)
+                    resource_map[path] = (server_name, resource_uri)
                     # Also map just the last part (e.g., "stats")
                     if "/" in path:
                         last_part = path.split("/")[-1]
                         if last_part and last_part not in resource_map:
-                            resource_map[last_part] = (client, resource)
+                            resource_map[last_part] = (server_name, resource_uri)
                     else:
-                        resource_map[path] = (client, resource)
+                        resource_map[path] = (server_name, resource_uri)
 
             # Process each match and collect resources to append
             resources_to_append = []
@@ -237,13 +215,13 @@ class ResourceFetchingMiddleware(BaseMiddleware):
 
                 # Try to find the resource
                 if resource_ref in resource_map:
-                    _, resource = resource_map[resource_ref]
+                    _, resource_uri = resource_map[resource_ref]
                     # Convert URI to string for consistent handling
-                    resource_uri = str(resource.uri)
+                    uri_str = str(resource_uri)
 
                     try:
-                        logger.info("Fetching resource: %s", resource_uri)
-                        content = await bot.read_resource(resource_uri)
+                        logger.info("Fetching resource: %s", uri_str)
+                        content = await bot.read_resource(uri_str)
 
                         # Try to parse as JSON for pretty formatting
                         try:
@@ -511,4 +489,5 @@ class FileAttachmentMiddleware(BaseMiddleware):
         elif size_bytes < 1024 * 1024 * 1024:
             return f"{size_bytes / (1024 * 1024):.1f} MB"
         else:
+            return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
             return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
