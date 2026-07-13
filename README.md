@@ -90,11 +90,15 @@ The Docker Compose setup starts several services:
 
 ### Web UI Development
 
+The UI talks to the API directly (`REACT_APP_API_URL`, default `http://localhost:8000`). FastAPI CORS allows the CRA origin (`API_CORS_ORIGINS`). No webpack/CRA proxy.
+
 ```bash
 cd web_ui
 npm install
-npm start
+REACT_APP_API_URL=http://localhost:8000 npm start
 ```
+
+Open http://localhost:3000 (API must be listening on :8000).
 
 ## 📚 Documentation
 

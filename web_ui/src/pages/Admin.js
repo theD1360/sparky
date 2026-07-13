@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { apiUrl } from '../config';
 import {
   Box,
   Container,
@@ -191,7 +192,7 @@ function Admin() {
   const loadMcpServers = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/admin/mcp/servers', {
+      const response = await fetch(apiUrl('/api/admin/mcp/servers'), {
         headers: getAuthHeaders(),
       });
       if (!response.ok) {
@@ -212,7 +213,7 @@ function Admin() {
   const loadUsers = async () => {
     try {
       setUsersLoading(true);
-      const response = await fetch('/api/admin/users', {
+      const response = await fetch(apiUrl('/api/admin/users'), {
         headers: getAuthHeaders(),
       });
       if (response.ok) {
@@ -255,8 +256,8 @@ function Admin() {
   const handleSaveUser = async () => {
     try {
       const url = editingUser 
-        ? `/api/admin/users/${editingUser.id}`
-        : '/api/admin/users';
+        ? apiUrl(`/api/admin/users/${editingUser.id}`)
+        : apiUrl('/api/admin/users');
       const method = editingUser ? 'PUT' : 'POST';
       
       const body = { ...userForm };
@@ -292,7 +293,7 @@ function Admin() {
     }
     
     try {
-      const response = await fetch(`/api/admin/users/${userId}`, {
+      const response = await fetch(apiUrl(`/api/admin/users/${userId}`), {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
@@ -311,7 +312,7 @@ function Admin() {
   
   const handleAssignRole = async (userId, role) => {
     try {
-      const response = await fetch(`/api/admin/users/${userId}/roles`, {
+      const response = await fetch(apiUrl(`/api/admin/users/${userId}/roles`), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -334,7 +335,7 @@ function Admin() {
   
   const handleRemoveRole = async (userId, role) => {
     try {
-      const response = await fetch(`/api/admin/users/${userId}/roles/${role}`, {
+      const response = await fetch(apiUrl(`/api/admin/users/${userId}/roles/${role}`), {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
@@ -353,7 +354,7 @@ function Admin() {
 
   const loadToolCacheStatus = async () => {
     try {
-      const response = await fetch('/api/admin/tool_cache_status', {
+      const response = await fetch(apiUrl('/api/admin/tool_cache_status'), {
         headers: getAuthHeaders(),
       });
       const data = await response.json();
@@ -366,9 +367,9 @@ function Admin() {
   const loadEnvVars = async () => {
     try {
       setEnvLoading(true);
-      const url = '/api/admin/env';
+      const url = apiUrl('/api/admin/env');
       console.log('Fetching env vars from:', url);
-      console.log('Full URL would be:', window.location.origin + url);
+      console.log('Full URL:', url);
       const response = await fetch(url);
       console.log('Env vars response status:', response.status);
       console.log('Env vars response URL:', response.url);
@@ -397,7 +398,7 @@ function Admin() {
     try {
       setSystemLoading(true);
       console.log('Fetching system info from /api/admin/system...');
-      const response = await fetch('/api/admin/system');
+      const response = await fetch(apiUrl('/api/admin/system'));
       console.log('System info response status:', response.status);
       
       if (!response.ok) {
@@ -419,7 +420,7 @@ function Admin() {
 
   const handleRefreshServer = async (serverName) => {
     try {
-      const response = await fetch(`/api/admin/servers/${serverName}/reload`, {
+      const response = await fetch(apiUrl(`/api/admin/servers/${serverName}/reload`), {
         method: 'POST',
         headers: getAuthHeaders(),
       });
@@ -459,8 +460,8 @@ function Admin() {
       }
       const payload = formToPayload(mcpForm, { includeName: !isEdit });
       const url = isEdit
-        ? `/api/admin/mcp/servers/${encodeURIComponent(name)}`
-        : '/api/admin/mcp/servers';
+        ? apiUrl(`/api/admin/mcp/servers/${encodeURIComponent(name)}`)
+        : apiUrl('/api/admin/mcp/servers');
       const response = await fetch(url, {
         method: isEdit ? 'PUT' : 'POST',
         headers: {
@@ -485,7 +486,7 @@ function Admin() {
   const handleToggleMcpDisabled = async (server) => {
     try {
       const response = await fetch(
-        `/api/admin/mcp/servers/${encodeURIComponent(server.name)}/disabled`,
+        apiUrl(`/api/admin/mcp/servers/${encodeURIComponent(server.name)}/disabled`),
         {
           method: 'PATCH',
           headers: {
@@ -510,7 +511,7 @@ function Admin() {
     if (!window.confirm(`Delete MCP server "${server.name}"?`)) return;
     try {
       const response = await fetch(
-        `/api/admin/mcp/servers/${encodeURIComponent(server.name)}`,
+        apiUrl(`/api/admin/mcp/servers/${encodeURIComponent(server.name)}`),
         {
           method: 'DELETE',
           headers: getAuthHeaders(),
@@ -530,7 +531,7 @@ function Admin() {
 
   const handleReloadAllMcp = async () => {
     try {
-      const response = await fetch('/api/admin/mcp/reload', {
+      const response = await fetch(apiUrl('/api/admin/mcp/reload'), {
         method: 'POST',
         headers: getAuthHeaders(),
       });
@@ -549,7 +550,7 @@ function Admin() {
 
   const handleUpdateEnvVar = async (key, value) => {
     try {
-      const response = await fetch(`/api/admin/env/${key}`, {
+      const response = await fetch(apiUrl(`/api/admin/env/${key}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value }),

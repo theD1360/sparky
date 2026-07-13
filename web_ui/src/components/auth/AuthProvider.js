@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { apiUrl } from '../../config';
 
 const AuthContext = createContext(null);
 
@@ -69,7 +70,7 @@ export const AuthProvider = ({ children }) => {
       const token = localStorage.getItem('access_token');
       if (token) {
         try {
-          await fetch('/api/auth/logout', {
+          await fetch(apiUrl('/api/auth/logout'), {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${token}`,
@@ -98,7 +99,7 @@ export const AuthProvider = ({ children }) => {
 
   const fetchUserInfo = useCallback(async (accessToken) => {
     try {
-      const response = await fetch('/api/auth/me', {
+      const response = await fetch(apiUrl('/api/auth/me'), {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
         },
@@ -133,7 +134,7 @@ export const AuthProvider = ({ children }) => {
         return;
       }
 
-      const response = await fetch('/api/auth/refresh', {
+      const response = await fetch(apiUrl('/api/auth/refresh'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -188,7 +189,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (username, password) => {
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await fetch(apiUrl('/api/auth/login'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -218,7 +219,7 @@ export const AuthProvider = ({ children }) => {
 
   const register = async (username, email, password) => {
     try {
-      const response = await fetch('/api/auth/register', {
+      const response = await fetch(apiUrl('/api/auth/register'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

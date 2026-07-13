@@ -19,10 +19,8 @@ services:
       - CHOKIDAR_USEPOLLING=true  # Enable polling for file changes (needed in Docker)
       - WATCHPACK_POLLING=true
       - FAST_REFRESH=true
-      - REACT_APP_WS_HOST=${REACT_APP_WS_HOST:-localhost}
-      - REACT_APP_WS_PORT=${REACT_APP_WS_PORT:-8000}
-      - REACT_APP_API_HOST=${REACT_APP_API_HOST:-localhost}
-      - REACT_APP_API_PORT=${REACT_APP_API_PORT:-8000}
+      # Browser runs on the host — call the published API port directly (no CRA proxy).
+      - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8000}
     restart: unless-stopped
     networks:
       - sparky-network
@@ -48,6 +46,8 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - AGENT_MODEL=${AGENT_MODEL:-gemini-2.0-flash}
       - SPARKY_SUMMARY_TOKEN_THRESHOLD=${SPARKY_SUMMARY_TOKEN_THRESHOLD:-0.85}
+      # Comma-separated UI origins allowed to call the API (empty = localhost:3000 defaults)
+      - API_CORS_ORIGINS=${API_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       - SPARKY_REFLECT_EVERY=${SPARKY_REFLECT_EVERY:-10}
       - SPARKY_TOKEN_BUDGET_PERCENT=${SPARKY_TOKEN_BUDGET_PERCENT:-0.8}
       - LOG_DIR=/app/agent/logs

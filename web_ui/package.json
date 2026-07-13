@@ -2,7 +2,6 @@
   "name": "chat_ui",
   "version": "0.1.0",
   "private": true,
-  "proxy": "http://server:8000",
   "dependencies": {
     "@diffusionstudio/vits-web": "^1.0.3",
     "@emotion/react": "^11.14.0",

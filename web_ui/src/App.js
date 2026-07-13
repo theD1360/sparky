@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, startTransition } from 'react';
 import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom';
 import ReconnectingWebSocket from 'reconnecting-websocket';
+import { apiUrl, getChatWsUrl } from './config';
 import {
   Box,
   TextField,
@@ -142,7 +143,7 @@ function App({ onThemeChange }) {
         console.error('Cannot upload file: user not authenticated');
         return;
       }
-      const uploadUrl = `/upload_file?chat_id=${currentChatId}&user_id=${userId}`;
+      const uploadUrl = apiUrl(`/upload_file?chat_id=${currentChatId}&user_id=${userId}`);
       console.log('Upload URL:', uploadUrl);
       
       const uploadResponse = await fetch(uploadUrl, {
@@ -222,7 +223,7 @@ function App({ onThemeChange }) {
       const token = localStorage.getItem('access_token');
       const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
       
-      const response = await fetch(`/api/user/${userId}/chats?include_archived=false`, {
+      const response = await fetch(apiUrl(`/api/user/${userId}/chats?include_archived=false`), {
         headers
       });
       const data = await response.json();
@@ -241,7 +242,7 @@ function App({ onThemeChange }) {
       const token = localStorage.getItem('access_token');
       const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
       
-      const response = await fetch(`/api/user/${userId}/chats?include_archived=true`, {
+      const response = await fetch(apiUrl(`/api/user/${userId}/chats?include_archived=true`), {
         headers
       });
       const data = await response.json();
@@ -305,7 +306,7 @@ function App({ onThemeChange }) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
       
-      const response = await fetch(`/api/chats/${chatId}/messages`, {
+      const response = await fetch(apiUrl(`/api/chats/${chatId}/messages`), {
         signal: controller.signal
       });
       clearTimeout(timeout);
@@ -498,7 +499,7 @@ function App({ onThemeChange }) {
       return;
     }
     try {
-      await fetch(`/api/user/${userId}/chats/${chatId}`, {
+      await fetch(apiUrl(`/api/user/${userId}/chats/${chatId}`), {
         method: 'PUT',
         headers: { 
           'Content-Type': 'application/json',
@@ -529,7 +530,7 @@ function App({ onThemeChange }) {
     }
     
     try {
-      const response = await fetch(`/api/user/${userId}/chats/${chatId}`, {
+      const response = await fetch(apiUrl(`/api/user/${userId}/chats/${chatId}`), {
         method: 'DELETE',
         headers: getAuthHeaders()
       });
@@ -559,7 +560,7 @@ function App({ onThemeChange }) {
     const userId = getUserId();
     
     try {
-      const response = await fetch(`/api/user/${userId}/chats/${chatId}/archive`, {
+      const response = await fetch(apiUrl(`/api/user/${userId}/chats/${chatId}/archive`), {
         method: 'POST',
         headers: getAuthHeaders()
       });
@@ -589,7 +590,7 @@ function App({ onThemeChange }) {
     const userId = getUserId();
     
     try {
-      const response = await fetch(`/api/user/${userId}/chats/${chatId}/unarchive`, {
+      const response = await fetch(apiUrl(`/api/user/${userId}/chats/${chatId}/unarchive`), {
         method: 'POST',
         headers: getAuthHeaders()
       });
@@ -659,7 +660,7 @@ function App({ onThemeChange }) {
     const fetchResourcesAndPrompts = async () => {
       try {
         console.log('Fetching resources and prompts...');
-        const resourcesResponse = await fetch('/api/resources');
+        const resourcesResponse = await fetch(apiUrl('/api/resources'));
         console.log('Resources response status:', resourcesResponse.status);
         console.log('Resources content-type:', resourcesResponse.headers.get('content-type'));
         if (!resourcesResponse.ok) {
@@ -670,7 +671,7 @@ function App({ onThemeChange }) {
         console.log('Resources fetched:', resourcesData);
         setResources(resourcesData);
 
-        const promptsResponse = await fetch('/api/prompts');
+        const promptsResponse = await fetch(apiUrl('/api/prompts'));
         console.log('Prompts response status:', promptsResponse.status);
         if (!promptsResponse.ok) {
           console.error('Prompts API failed:', promptsResponse.status);
@@ -696,14 +697,8 @@ function App({ onThemeChange }) {
       return;
     }
 
-    // Connect when entering chat route
-    // Use WebSocket URL from environment variables or fall back to current page host
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = process.env.REACT_APP_WS_HOST || window.location.hostname;
-    const wsPort = process.env.REACT_APP_WS_PORT || window.location.port || '8000';
-    // Include JWT token in query string
-    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
-    const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws/chat${tokenParam}`;
+    // Connect when entering chat route (direct to API host — no CRA proxy)
+    const wsUrl = getChatWsUrl(token);
     
     console.log('Connecting to WebSocket for chat route:', wsUrl);
     socket.current = new ReconnectingWebSocket(wsUrl, null, {reconnectInterval: 3000});
@@ -806,14 +801,14 @@ function App({ onThemeChange }) {
           const refetchResourcesAndPrompts = async () => {
             try {
               console.log('Refetching resources and prompts after tools loaded...');
-              const resourcesResponse = await fetch('/api/resources');
+              const resourcesResponse = await fetch(apiUrl('/api/resources'));
               if (resourcesResponse.ok) {
                 const resourcesData = await resourcesResponse.json();
                 console.log('Resources refetched:', resourcesData.length, 'items');
                 setResources(resourcesData);
               }
 
-              const promptsResponse = await fetch('/api/prompts');
+              const promptsResponse = await fetch(apiUrl('/api/prompts'));
               if (promptsResponse.ok) {
                 const promptsData = await promptsResponse.json();
                 console.log('Prompts refetched:', promptsData.length, 'items');

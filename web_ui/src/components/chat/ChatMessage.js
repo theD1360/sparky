@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { apiUrl } from '../../config';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import ToolMessage from './ToolMessage';
@@ -94,7 +95,7 @@ const ChatMessage = React.memo(({ role, text, attachments, toolName, args, resul
           <div className="message-attachments">
             {attachments.map((file, index) => {
               const isImage = file.name && /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(file.name);
-              const thumbnailUrl = file.file_id && isImage ? `/file_thumbnail/${file.file_id}` : null;
+              const thumbnailUrl = file.file_id && isImage ? apiUrl(`/file_thumbnail/${file.file_id}`) : null;
               
               return (
                 <div key={index} className={`attachment-badge ${isImage ? 'attachment-image' : ''}`}>

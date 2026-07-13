@@ -16,6 +16,7 @@ from database.database import get_database_manager
 from database.repository import KnowledgeRepository
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from models import (
@@ -868,6 +869,28 @@ app = FastAPI(
     description="This server manages the bot's logic, history, and tool connections.",
     version="1.0.0",
     lifespan=cleanup_server,
+)
+
+
+def _cors_allow_origins() -> list[str]:
+    """Browser origins allowed to call the API directly (no CRA proxy)."""
+    raw = os.getenv("API_CORS_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return [
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+    ]
+
+
+_cors_origins = _cors_allow_origins()
+_cors_credentials = not (len(_cors_origins) == 1 and _cors_origins[0] == "*")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Register routers

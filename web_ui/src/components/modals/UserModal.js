@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { apiUrl } from '../../config';
 import {
   Dialog,
   DialogTitle,
@@ -108,7 +109,7 @@ function UserModal({ isOpen, onClose }) {
 
     setChangingPassword(true);
     try {
-      const response = await fetch('/api/auth/change-password', {
+      const response = await fetch(apiUrl('/api/auth/change-password'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

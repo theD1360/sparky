@@ -3,6 +3,8 @@
  * Handles all HTTP API calls to the backend
  */
 
+import { apiUrl } from '../config';
+
 /**
  * Get auth headers from localStorage token
  * @returns {Object} Headers object with Authorization if token exists
@@ -23,7 +25,7 @@ const getAuthHeaders = () => {
  */
 export const fetchResources = async () => {
   try {
-    const response = await fetch('/api/resources', {
+    const response = await fetch(apiUrl('/api/resources'), {
       headers: getAuthHeaders(),
     });
     return await response.json();
@@ -39,7 +41,7 @@ export const fetchResources = async () => {
  */
 export const fetchPrompts = async () => {
   try {
-    const response = await fetch('/api/prompts', {
+    const response = await fetch(apiUrl('/api/prompts'), {
       headers: getAuthHeaders(),
     });
     return await response.json();
@@ -57,7 +59,7 @@ export const fetchPrompts = async () => {
  */
 export const fetchUserChats = async (userId, includeArchived = false) => {
   try {
-    const response = await fetch(`/api/user/${userId}/chats?include_archived=${includeArchived}`, {
+    const response = await fetch(apiUrl(`/api/user/${userId}/chats?include_archived=${includeArchived}`), {
       headers: getAuthHeaders(),
     });
     const data = await response.json();
@@ -80,7 +82,7 @@ export const loadChatHistory = async (chatId, signal = null) => {
       headers: getAuthHeaders(),
       ...(signal ? { signal } : {}),
     };
-    const response = await fetch(`/api/chats/${chatId}/messages`, options);
+    const response = await fetch(apiUrl(`/api/chats/${chatId}/messages`), options);
     
     if (response.ok) {
       return await response.json();
@@ -107,7 +109,7 @@ export const loadChatHistory = async (chatId, signal = null) => {
  */
 export const updateChatName = async (userId, chatId, newName) => {
   try {
-    await fetch(`/api/user/${userId}/chats/${chatId}`, {
+    await fetch(apiUrl(`/api/user/${userId}/chats/${chatId}`), {
       method: 'PUT',
       headers: { 
         'Content-Type': 'application/json',
@@ -129,7 +131,7 @@ export const updateChatName = async (userId, chatId, newName) => {
  */
 export const deleteChat = async (userId, chatId) => {
   try {
-    const response = await fetch(`/api/user/${userId}/chats/${chatId}`, {
+    const response = await fetch(apiUrl(`/api/user/${userId}/chats/${chatId}`), {
       method: 'DELETE',
       headers: getAuthHeaders(),
     });
@@ -148,7 +150,7 @@ export const deleteChat = async (userId, chatId) => {
  */
 export const archiveChat = async (userId, chatId) => {
   try {
-    const response = await fetch(`/api/user/${userId}/chats/${chatId}/archive`, {
+    const response = await fetch(apiUrl(`/api/user/${userId}/chats/${chatId}/archive`), {
       method: 'POST',
       headers: getAuthHeaders(),
     });
@@ -167,7 +169,7 @@ export const archiveChat = async (userId, chatId) => {
  */
 export const unarchiveChat = async (userId, chatId) => {
   try {
-    const response = await fetch(`/api/user/${userId}/chats/${chatId}/unarchive`, {
+    const response = await fetch(apiUrl(`/api/user/${userId}/chats/${chatId}/unarchive`), {
       method: 'POST',
       headers: getAuthHeaders(),
     });
@@ -190,7 +192,7 @@ export const uploadFile = async (file, chatId, userId) => {
     const formData = new FormData();
     formData.append('file', file);
     
-    const uploadUrl = `/upload_file?chat_id=${chatId}&user_id=${userId}`;
+    const uploadUrl = apiUrl(`/upload_file?chat_id=${chatId}&user_id=${userId}`);
     console.log('Upload URL:', uploadUrl);
     
     const response = await fetch(uploadUrl, {
@@ -220,7 +222,7 @@ export const uploadFile = async (file, chatId, userId) => {
  */
 export const recordToolUsage = async (toolName, toolArgs, result) => {
   try {
-    await fetch('/record_tool_usage', {
+    await fetch(apiUrl('/record_tool_usage'), {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
