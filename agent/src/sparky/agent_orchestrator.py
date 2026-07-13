@@ -970,12 +970,40 @@ class AgentOrchestrator:
         """
         Executes a tool call through the middleware dispatcher.
         NOTE: DO NOT SHIM TOOL CALLS HERE. ALL TOOL CALLS SHOULD BE HANDLED BY THE ToolDispatcher!
+
+        Dispatches TOOL_USE / TOOL_RESULT here (not via LangChain callbacks) so the UI
+        receives live progress when create_agent runs wrapped tools.
         """
+        import json
+
+        safe_args = tool_args if isinstance(tool_args, dict) else {"input": tool_args}
+        logger.info("Executing tool %s with args keys=%s", tool_name, list(safe_args.keys()))
+        await self.events.async_dispatch(BotEvents.TOOL_USE, tool_name, safe_args)
+
         context = ToolCallContext(
-            tool_name=tool_name, tool_args=tool_args, bot_instance=self
+            tool_name=tool_name, tool_args=safe_args, bot_instance=self
         )
 
-        return await self.tool_dispatcher.dispatch(context)
+        result = await self.tool_dispatcher.dispatch(context)
+
+        if result.status == "error":
+            result_payload: Any = result.message or "Tool execution failed"
+            status = "error"
+        else:
+            result_payload = result.result
+            status = "success"
+
+        if not isinstance(result_payload, str):
+            try:
+                result_payload = json.dumps(result_payload, default=str)
+            except Exception:
+                result_payload = str(result_payload)
+
+        await self.events.async_dispatch(
+            BotEvents.TOOL_RESULT, tool_name, result_payload, status
+        )
+        logger.info("Tool %s finished with status=%s", tool_name, status)
+        return result
 
     async def send_message(
         self, message: str, task_id: Optional[str] = None, file_id: Optional[str] = None

@@ -83,13 +83,10 @@ class LangChainEventCallbackHandler(AsyncCallbackHandler):
     ) -> None:
         """Called when a tool starts running.
 
-        Args:
-            serialized: Serialized tool information
-            input_str: Input string to the tool (can be dict or string)
+        Tool UI/persistence events are emitted from AgentOrchestrator.execute_tool_call
+        (reliable with MiddlewareToolWrapper). Here we only track executed_tool_calls.
         """
         tool_name = serialized.get("name", "")
-        # Parse input_str to get tool args
-        # input_str might be a dict already or a JSON string
         if isinstance(input_str, dict):
             tool_args = input_str
         else:
@@ -100,39 +97,12 @@ class LangChainEventCallbackHandler(AsyncCallbackHandler):
             except (json.JSONDecodeError, TypeError):
                 tool_args = {"input": input_str} if input_str else {}
 
-        # Log the tool call
         self.executed_tool_calls.append({"name": tool_name, "arguments": tool_args})
 
-        # Dispatch tool use event
-        await self.events.async_dispatch(BotEvents.TOOL_USE, tool_name, tool_args)
-
     async def on_tool_end(self, output: str, **kwargs: Any) -> None:
-        """Called when a tool finishes running.
-
-        Args:
-            output: Output from the tool
-        """
-        # Get tool name from kwargs if available
-        tool_name = kwargs.get("name", "")
-        if not tool_name and "serialized" in kwargs:
-            tool_name = kwargs["serialized"].get("name", "")
-
-        # Dispatch tool result event
-        await self.events.async_dispatch(
-            BotEvents.TOOL_RESULT, tool_name, output, "success"
-        )
+        """Called when a tool finishes — events handled in execute_tool_call."""
+        return
 
     async def on_tool_error(self, error: Exception, **kwargs: Any) -> None:
-        """Called when a tool encounters an error.
-
-        Args:
-            error: The error that occurred
-        """
-        tool_name = kwargs.get("name", "")
-        if not tool_name and "serialized" in kwargs:
-            tool_name = kwargs["serialized"].get("name", "")
-
-        error_msg = str(error)
-        await self.events.async_dispatch(
-            BotEvents.TOOL_RESULT, tool_name, error_msg, "error"
-        )
+        """Called when a tool errors — events handled in execute_tool_call."""
+        return

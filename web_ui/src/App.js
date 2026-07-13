@@ -2009,7 +2009,9 @@ function App({ onThemeChange }) {
                   />
                 </Box>
                 <Typography variant="caption" sx={{ color: 'text.secondary', fontStyle: 'italic' }}>
-                  Sparky is thinking...
+                  {chatMessages.some((m) => m.role === 'tool_use' || m.role === 'tool')
+                    ? 'Running tools...'
+                    : 'Sparky is thinking...'}
                 </Typography>
               </Box>
             )}
