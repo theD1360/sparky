@@ -457,8 +457,34 @@ class GeminiProvider(LLMProvider):
             Extracted text
         """
         if hasattr(response, "content"):
-            return str(response.content)
+            return self._normalize_content(response.content)
         return str(response)
+
+    @staticmethod
+    def _normalize_content(content: Any) -> str:
+        """Flatten LangChain / Gemini content parts into plain text."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    text = part.get("text")
+                    if text:
+                        parts.append(str(text))
+                    elif part.get("type") not in ("text", "thinking", "reasoning"):
+                        # Skip binary / metadata-only parts
+                        continue
+                else:
+                    text = getattr(part, "text", None)
+                    if text:
+                        parts.append(str(text))
+            return "\n".join(p for p in parts if p).strip()
+        return str(content)
 
     def get_function_calls(self, response: Any) -> List[Any]:
         """Extract function calls from a LangChain response.
@@ -497,13 +523,28 @@ class GeminiProvider(LLMProvider):
         Returns:
             Thinking text, or empty string if none
         """
-        # In LangChain, thinking text is the content before tool calls
-        if hasattr(response, "content"):
-            content = str(response.content)
-            # If there are tool calls, the content is the thinking text
+        if not hasattr(response, "content"):
+            return ""
+        content = response.content
+        # Prefer explicit thinking/reasoning parts when content is structured.
+        if isinstance(content, list):
+            thinking_parts: List[str] = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in (
+                    "thinking",
+                    "reasoning",
+                ):
+                    text = part.get("thinking") or part.get("text") or ""
+                    if text:
+                        thinking_parts.append(str(text))
+            if thinking_parts:
+                return "\n".join(thinking_parts).strip()
+            # Only treat plain content as thinking when there are tool calls.
             if hasattr(response, "tool_calls") and response.tool_calls:
-                return content
-            return content
+                return self._normalize_content(content)
+            return ""
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            return self._normalize_content(content)
         return ""
 
     async def handle_tool_calls(

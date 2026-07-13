@@ -147,51 +147,55 @@ class KnowledgeGraphChatMessageHistory(BaseChatMessageHistory):
         await self.aadd_messages([message])
 
     async def aadd_messages(self, messages: List[BaseMessage]) -> None:
-        """Async version of add_messages."""
-        # Invalidate cache
-        self._cached_messages = None
+        """Async version of add_messages.
+
+        Conversation turns (user/model/tool) are already persisted by
+        AgentOrchestrator event handlers (MESSAGE_SENT / MESSAGE_RECEIVED /
+        TOOL_* / THOUGHT). Persisting them again here caused duplicate
+        messages in the chat UI after reload.
+
+        This path only writes SummarizationMiddleware summaries to the graph,
+        and keeps the in-memory cache coherent.
+        """
+        if self._cached_messages is None:
+            # Prefer extending a fresh list so ConversationBufferMemory can keep
+            # reading messages while we sync.
+            self._cached_messages = []
 
         for message in messages:
             try:
-                # Convert LangChain message to knowledge graph format
-                role = self._get_role_from_message(message)
-                content = self._get_content_from_message(message)
+                # Always keep local cache in sync for the live agent turn.
+                self._cached_messages.append(message)
 
-                # Check if this is a summary message (from SummarizationMiddleware)
+                content = self._get_content_from_message(message)
                 is_summary = content.startswith("[Summary]") or (
                     hasattr(message, "additional_kwargs")
                     and message.additional_kwargs.get("summary", False)
                 )
 
-                # Determine message type
-                if is_summary:
-                    message_type = "summary"
-                    # Remove prefix from summary content
-                    content = content.replace("[Summary] ", "").strip()
-                elif isinstance(message, SystemMessage):
-                    message_type = "internal"
-                elif isinstance(message, ToolMessage):
-                    message_type = "tool_result"
-                else:
-                    message_type = "message"
+                # Skip graph writes for normal turns — event handlers own those.
+                if not is_summary:
+                    logger.debug(
+                        "Skipping graph persist for %s (event handlers already save turns)",
+                        type(message).__name__,
+                    )
+                    continue
 
-                # Save message to knowledge graph
+                role = self._get_role_from_message(message)
+                content = content.replace("[Summary] ", "").strip()
                 message_node_id = await self.message_service.save_message(
                     content=content,
                     role=role,
-                    internal=(message_type == "internal"),
-                    message_type=message_type,
+                    internal=False,
+                    message_type="summary",
                 )
 
-                # Link message to chat
                 if message_node_id:
                     await self.chat_service.link_message(
                         chat_id=self.chat_id, message_node_id=message_node_id
                     )
 
-                # If this is a summary, fire SUMMARIZED event for compatibility
-                if is_summary and self.events:
-                    # Create a hash to track if we've processed this summary
+                if self.events:
                     summary_hash = hash(content)
                     if summary_hash not in self._processed_summaries:
                         self._processed_summaries.add(summary_hash)
@@ -199,15 +203,16 @@ class KnowledgeGraphChatMessageHistory(BaseChatMessageHistory):
                         logger.info("Summary detected and event fired")
 
                 logger.debug(
-                    "Saved message to knowledge graph: %s, role=%s, type=%s",
+                    "Saved summary to knowledge graph: %s, role=%s",
                     message_node_id,
                     role,
-                    message_type,
                 )
 
             except Exception as e:
                 logger.error(
-                    "Failed to save message to knowledge graph: %s", e, exc_info=True
+                    "Failed to process message for knowledge graph: %s",
+                    e,
+                    exc_info=True,
                 )
 
     def clear(self) -> None:
@@ -258,14 +263,19 @@ class KnowledgeGraphChatMessageHistory(BaseChatMessageHistory):
         Returns:
             Content string
         """
-        if hasattr(message, "content"):
-            content = message.content
-            if isinstance(content, str):
-                return content
-            elif isinstance(content, list):
-                # Handle list of content parts (e.g., text + images)
-                text_parts = [str(part) for part in content if isinstance(part, str)]
-                return " ".join(text_parts)
-            else:
-                return str(content)
-        return ""
+        if not hasattr(message, "content"):
+            return ""
+        content = message.content
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, str):
+                    text_parts.append(part)
+                elif isinstance(part, dict):
+                    text = part.get("text") or part.get("thinking")
+                    if text:
+                        text_parts.append(str(text))
+            return "\n".join(text_parts).strip()
+        return str(content)

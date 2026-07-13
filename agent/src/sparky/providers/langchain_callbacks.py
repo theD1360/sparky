@@ -28,13 +28,9 @@ class LangChainEventCallbackHandler(AsyncCallbackHandler):
         self, serialized: Dict[str, Any], prompts: List[str], **kwargs: Any
     ) -> None:
         """Called when the LLM starts running."""
-        # Extract thinking text from prompts if available
-        if prompts:
-            thinking_text = (
-                prompts[0] if isinstance(prompts[0], str) else str(prompts[0])
-            )
-            if thinking_text and thinking_text.strip():
-                await self.events.async_dispatch(BotEvents.THOUGHT, thinking_text)
+        # Do not treat prompts as thoughts — they include the full chat transcript
+        # (e.g. "Human: ...") and were being saved as thought bubbles.
+        return
 
     async def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         """Called when a new token is generated."""
@@ -43,22 +39,44 @@ class LangChainEventCallbackHandler(AsyncCallbackHandler):
 
     async def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
         """Called when the LLM finishes running."""
-        # Extract thinking text from response if available
-        # LLMResult contains generations which may have thinking text
-        if response.generations:
-            for gen_list in response.generations:
-                for gen in gen_list:
-                    if hasattr(gen, "message") and hasattr(gen.message, "content"):
-                        content = str(gen.message.content)
-                        # If there are tool calls, the content is the thinking text
-                        if (
-                            hasattr(gen.message, "tool_calls")
-                            and gen.message.tool_calls
-                        ):
-                            if content and content.strip():
-                                await self.events.async_dispatch(
-                                    BotEvents.THOUGHT, content
-                                )
+        # Only emit thoughts when the model produced reasoning ahead of tool calls.
+        if not response.generations:
+            return
+        for gen_list in response.generations:
+            for gen in gen_list:
+                message = getattr(gen, "message", None)
+                if message is None:
+                    continue
+                tool_calls = getattr(message, "tool_calls", None)
+                if not tool_calls:
+                    continue
+                content = getattr(message, "content", None)
+                text = _normalize_llm_content(content)
+                if text and text.strip():
+                    await self.events.async_dispatch(BotEvents.THOUGHT, text.strip())
+
+
+def _normalize_llm_content(content: Any) -> str:
+    """Flatten structured LLM content into plain text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text") or part.get("thinking")
+                if text:
+                    parts.append(str(text))
+            else:
+                text = getattr(part, "text", None)
+                if text:
+                    parts.append(str(text))
+        return "\n".join(p for p in parts if p).strip()
+    return str(content)
 
     async def on_tool_start(
         self, serialized: Dict[str, Any], input_str: str, **kwargs: Any

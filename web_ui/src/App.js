@@ -305,8 +305,8 @@ function App({ onThemeChange }) {
       // Add timeout to prevent infinite hang
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-      
       const response = await fetch(apiUrl(`/api/chats/${chatId}/messages`), {
+        headers: getAuthHeaders(),
         signal: controller.signal
       });
       clearTimeout(timeout);
@@ -325,6 +325,10 @@ function App({ onThemeChange }) {
           const tempMessages = [];
           data.messages.forEach(msg => {
             const message_type = msg.message_type || 'message';
+            // Identity / system scaffolding should not appear in the chat transcript.
+            if (msg.internal || message_type === 'internal') {
+              return;
+            }
             
             // Handle different message types
             if (message_type === 'tool_use') {
@@ -368,20 +372,35 @@ function App({ onThemeChange }) {
                 messages: msg.messages
               });
             } else if (message_type === 'thought') {
-              // Thoughts get special role for styling
-              tempMessages.push({
-                role: 'thought',
-                text: msg.text
-              });
+              // Skip thought bubbles in history reload (noisy / often echo the user turn).
+              return;
             } else {
-              // Regular messages (user or model)
+              // Regular messages (user or model). Normalize model → bot for UI.
+              const role = msg.role === 'model' ? 'bot' : msg.role;
               tempMessages.push({
-                role: msg.role,
+                role,
                 text: msg.text,
                 attachments: msg.attachments || null
               });
             }
           });
+
+          // Drop duplicate user/bot messages from dual-persist bugs (not only consecutive).
+          const seen = new Set();
+          const deduped = [];
+          for (const msg of tempMessages) {
+            const isTranscript = msg.role === 'user' || msg.role === 'bot' || msg.role === 'model';
+            if (isTranscript) {
+              const key = `${msg.role}|${msg.text}`;
+              if (seen.has(key)) {
+                continue;
+              }
+              seen.add(key);
+            }
+            deduped.push(msg);
+          }
+          tempMessages.length = 0;
+          tempMessages.push(...deduped);
           
           // Second pass: pair tool_use and tool_result messages
           const pairedMessages = [];
@@ -827,16 +846,7 @@ function App({ onThemeChange }) {
           };
           refetchResourcesAndPrompts();
 
-          // Re-bind an open chat after reconnect / ready (covers stale-closure cases).
-          const chatToResume = currentChatIdRef.current;
-          if (chatToResume && socket.current?.readyState === WebSocket.OPEN) {
-            console.log('Ready received with active chat, sending switch_chat:', chatToResume);
-            setChatReady(false);
-            socket.current.send(JSON.stringify({
-              type: 'switch_chat',
-              data: { chat_id: chatToResume },
-            }));
-          }
+          // Reconnect re-bind is handled by the onopen interval (avoids dual switch_chat).
           
           // If there's a pending message, create a chat and send it
           if (pendingMessage && !currentChatIdRef.current) {
