@@ -1,13 +1,36 @@
 """LangChain callback handlers for event dispatching."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from events import BotEvents
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.outputs import LLMResult
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_llm_content(content: Any) -> str:
+    """Flatten structured LLM content into plain text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text") or part.get("thinking")
+                if text:
+                    parts.append(str(text))
+            else:
+                text = getattr(part, "text", None)
+                if text:
+                    parts.append(str(text))
+        return "\n".join(p for p in parts if p).strip()
+    return str(content)
 
 
 class LangChainEventCallbackHandler(AsyncCallbackHandler):
@@ -54,29 +77,6 @@ class LangChainEventCallbackHandler(AsyncCallbackHandler):
                 text = _normalize_llm_content(content)
                 if text and text.strip():
                     await self.events.async_dispatch(BotEvents.THOUGHT, text.strip())
-
-
-def _normalize_llm_content(content: Any) -> str:
-    """Flatten structured LLM content into plain text."""
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: List[str] = []
-        for part in content:
-            if isinstance(part, str):
-                parts.append(part)
-            elif isinstance(part, dict):
-                text = part.get("text") or part.get("thinking")
-                if text:
-                    parts.append(str(text))
-            else:
-                text = getattr(part, "text", None)
-                if text:
-                    parts.append(str(text))
-        return "\n".join(p for p in parts if p).strip()
-    return str(content)
 
     async def on_tool_start(
         self, serialized: Dict[str, Any], input_str: str, **kwargs: Any
