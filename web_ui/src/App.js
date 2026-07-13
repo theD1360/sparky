@@ -617,12 +617,22 @@ function App({ onThemeChange }) {
   
   // Refs
   const socket = useRef(null);
+  const toolsReadyRef = useRef(false);
+  const currentChatIdRef = useRef(null);
   const [connectionStatus, setConnectionStatus] = useState('Connecting...');
   const [reconnectionAttempts, setReconnectionAttempts] = useState(0);
   const [reconnectionError, setReconnectionError] = useState(null);
   const chatScrollRef = useRef(null);
   const inputRef = useRef(null);
   const autocompleteDebounceRef = useRef(null);
+
+  // Keep refs in sync for WebSocket handlers (avoid stale closures).
+  useEffect(() => {
+    toolsReadyRef.current = toolsReady;
+  }, [toolsReady]);
+  useEffect(() => {
+    currentChatIdRef.current = currentChatId;
+  }, [currentChatId]);
 
   // Scroll chat to bottom - optimized with debouncing to avoid blocking UI
   const scrollToBottom = useCallback(() => {
@@ -719,29 +729,25 @@ function App({ onThemeChange }) {
       console.log('Sending connect message with token');
       socket.current.send(JSON.stringify(connectMessage));
       
-      // If we have a current chat ID when reconnecting, we need to re-establish it
-      // This handles the case when the socket disconnects (e.g., screen sleep on mobile)
-      if (currentChatId) {
-        console.log('Reconnected with active chat, will re-establish chat:', currentChatId);
-        // Set a flag to switch chat after tools are ready
-        // We can't send switch_chat immediately because the server needs to process connect first
+      // If we have a current chat ID when reconnecting, re-establish after tools are ready.
+      // Use refs — the onopen closure would otherwise freeze stale toolsReady=false.
+      const activeChatId = currentChatIdRef.current;
+      if (activeChatId) {
+        console.log('Reconnected with active chat, will re-establish chat:', activeChatId);
         const recheckInterval = setInterval(() => {
-          if (toolsReady && socket.current.readyState === WebSocket.OPEN) {
+          if (toolsReadyRef.current && socket.current?.readyState === WebSocket.OPEN) {
             clearInterval(recheckInterval);
-            console.log('Tools ready after reconnect, re-establishing chat:', currentChatId);
-            setChatReady(false); // Mark as not ready until server confirms
-            const switchChatMessage = {
+            const chatId = currentChatIdRef.current;
+            if (!chatId) return;
+            console.log('Tools ready after reconnect, re-establishing chat:', chatId);
+            setChatReady(false);
+            socket.current.send(JSON.stringify({
               type: 'switch_chat',
-              data: {
-                chat_id: currentChatId
-              },
-            };
-            socket.current.send(JSON.stringify(switchChatMessage));
+              data: { chat_id: chatId },
+            }));
           }
-        }, 100); // Check every 100ms
-        
-        // Clear interval after 10 seconds to avoid memory leak
-        setTimeout(() => clearInterval(recheckInterval), 10000);
+        }, 100);
+        setTimeout(() => clearInterval(recheckInterval), 30000);
       }
     };
 
@@ -795,6 +801,7 @@ function App({ onThemeChange }) {
           // Tools are ready, hide splash screen
           console.log('Tools ready, session ready for chats');
           setToolsReady(true);
+          toolsReadyRef.current = true;
           setTotalTools(data.data.tools_loaded);
           
           // Refetch resources and prompts now that tools are loaded
@@ -819,9 +826,20 @@ function App({ onThemeChange }) {
             }
           };
           refetchResourcesAndPrompts();
+
+          // Re-bind an open chat after reconnect / ready (covers stale-closure cases).
+          const chatToResume = currentChatIdRef.current;
+          if (chatToResume && socket.current?.readyState === WebSocket.OPEN) {
+            console.log('Ready received with active chat, sending switch_chat:', chatToResume);
+            setChatReady(false);
+            socket.current.send(JSON.stringify({
+              type: 'switch_chat',
+              data: { chat_id: chatToResume },
+            }));
+          }
           
           // If there's a pending message, create a chat and send it
-          if (pendingMessage && !currentChatId) {
+          if (pendingMessage && !currentChatIdRef.current) {
             console.log('Tools ready, creating chat for pending message');
             handleNewChat();
           }

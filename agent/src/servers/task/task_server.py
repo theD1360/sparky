@@ -92,7 +92,7 @@ class AgentLoop:
         )
 
         # Initialize persistent AgentOrchestrator instance for task execution
-        model_name = os.getenv("AGENT_MODEL", "gemini-2.0-flash")
+        model_name = os.getenv("AGENT_MODEL", "gemini-2.5-flash")
         config = ProviderConfig(model_name=model_name)
         provider = GeminiProvider(config)
 
@@ -325,7 +325,7 @@ I will avoid duplicating prior work, and I will update my knowledge graph upon c
                 logger.info(
                     f"Creating bot instance for task {task_id} with chat_id={chat_id}, user={task_user_id}"
                 )
-                model_name = os.getenv("AGENT_MODEL", "gemini-2.0-flash")
+                model_name = os.getenv("AGENT_MODEL", "gemini-2.5-flash")
                 config = ProviderConfig(model_name=model_name)
                 provider = GeminiProvider(config)
 

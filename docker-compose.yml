@@ -44,7 +44,7 @@ services:
     environment:
       - PYTHONPATH=/app/agent/src
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - AGENT_MODEL=${AGENT_MODEL:-gemini-2.0-flash}
+      - AGENT_MODEL=${AGENT_MODEL:-gemini-2.5-flash}
       - SPARKY_SUMMARY_TOKEN_THRESHOLD=${SPARKY_SUMMARY_TOKEN_THRESHOLD:-0.85}
       # Comma-separated UI origins allowed to call the API (empty = localhost:3000 defaults)
       - API_CORS_ORIGINS=${API_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}

@@ -106,6 +106,8 @@ class ConnectionManager:
         self.active_connections: Dict[str, WebSocket] = {}
         # user_id -> LangChainToolchain instance (one per websocket connection)
         self.langchain_toolchains: Dict[str, LangChainToolchain] = {}
+        # user_id -> background MCP discovery task
+        self._mcp_load_tasks: Dict[str, asyncio.Task] = {}
         # user_id -> tools initialized flag
         self.tools_initialized: Dict[str, bool] = {}
         self.session_timeout = timedelta(minutes=session_timeout_minutes)
@@ -128,16 +130,33 @@ class ConnectionManager:
             self.tools_initialized.get(user_id, False)
             and user_id in self.langchain_toolchains
         ):
-            logger.info(
-                f"[{user_id}] Tools already initialized for user, reusing existing toolchain"
-            )
-            return self.langchain_toolchains[user_id], None
+            existing = self.langchain_toolchains[user_id]
+            cached = getattr(existing, "_cached_tools", None)
+            load_task = self._mcp_load_tasks.get(user_id)
+            load_in_flight = load_task is not None and not load_task.done()
+            # Reload when a prior discovery was cancelled/failed before caching tools.
+            if not load_in_flight and (cached is None or len(cached) == 0):
+                logger.warning(
+                    f"[{user_id}] Existing toolchain has no usable tools "
+                    f"(cached={None if cached is None else len(cached)}); "
+                    "clearing and reloading MCP servers"
+                )
+                self.tools_initialized.pop(user_id, None)
+                self.langchain_toolchains.pop(user_id, None)
+            else:
+                logger.info(
+                    f"[{user_id}] Tools already initialized for user, reusing existing toolchain"
+                )
+                return existing, None
 
         logger.info(f"[{user_id}] Initializing tools for websocket connection...")
 
         # Define progress callback to send updates to client
         async def progress_callback(server_name: str, status: str, message: str):
             """Send tool loading progress to WebSocket client."""
+            # Drop updates if this socket is gone / replaced.
+            if self.active_connections.get(user_id) is not websocket:
+                return
             try:
                 await websocket.send_text(
                     WSMessage(
@@ -153,7 +172,14 @@ class ConnectionManager:
                 if status == "loading":
                     await asyncio.sleep(0.05)
             except Exception as e:
-                logger.error(f"[{user_id}] Error sending progress update: {e}")
+                # Closed sockets are expected when discovery outlives the connection.
+                err = str(e).lower()
+                if "close" in err or "disconnect" in err or not err.strip():
+                    logger.debug(
+                        f"[{user_id}] Skipping progress update (socket closed): {e}"
+                    )
+                else:
+                    logger.error(f"[{user_id}] Error sending progress update: {e}")
 
         try:
             # Create new LangChainToolchain for this websocket connection
@@ -168,21 +194,57 @@ class ConnectionManager:
                 return None, error
 
             if toolchain:
-                # Store toolchain for this user
+                # Store toolchain for this user immediately so the socket can become
+                # ready without waiting on slow stdio MCP cold-starts (polywatch hang lesson).
                 self.langchain_toolchains[user_id] = toolchain
                 self.tools_initialized[user_id] = True
 
-                # Get tool count by loading tools
-                tools = await toolchain.get_langchain_tools()
-                tools_count = len(tools)
-                logger.info(
-                    f"[{user_id}] Tools initialized successfully: {tools_count} tool(s) from {len(toolchain.client.connections)} server(s)"
+                # Cancel any previous in-flight discovery for this user.
+                existing = self._mcp_load_tasks.pop(user_id, None)
+                if existing and not existing.done():
+                    existing.cancel()
+
+                async def _load_tools_background() -> None:
+                    try:
+                        tools = await toolchain.get_langchain_tools(
+                            on_progress=progress_callback
+                        )
+                        logger.info(
+                            f"[{user_id}] Tools initialized successfully: "
+                            f"{len(tools)} tool(s) from "
+                            f"{len(toolchain.client.connections)} server(s)"
+                        )
+                        await progress_callback(
+                            "all",
+                            "loaded",
+                            f"Loaded {len(tools)} tool(s)",
+                        )
+                    except asyncio.CancelledError:
+                        logger.info(f"[{user_id}] Background MCP tool load cancelled")
+                        raise
+                    except Exception as load_exc:
+                        logger.error(
+                            f"[{user_id}] Background MCP tool load failed: {load_exc}"
+                        )
+                        await progress_callback(
+                            "all",
+                            "error",
+                            f"Tool load failed: {load_exc}",
+                        )
+                    finally:
+                        if self._mcp_load_tasks.get(user_id) is asyncio.current_task():
+                            self._mcp_load_tasks.pop(user_id, None)
+
+                task = asyncio.create_task(
+                    _load_tools_background(),
+                    name=f"mcp-load-{user_id}",
                 )
-
-                # Start agent loop on first toolchain initialization if enabled
-                # Note: AgentLoop may need to be updated to work with LangChainToolchain
-                # await self._maybe_start_agent_loop(toolchain)
-
+                self._mcp_load_tasks[user_id] = task
+                logger.info(
+                    f"[{user_id}] MCP tool discovery started in background "
+                    f"({len(toolchain.client.connections)} server(s)); "
+                    "WebSocket ready will not wait for completion"
+                )
                 return toolchain, None
             else:
                 error_msg = "Toolchain created but is None"
@@ -531,7 +593,7 @@ class ConnectionManager:
                     logger.warning(f"Failed to send token estimate: {e}")
 
         # Create LLM provider
-        model_name = os.getenv("AGENT_MODEL", "gemini-2.0-flash")
+        model_name = os.getenv("AGENT_MODEL", "gemini-2.5-flash")
         config = ProviderConfig(model_name=model_name)
         provider = GeminiProvider(config)
 
@@ -634,7 +696,7 @@ class ConnectionManager:
         if user_id in self.bot_sessions and chat_id in self.bot_sessions[user_id]:
             bot = self.bot_sessions[user_id][chat_id]
             # Check if chat is initialized - if not, initialize it
-            if not bot.chat:
+            if not getattr(bot, "_chat_id", None):
                 logger.info(
                     f"[{user_id}:{chat_id}] Bot exists but chat not initialized, initializing..."
                 )
@@ -667,15 +729,14 @@ class ConnectionManager:
         Args:
             user_id: User identifier
         """
+        # Do not cancel MCP discovery on disconnect — stdio cold-start is expensive and
+        # reconnects should reuse an in-flight or completed load. Only drop the socket.
         if user_id in self.active_connections:
             del self.active_connections[user_id]
             self.last_activity[user_id] = datetime.utcnow()
-            # Cleanup langchain toolchain for this user
             if user_id in self.langchain_toolchains:
-                # Note: cleanup is async, but we're in sync method
-                # The toolchain will be cleaned up on next connection or server shutdown
                 logger.info(
-                    f"[{user_id}] WebSocket disconnected (toolchain will be cleaned up)"
+                    f"[{user_id}] WebSocket disconnected (toolchain preserved for reconnect)"
                 )
             logger.info(f"[{user_id}] WebSocket disconnected (bot instances preserved)")
 
@@ -913,7 +974,7 @@ async def _analyze_file(
         from sparky.providers import GeminiProvider, ProviderConfig
 
         # Use lightweight model for analysis
-        config = ProviderConfig(model_name="gemini-2.0-flash-exp")
+        config = ProviderConfig(model_name=os.getenv("AGENT_MODEL", "gemini-2.5-flash"))
         provider = GeminiProvider(config)
         provider.initialize_model()  # Initialize the model
 
@@ -1392,13 +1453,13 @@ async def websocket_endpoint(
             await websocket.close()
             return
 
-        # Send ready message
+        # Send ready message promptly; MCP discovery continues in the background.
         tools_loaded = 0
-        if toolchain:
-            tools = await toolchain.get_langchain_tools()
-            tools_loaded = len(tools)
+        if toolchain and toolchain._cached_tools is not None:
+            tools_loaded = len(toolchain._cached_tools)
         logger.info(
-            f"[{user_id}] User ready with {tools_loaded} tool(s), sending ready message"
+            f"[{user_id}] User ready with {tools_loaded} tool(s) cached "
+            f"(discovery may still be in progress), sending ready message"
         )
         await websocket.send_text(
             WSMessage(
@@ -1609,29 +1670,44 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                     )
                     current_chat_id = payload.chat_id
 
-                    # Send chat_ready message
-                    await websocket.send_text(
-                        WSMessage(
-                            type=MessageType.chat_ready,
-                            data=ChatReadyPayload(
+                    # Prefer the currently-active socket — start_chat can outlive a reconnect.
+                    active = _connection_manager.active_connections.get(user_id)
+                    send_ws = active or websocket
+                    try:
+                        await send_ws.send_text(
+                            WSMessage(
+                                type=MessageType.chat_ready,
+                                data=ChatReadyPayload(
+                                    chat_id=payload.chat_id,
+                                    is_new=True,
+                                ),
+                                user_id=user_id,
                                 chat_id=payload.chat_id,
-                                is_new=True,  # Could check if chat already existed
-                            ),
-                            user_id=user_id,
-                            chat_id=payload.chat_id,
-                        ).to_text()
-                    )
-                    logger.info(f"[{user_id}:{current_chat_id}] Chat ready")
+                            ).to_text()
+                        )
+                        logger.info(f"[{user_id}:{current_chat_id}] Chat ready")
+                    except Exception as send_exc:
+                        logger.warning(
+                            f"[{user_id}:{current_chat_id}] Failed to send chat_ready "
+                            f"(client may have reconnected): {send_exc}"
+                        )
                 except Exception as e:
                     logger.error(f"[{user_id}] Error starting chat: {e}")
-                    await websocket.send_text(
-                        WSMessage(
-                            type=MessageType.error,
-                            data=ErrorPayload(message=f"Error starting chat: {e}"),
-                            user_id=user_id,
-                            chat_id=current_chat_id,
-                        ).to_text()
-                    )
+                    active = _connection_manager.active_connections.get(user_id)
+                    send_ws = active or websocket
+                    try:
+                        await send_ws.send_text(
+                            WSMessage(
+                                type=MessageType.error,
+                                data=ErrorPayload(message=f"Error starting chat: {e}"),
+                                user_id=user_id,
+                                chat_id=current_chat_id,
+                            ).to_text()
+                        )
+                    except Exception as send_exc:
+                        logger.warning(
+                            f"[{user_id}] Failed to send start_chat error: {send_exc}"
+                        )
 
             elif ws_msg.type == MessageType.switch_chat:
                 # Switch to a different chat
@@ -1647,29 +1723,43 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                     )
                     current_chat_id = payload.chat_id
 
-                    # Send chat_ready message
-                    await websocket.send_text(
-                        WSMessage(
-                            type=MessageType.chat_ready,
-                            data=ChatReadyPayload(
+                    active = _connection_manager.active_connections.get(user_id)
+                    send_ws = active or websocket
+                    try:
+                        await send_ws.send_text(
+                            WSMessage(
+                                type=MessageType.chat_ready,
+                                data=ChatReadyPayload(
+                                    chat_id=payload.chat_id,
+                                    is_new=False,
+                                ),
+                                user_id=user_id,
                                 chat_id=payload.chat_id,
-                                is_new=False,
-                            ),
-                            user_id=user_id,
-                            chat_id=payload.chat_id,
-                        ).to_text()
-                    )
-                    logger.info(f"[{user_id}:{current_chat_id}] Switched to chat")
+                            ).to_text()
+                        )
+                        logger.info(f"[{user_id}:{current_chat_id}] Switched to chat")
+                    except Exception as send_exc:
+                        logger.warning(
+                            f"[{user_id}:{current_chat_id}] Failed to send chat_ready "
+                            f"after switch: {send_exc}"
+                        )
                 except Exception as e:
                     logger.error(f"[{user_id}] Error switching chat: {e}")
-                    await websocket.send_text(
-                        WSMessage(
-                            type=MessageType.error,
-                            data=ErrorPayload(message=f"Error switching chat: {e}"),
-                            user_id=user_id,
-                            chat_id=current_chat_id,
-                        ).to_text()
-                    )
+                    active = _connection_manager.active_connections.get(user_id)
+                    send_ws = active or websocket
+                    try:
+                        await send_ws.send_text(
+                            WSMessage(
+                                type=MessageType.error,
+                                data=ErrorPayload(message=f"Error switching chat: {e}"),
+                                user_id=user_id,
+                                chat_id=current_chat_id,
+                            ).to_text()
+                        )
+                    except Exception as send_exc:
+                        logger.warning(
+                            f"[{user_id}] Failed to send switch_chat error: {send_exc}"
+                        )
 
             elif ws_msg.type == MessageType.message:
                 # Regular chat message

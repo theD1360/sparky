@@ -749,16 +749,28 @@ class AgentOrchestrator:
 
             user_node = await self.user_service.get_user(user_id)
             if not user_node:
-                raise ValueError(
-                    f"User {user_id} not found in knowledge graph. "
-                    "User should be created during registration."
+                logger.warning(
+                    "User %s not found in knowledge graph; creating placeholder user node",
+                    user_id,
                 )
+                try:
+                    await self.user_service.create_user(
+                        user_id=user_id,
+                        username=user_id,
+                    )
+                    user_node = await self.user_service.get_user(user_id)
+                except Exception as create_exc:
+                    logger.warning(
+                        "Could not create placeholder user node for %s: %s",
+                        user_id,
+                        create_exc,
+                    )
 
-            logger.debug("Retrieved user node for user %s", user_id)
+            if user_node:
+                logger.debug("Retrieved user node for user %s", user_id)
 
-            # Get or create Chat node if chat_id is provided
+            # Get or create Chat node if chat_id is provided (even without a graph user)
             if chat_id:
-                # Use chat_service to get or create the chat
                 display_name = chat_name or f"Chat {chat_id[:8]}"
                 chat_node = await self.chat_service.get_or_create_chat(
                     chat_id=chat_id,
@@ -770,16 +782,14 @@ class AgentOrchestrator:
                     logger.info(
                         "Got or created Chat node %s for user %s", chat_id, user_id
                     )
-                    # Ensure the chat is linked to the user
-                    # (link_chat handles checking if edge already exists)
-                    link_success = await self.chat_service.link_chat(
-                        chat_id=chat_id, user_id=user_id
-                    )
-                    if not link_success:
-                        logger.warning(
-                            "Failed to link chat %s to user %s", chat_id, user_id
+                    if user_node:
+                        link_success = await self.chat_service.link_chat(
+                            chat_id=chat_id, user_id=user_id
                         )
-
+                        if not link_success:
+                            logger.warning(
+                                "Failed to link chat %s to user %s", chat_id, user_id
+                            )
                 else:
                     logger.warning("Failed to get or create chat node %s", chat_id)
 

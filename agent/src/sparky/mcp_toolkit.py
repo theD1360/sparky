@@ -138,8 +138,13 @@ async def load_mcp_langchain_tools_async(
     server_names: Optional[List[str]] = None,
     tool_interceptors: Optional[list] = None,
 ) -> List[BaseTool]:
-    """Load LangChain tools from configured MCP servers."""
-    from langchain_mcp_adapters.client import MultiServerMCPClient
+    """Load LangChain tools from configured MCP servers.
+
+    Uses per-server discovery with timeouts (via ``LangChainToolchain``) so one
+    bad/slow server cannot hang the whole load the way a single ``get_tools()``
+    ``asyncio.gather`` does.
+    """
+    from sparky.langchain_toolchain import LangChainToolchain
 
     connections = mcp_config_to_connections(config_path, server_names=server_names)
     if not connections:
@@ -151,15 +156,11 @@ async def load_mcp_langchain_tools_async(
         ", ".join(sorted(connections.keys())),
     )
 
-    client_kwargs: dict[str, Any] = {}
-    prefix = mcp_tool_name_prefix()
-    if prefix:
-        client_kwargs["tool_name_prefix"] = prefix
-    if tool_interceptors:
-        client_kwargs["tool_interceptors"] = tool_interceptors
-
-    client = MultiServerMCPClient(connections, **client_kwargs)
-    tools = await client.get_tools()
+    toolchain = LangChainToolchain.from_connections(
+        connections,
+        tool_interceptors=tool_interceptors,
+    )
+    tools = await toolchain.get_langchain_tools(gemini_safe=False)
     n_before = len(tools)
     tools = _apply_allowlist(tools)
     logger.info(

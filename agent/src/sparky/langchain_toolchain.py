@@ -1,8 +1,12 @@
 """LangChain toolchain wrapper for MCP servers using langchain-mcp-adapters."""
 
+from __future__ import annotations
+
+import asyncio
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+import time
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
 from badmcp.config import MCPServerConfig
 from langchain_core.tools import BaseTool
@@ -15,6 +19,17 @@ from sparky.mcp_toolkit import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Per-server discovery timeout (stdio cold start can be slow; unbounded waits look hung).
+_DEFAULT_SERVER_LOAD_TIMEOUT_S = float(
+    os.getenv("SPARKY_MCP_SERVER_LOAD_TIMEOUT_SECONDS", "120")
+)
+# Cap parallel stdio startups — launching all servers at once thrashs and times out.
+_DEFAULT_SERVER_LOAD_CONCURRENCY = max(
+    1, int(os.getenv("SPARKY_MCP_SERVER_LOAD_CONCURRENCY", "2"))
+)
+
+ProgressCallback = Callable[[str, str, str], Awaitable[None]]
 
 # Lazy import - only import when actually needed
 if TYPE_CHECKING:
@@ -67,6 +82,7 @@ class LangChainToolchain:
         """
         self.client = mcp_client
         self._cached_tools: Optional[List[BaseTool]] = None
+        self._load_lock = asyncio.Lock()
 
     @classmethod
     def from_mcp_config(
@@ -151,54 +167,151 @@ class LangChainToolchain:
         client = MultiServerMCPClient(connections=connections, **client_kwargs)
         return cls(client)
 
+    async def _load_one_server_tools(
+        self,
+        name: str,
+        *,
+        timeout_s: float,
+        on_progress: Optional[ProgressCallback] = None,
+    ) -> List[BaseTool]:
+        """Load tools from one MCP server with a hard timeout."""
+        if on_progress:
+            await on_progress(name, "loading", f"Loading tools from {name}…")
+        started = time.monotonic()
+        try:
+            server_tools = await asyncio.wait_for(
+                self.client.get_tools(server_name=name),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError as exc:
+            if on_progress:
+                await on_progress(
+                    name,
+                    "error",
+                    f"Timed out loading {name} after {timeout_s:.0f}s",
+                )
+            raise TimeoutError(
+                f"MCP server {name!r} tool load timed out after {timeout_s:.0f}s"
+            ) from exc
+        except Exception:
+            if on_progress:
+                await on_progress(name, "error", f"Failed to load {name}")
+            raise
+
+        elapsed = time.monotonic() - started
+        logger.info(
+            "Loaded %d tool(s) from MCP server %s in %.1fs",
+            len(server_tools),
+            name,
+            elapsed,
+        )
+        if on_progress:
+            await on_progress(
+                name,
+                "loaded",
+                f"Loaded {len(server_tools)} tool(s) from {name}",
+            )
+        return list(server_tools)
+
     async def get_langchain_tools(
         self,
         server_name: Optional[str] = None,
         *,
         gemini_safe: bool = True,
+        timeout_s: Optional[float] = None,
+        on_progress: Optional[ProgressCallback] = None,
     ) -> List[BaseTool]:
-        """Get all LangChain tools from MCP servers.
+        """Get LangChain tools from MCP servers.
 
-        Loads servers individually so one failing server (e.g. MetaMCP 404)
-        does not abort tool discovery for the rest.
+        Loads servers in parallel with per-server timeouts so one slow/broken
+        stdio process cannot hang discovery (polywatch hang lesson). Failures are
+        skipped; remaining servers still contribute tools.
 
         Args:
-            server_name: Optional server name to get tools from. If None, gets tools from all servers.
-            gemini_safe: When True, strip JSON Schema noise for Gemini compatibility.
-
-        Returns:
-            List of LangChain BaseTool instances
+            server_name: Optional single server. If None, loads all connections.
+            gemini_safe: When True, strip JSON Schema noise for Gemini.
+            timeout_s: Per-server timeout (default SPARKY_MCP_SERVER_LOAD_TIMEOUT_SECONDS).
+            on_progress: Optional async callback(server, status, message).
         """
         if server_name is None and self._cached_tools is not None:
             return self._cached_tools
 
+        per_server_timeout = (
+            _DEFAULT_SERVER_LOAD_TIMEOUT_S if timeout_s is None else float(timeout_s)
+        )
+
+        # Single-flight so background WS preload and start_chat don't double-load.
+        if server_name is None:
+            async with self._load_lock:
+                if self._cached_tools is not None:
+                    return self._cached_tools
+                return await self._discover_tools(
+                    server_name=None,
+                    gemini_safe=gemini_safe,
+                    per_server_timeout=per_server_timeout,
+                    on_progress=on_progress,
+                )
+
+        return await self._discover_tools(
+            server_name=server_name,
+            gemini_safe=gemini_safe,
+            per_server_timeout=per_server_timeout,
+            on_progress=on_progress,
+        )
+
+    async def _discover_tools(
+        self,
+        *,
+        server_name: Optional[str],
+        gemini_safe: bool,
+        per_server_timeout: float,
+        on_progress: Optional[ProgressCallback],
+    ) -> List[BaseTool]:
         if server_name is not None:
-            tools = await self.client.get_tools(server_name=server_name)
+            tools = await self._load_one_server_tools(
+                server_name,
+                timeout_s=per_server_timeout,
+                on_progress=on_progress,
+            )
         else:
+            names = list(self.client.connections.keys())
             tools = []
             failed: List[str] = []
-            for name in list(self.client.connections.keys()):
-                try:
-                    server_tools = await self.client.get_tools(server_name=name)
-                    tools.extend(server_tools)
-                    logger.info(
-                        "Loaded %d tool(s) from MCP server %s",
-                        len(server_tools),
-                        name,
-                    )
-                except Exception as e:
+            semaphore = asyncio.Semaphore(_DEFAULT_SERVER_LOAD_CONCURRENCY)
+
+            async def _safe_load(name: str) -> tuple[str, List[BaseTool] | Exception]:
+                async with semaphore:
+                    try:
+                        loaded = await self._load_one_server_tools(
+                            name,
+                            timeout_s=per_server_timeout,
+                            on_progress=on_progress,
+                        )
+                        return name, loaded
+                    except Exception as exc:
+                        return name, exc
+
+            results = await asyncio.gather(
+                *[_safe_load(name) for name in names],
+                return_exceptions=False,
+            )
+            for name, outcome in results:
+                if isinstance(outcome, Exception):
                     failed.append(name)
                     logger.warning(
                         "Skipping MCP server %s during tool load: %s: %s",
                         name,
-                        type(e).__name__,
-                        e,
+                        type(outcome).__name__,
+                        outcome,
                     )
+                else:
+                    tools.extend(outcome)
+
             if failed:
                 logger.warning(
                     "MCP tool load completed with %d/%d server(s) skipped: %s",
                     len(failed),
-                    len(self.client.connections),
+                    len(names),
                     ", ".join(failed),
                 )
 
