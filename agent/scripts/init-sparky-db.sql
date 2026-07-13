@@ -1,6 +1,6 @@
 -- Initialize Sparky database
 -- This script runs automatically when the PostgreSQL container starts for the first time
--- It creates a separate database for Sparky so it doesn't share data with MetaMCP
+-- It creates sparky_db on the shared Postgres instance (volume: postgres_data)
 --
 -- The database name is controlled by the SPARKY_DB environment variable (default: sparky_db)
 
@@ -12,7 +12,7 @@
 SELECT 'CREATE DATABASE sparky_db'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'sparky_db')\gexec
 
--- The database user (metamcp_user by default) already has access via the shared PostgreSQL instance
+-- The database user already has access via the shared PostgreSQL instance
 -- No additional grants needed since the user is already created by the main POSTGRES_DB
 
 -- Connect to sparky_db and enable pgvector extension
@@ -20,4 +20,3 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'sparky_db')\gexec
 
 -- Enable pgvector extension for vector similarity search
 CREATE EXTENSION IF NOT EXISTS vector;
-

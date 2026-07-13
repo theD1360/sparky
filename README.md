@@ -46,7 +46,7 @@ Sparky is an autonomous AI assistant powered by Google's Gemini models, designed
 4. **Access Sparky**
    - **Web UI**: Open http://localhost:3000
    - **API Server**: http://localhost:8000
-   - **MetaMCP UI**: http://localhost:12008
+   - **Admin → MCP Servers**: manage tool servers from the UI
 
 That's it! Sparky is now running and ready to chat. 🎉
 
@@ -56,8 +56,7 @@ The Docker Compose setup starts several services:
 
 - **sparky-server**: FastAPI backend with chat API and integrated agent loop
 - **sparky-ui-dev**: React web interface for interacting with Sparky
-- **postgres**: PostgreSQL database with pgvector extension
-- **metamcp**: Model Context Protocol server for tool integration
+- **sparky-pg**: PostgreSQL database with pgvector extension (`sparky_db`)
 
 ## 🛠️ Development Setup
 

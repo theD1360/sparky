@@ -32,6 +32,11 @@ import {
   DialogContent,
   DialogActions,
   Tooltip,
+  FormControl,
+  FormControlLabel,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import {
   Refresh as RefreshIcon,
@@ -53,6 +58,7 @@ function Admin() {
   const { getAuthHeaders } = useAuth();
   const [currentTab, setCurrentTab] = useState(0);
   const [mcpServers, setMcpServers] = useState([]);
+  const [mcpConfigPath, setMcpConfigPath] = useState('');
   const [envVars, setEnvVars] = useState([]);
   const [systemInfo, setSystemInfo] = useState(null);
   const [cacheStatus, setCacheStatus] = useState(null);
@@ -64,6 +70,21 @@ function Admin() {
   const [showAddVar, setShowAddVar] = useState(false);
   const [newVarKey, setNewVarKey] = useState('');
   const [newVarValue, setNewVarValue] = useState('');
+  const [showMcpDialog, setShowMcpDialog] = useState(false);
+  const [editingMcpServer, setEditingMcpServer] = useState(null);
+  const [mcpForm, setMcpForm] = useState({
+    name: '',
+    transportMode: 'stdio',
+    command: 'python',
+    argsText: '',
+    url: '',
+    type: 'sse',
+    transport: '',
+    bearerToken: '',
+    description: '',
+    envText: 'PYTHONPATH=${PYTHONPATH:-/app/agent/src}',
+    disabled: false,
+  });
   
   // User management state
   const [users, setUsers] = useState([]);
@@ -81,6 +102,7 @@ function Admin() {
 
   // Load data on mount
   useEffect(() => {
+    loadMcpServers();
     loadToolCacheStatus();
     loadEnvVars();
     loadSystemInfo();
@@ -88,7 +110,104 @@ function Admin() {
       loadUsers();
     }
   }, [currentTab]);
-  
+
+  const emptyMcpForm = () => ({
+    name: '',
+    transportMode: 'stdio',
+    command: 'python',
+    argsText: '',
+    url: '',
+    type: 'sse',
+    transport: '',
+    bearerToken: '',
+    description: '',
+    envText: 'PYTHONPATH=${PYTHONPATH:-/app/agent/src}',
+    disabled: false,
+  });
+
+  const serverToForm = (server) => {
+    const isRemote = Boolean(server.url);
+    const envText = server.env
+      ? Object.entries(server.env).map(([k, v]) => `${k}=${v}`).join('\n')
+      : '';
+    return {
+      name: server.name || '',
+      transportMode: isRemote ? 'remote' : 'stdio',
+      command: server.command || 'python',
+      argsText: Array.isArray(server.args) ? server.args.join('\n') : '',
+      url: server.url || '',
+      type: server.type || 'sse',
+      transport: server.transport || '',
+      bearerToken: server.bearerToken || '',
+      description: server.description || '',
+      envText,
+      disabled: Boolean(server.disabled),
+    };
+  };
+
+  const parseEnvText = (text) => {
+    const env = {};
+    String(text || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .forEach((line) => {
+        const idx = line.indexOf('=');
+        if (idx > 0) {
+          env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+        }
+      });
+    return Object.keys(env).length ? env : undefined;
+  };
+
+  const formToPayload = (form, { includeName = false } = {}) => {
+    const payload = {
+      description: form.description || undefined,
+      disabled: Boolean(form.disabled),
+      env: parseEnvText(form.envText),
+    };
+    if (includeName) {
+      payload.name = form.name.trim();
+    }
+    if (form.transportMode === 'stdio') {
+      payload.command = form.command.trim();
+      payload.args = String(form.argsText || '')
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+    } else {
+      payload.url = form.url.trim();
+      if (form.transport) payload.transport = form.transport.trim();
+      if (form.type) payload.type = form.type.trim();
+      if (form.bearerToken && !String(form.bearerToken).startsWith('***')) {
+        payload.bearerToken = form.bearerToken;
+      } else if (form.bearerToken) {
+        payload.bearerToken = form.bearerToken; // backend keeps existing if masked
+      }
+    }
+    return payload;
+  };
+
+  const loadMcpServers = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('/api/admin/mcp/servers', {
+        headers: getAuthHeaders(),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || `API returned ${response.status}`);
+      }
+      const data = await response.json();
+      setMcpServers(data.servers || []);
+      setMcpConfigPath(data.config_path || '');
+    } catch (error) {
+      console.error('Error loading MCP servers:', error);
+      alert(`Failed to load MCP servers: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
   // Load users when tab is selected
   const loadUsers = async () => {
     try {
@@ -234,24 +353,13 @@ function Admin() {
 
   const loadToolCacheStatus = async () => {
     try {
-      setLoading(true);
-      const response = await fetch('/api/admin/tool_cache_status');
+      const response = await fetch('/api/admin/tool_cache_status', {
+        headers: getAuthHeaders(),
+      });
       const data = await response.json();
       setCacheStatus(data);
-      
-      // Transform cache data into server list
-      if (data.servers) {
-        const servers = Object.entries(data.servers).map(([name, info]) => ({
-          name,
-          ...info,
-          status: info.expired ? 'expired' : 'active',
-        }));
-        setMcpServers(servers);
-      }
     } catch (error) {
       console.error('Error loading cache status:', error);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -313,20 +421,129 @@ function Admin() {
     try {
       const response = await fetch(`/api/admin/servers/${serverName}/reload`, {
         method: 'POST',
+        headers: getAuthHeaders(),
       });
       const data = await response.json();
       
       if (data.success) {
-        console.log('Server reloaded:', serverName);
-        // Reload cache status
+        await loadMcpServers();
         await loadToolCacheStatus();
       } else {
-        console.error('Failed to reload server:', data.message);
         alert(`Failed to reload server: ${data.message}`);
       }
     } catch (error) {
       console.error('Error reloading server:', error);
       alert(`Error reloading server: ${error.message}`);
+    }
+  };
+
+  const handleOpenCreateMcp = () => {
+    setEditingMcpServer(null);
+    setMcpForm(emptyMcpForm());
+    setShowMcpDialog(true);
+  };
+
+  const handleOpenEditMcp = (server) => {
+    setEditingMcpServer(server);
+    setMcpForm(serverToForm(server));
+    setShowMcpDialog(true);
+  };
+
+  const handleSaveMcpServer = async () => {
+    try {
+      const isEdit = Boolean(editingMcpServer);
+      const name = (isEdit ? editingMcpServer.name : mcpForm.name).trim();
+      if (!name) {
+        alert('Server name is required');
+        return;
+      }
+      const payload = formToPayload(mcpForm, { includeName: !isEdit });
+      const url = isEdit
+        ? `/api/admin/mcp/servers/${encodeURIComponent(name)}`
+        : '/api/admin/mcp/servers';
+      const response = await fetch(url, {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: {
+          ...getAuthHeaders(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || `Save failed (${response.status})`);
+      }
+      setShowMcpDialog(false);
+      await loadMcpServers();
+      await loadToolCacheStatus();
+    } catch (error) {
+      console.error('Error saving MCP server:', error);
+      alert(`Failed to save MCP server: ${error.message}`);
+    }
+  };
+
+  const handleToggleMcpDisabled = async (server) => {
+    try {
+      const response = await fetch(
+        `/api/admin/mcp/servers/${encodeURIComponent(server.name)}/disabled`,
+        {
+          method: 'PATCH',
+          headers: {
+            ...getAuthHeaders(),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ disabled: !server.disabled }),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || `Update failed (${response.status})`);
+      }
+      await loadMcpServers();
+    } catch (error) {
+      console.error('Error toggling MCP server:', error);
+      alert(`Failed to update server: ${error.message}`);
+    }
+  };
+
+  const handleDeleteMcpServer = async (server) => {
+    if (!window.confirm(`Delete MCP server "${server.name}"?`)) return;
+    try {
+      const response = await fetch(
+        `/api/admin/mcp/servers/${encodeURIComponent(server.name)}`,
+        {
+          method: 'DELETE',
+          headers: getAuthHeaders(),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || `Delete failed (${response.status})`);
+      }
+      await loadMcpServers();
+      await loadToolCacheStatus();
+    } catch (error) {
+      console.error('Error deleting MCP server:', error);
+      alert(`Failed to delete server: ${error.message}`);
+    }
+  };
+
+  const handleReloadAllMcp = async () => {
+    try {
+      const response = await fetch('/api/admin/mcp/reload', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || `Reload failed (${response.status})`);
+      }
+      await loadMcpServers();
+      await loadToolCacheStatus();
+      alert(data.message || 'Toolchains reloaded');
+    } catch (error) {
+      console.error('Error reloading MCP toolchains:', error);
+      alert(`Failed to reload: ${error.message}`);
     }
   };
 
@@ -402,16 +619,27 @@ function Admin() {
         {currentTab === 0 && (
           <Box>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                MCP Tool Servers
-              </Typography>
-              <Button
-                startIcon={<RefreshIcon />}
-                onClick={loadToolCacheStatus}
-                disabled={loading}
-              >
-                Refresh Status
-              </Button>
+              <Box>
+                <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                  MCP Servers
+                </Typography>
+                {mcpConfigPath && (
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    Config: {mcpConfigPath}
+                  </Typography>
+                )}
+              </Box>
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <Button startIcon={<RefreshIcon />} onClick={handleReloadAllMcp} disabled={loading}>
+                  Reload Tools
+                </Button>
+                <Button startIcon={<RefreshIcon />} onClick={loadMcpServers} disabled={loading}>
+                  Refresh
+                </Button>
+                <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreateMcp}>
+                  Add Server
+                </Button>
+              </Box>
             </Box>
 
             {loading ? (
@@ -423,20 +651,19 @@ function Admin() {
                 <Table>
                   <TableHead>
                     <TableRow>
-                      <TableCell><strong>Server Name</strong></TableCell>
+                      <TableCell><strong>Name</strong></TableCell>
+                      <TableCell><strong>Transport</strong></TableCell>
+                      <TableCell><strong>Target</strong></TableCell>
                       <TableCell><strong>Status</strong></TableCell>
-                      <TableCell><strong>Age</strong></TableCell>
-                      <TableCell><strong>TTL</strong></TableCell>
-                      <TableCell><strong>Load Count</strong></TableCell>
                       <TableCell align="right"><strong>Actions</strong></TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {mcpServers.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} align="center">
+                        <TableCell colSpan={5} align="center">
                           <Typography variant="body2" sx={{ color: 'text.secondary', py: 2 }}>
-                            No MCP servers loaded. Connect to chat to initialize servers.
+                            No MCP servers configured. Add a stdio or remote server to get started.
                           </Typography>
                         </TableCell>
                       </TableRow>
@@ -447,38 +674,64 @@ function Admin() {
                             <Typography variant="body2" sx={{ fontWeight: 600 }}>
                               {server.name}
                             </Typography>
+                            {server.description && (
+                              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                                {server.description}
+                              </Typography>
+                            )}
                           </TableCell>
                           <TableCell>
                             <Chip
-                              label={server.status}
+                              label={server.url ? (server.transport || server.type || 'http') : 'stdio'}
                               size="small"
-                              color={server.expired ? 'warning' : 'success'}
-                              sx={{ textTransform: 'capitalize' }}
                             />
                           </TableCell>
                           <TableCell>
-                            <Typography variant="body2">
-                              {formatAge(server.age_minutes)}
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                              {server.url
+                                ? server.url
+                                : `${server.command || ''} ${(server.args || []).join(' ')}`.trim()}
                             </Typography>
                           </TableCell>
                           <TableCell>
-                            <Typography variant="body2">
-                              {server.ttl_minutes} min
-                            </Typography>
-                          </TableCell>
-                          <TableCell>
-                            <Typography variant="body2">
-                              {server.load_count}
-                            </Typography>
+                            <Chip
+                              label={server.disabled ? 'disabled' : 'enabled'}
+                              size="small"
+                              color={server.disabled ? 'default' : 'success'}
+                            />
                           </TableCell>
                           <TableCell align="right">
-                            <Tooltip title="Reload Server">
+                            <FormControlLabel
+                              control={
+                                <Switch
+                                  size="small"
+                                  checked={!server.disabled}
+                                  onChange={() => handleToggleMcpDisabled(server)}
+                                />
+                              }
+                              label=""
+                            />
+                            <Tooltip title="Edit">
+                              <IconButton size="small" onClick={() => handleOpenEditMcp(server)}>
+                                <EditIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Reload toolchains">
                               <IconButton
                                 size="small"
                                 onClick={() => handleRefreshServer(server.name)}
                                 sx={{ color: 'primary.main' }}
                               >
                                 <RefreshIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Delete">
+                              <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => handleDeleteMcpServer(server)}
+                              >
+                                <DeleteIcon fontSize="small" />
                               </IconButton>
                             </Tooltip>
                           </TableCell>
@@ -490,26 +743,125 @@ function Admin() {
               </TableContainer>
             )}
 
-            {/* MCP Server Info Card */}
             <Card sx={{ mt: 3, bgcolor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
               <CardContent>
                 <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
-                  📘 MCP Server Management
+                  MCP Server Management
                 </Typography>
                 <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1 }}>
-                  • MCP servers are loaded lazily when the first client connects
+                  • Add local stdio servers (command + args) or remote HTTP/SSE/streamable HTTP servers
                 </Typography>
                 <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1 }}>
-                  • Each server has a unique TTL to prevent simultaneous reloads
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1 }}>
-                  • Expired servers are automatically reloaded on next connection
+                  • Changes are written to mcp.json and active chat toolchains are reloaded
                 </Typography>
                 <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                  • Use Refresh to force reload a specific server
+                  • Disable a server to keep its config without exposing tools to the agent
                 </Typography>
               </CardContent>
             </Card>
+
+            <Dialog open={showMcpDialog} onClose={() => setShowMcpDialog(false)} maxWidth="sm" fullWidth>
+              <DialogTitle>{editingMcpServer ? 'Edit MCP Server' : 'Add MCP Server'}</DialogTitle>
+              <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
+                <TextField
+                  label="Name"
+                  value={mcpForm.name}
+                  disabled={Boolean(editingMcpServer)}
+                  onChange={(e) => setMcpForm({ ...mcpForm, name: e.target.value })}
+                  fullWidth
+                  required
+                />
+                <FormControl fullWidth>
+                  <InputLabel>Transport</InputLabel>
+                  <Select
+                    label="Transport"
+                    value={mcpForm.transportMode}
+                    onChange={(e) => setMcpForm({ ...mcpForm, transportMode: e.target.value })}
+                  >
+                    <MenuItem value="stdio">stdio (local command)</MenuItem>
+                    <MenuItem value="remote">remote (url)</MenuItem>
+                  </Select>
+                </FormControl>
+                {mcpForm.transportMode === 'stdio' ? (
+                  <>
+                    <TextField
+                      label="Command"
+                      value={mcpForm.command}
+                      onChange={(e) => setMcpForm({ ...mcpForm, command: e.target.value })}
+                      fullWidth
+                    />
+                    <TextField
+                      label="Args (one per line)"
+                      value={mcpForm.argsText}
+                      onChange={(e) => setMcpForm({ ...mcpForm, argsText: e.target.value })}
+                      fullWidth
+                      multiline
+                      minRows={3}
+                      placeholder={'src/tools/knowledge/server.py'}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <TextField
+                      label="URL"
+                      value={mcpForm.url}
+                      onChange={(e) => setMcpForm({ ...mcpForm, url: e.target.value })}
+                      fullWidth
+                      placeholder="http://host:port/mcp"
+                    />
+                    <TextField
+                      label="Type / transport"
+                      value={mcpForm.transport || mcpForm.type}
+                      onChange={(e) =>
+                        setMcpForm({
+                          ...mcpForm,
+                          transport: e.target.value,
+                          type: e.target.value,
+                        })
+                      }
+                      fullWidth
+                      helperText="sse, http, or streamable_http"
+                    />
+                    <TextField
+                      label="Bearer token"
+                      value={mcpForm.bearerToken}
+                      onChange={(e) => setMcpForm({ ...mcpForm, bearerToken: e.target.value })}
+                      fullWidth
+                      type="password"
+                    />
+                  </>
+                )}
+                <TextField
+                  label="Description"
+                  value={mcpForm.description}
+                  onChange={(e) => setMcpForm({ ...mcpForm, description: e.target.value })}
+                  fullWidth
+                />
+                <TextField
+                  label="Env (KEY=value per line)"
+                  value={mcpForm.envText}
+                  onChange={(e) => setMcpForm({ ...mcpForm, envText: e.target.value })}
+                  fullWidth
+                  multiline
+                  minRows={3}
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={!mcpForm.disabled}
+                      onChange={(e) => setMcpForm({ ...mcpForm, disabled: !e.target.checked })}
+                    />
+                  }
+                  label="Enabled"
+                />
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={() => setShowMcpDialog(false)}>Cancel</Button>
+                <Button variant="contained" onClick={handleSaveMcpServer}>
+                  Save
+                </Button>
+              </DialogActions>
+            </Dialog>
           </Box>
         )}
 

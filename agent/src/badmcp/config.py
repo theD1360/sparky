@@ -110,8 +110,10 @@ class MCPConfig:
             "mcp.json",
             ".mcp.json",
             "mcp_config.json",
-            # Project root
-            Path.cwd() / "cp.json",
+            # Agent package / project layouts
+            Path.cwd() / "mcp.json",
+            Path.cwd() / "agent" / "mcp.json",
+            Path(__file__).resolve().parents[2] / "mcp.json",
             Path.cwd() / ".mcp.json",
             # Home directory (like Claude Desktop)
             Path.home() / ".mcp" / "config.json",
@@ -216,6 +218,116 @@ class MCPConfig:
         """Get all server configurations."""
         return self.servers.copy()
 
+    def resolve_writable_path(self) -> str:
+        """Return the path used for persisting MCP config."""
+        if self.config_path:
+            return self.config_path
+        # Prefer agent/mcp.json next to this package's project root
+        candidate = Path(__file__).resolve().parents[2] / "mcp.json"
+        return str(candidate)
+
+    def _read_raw_config(self) -> Dict[str, Any]:
+        """Read raw JSON config from disk (preserves ${ENV} placeholders)."""
+        path = self.resolve_writable_path()
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("MCP config root must be a JSON object")
+            return data
+        return {"mcpServers": {}}
+
+    def _write_raw_config(self, data: Dict[str, Any]) -> str:
+        """Persist raw JSON config and reload in-memory servers."""
+        path = self.resolve_writable_path()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        if "mcpServers" not in data and "servers" not in data:
+            data = {"mcpServers": data}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        self.config_path = path
+        self.servers = {}
+        self.load_config()
+        return path
+
+    def list_server_definitions(self, *, mask_secrets: bool = True) -> List[Dict[str, Any]]:
+        """Return serializable server definitions from the raw config file."""
+        raw = self._read_raw_config()
+        servers = raw.get("mcpServers") or raw.get("servers") or {}
+        out: List[Dict[str, Any]] = []
+        for name, cfg in servers.items():
+            if not isinstance(cfg, dict):
+                continue
+            entry = {"name": name, **cfg}
+            if mask_secrets and entry.get("bearerToken"):
+                token = str(entry["bearerToken"])
+                if not token.startswith("${"):
+                    entry["bearerToken"] = (
+                        "***" + token[-4:] if len(token) > 4 else "****"
+                    )
+            out.append(entry)
+        return out
+
+    def upsert_server(self, name: str, definition: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or update a server definition and persist to mcp.json."""
+        if not name or not isinstance(name, str):
+            raise ValueError("Server name is required")
+        if not isinstance(definition, dict):
+            raise ValueError("Server definition must be an object")
+
+        # Never persist the name field inside the definition blob
+        clean = {k: v for k, v in definition.items() if k != "name" and v is not None}
+
+        # If bearerToken is a masked placeholder, keep the existing value
+        raw = self._read_raw_config()
+        servers = raw.setdefault("mcpServers", raw.pop("servers", {}))
+        if not isinstance(servers, dict):
+            servers = {}
+            raw["mcpServers"] = servers
+
+        existing = servers.get(name, {}) if isinstance(servers.get(name), dict) else {}
+        token = clean.get("bearerToken")
+        if isinstance(token, str) and token.startswith("***"):
+            if "bearerToken" in existing:
+                clean["bearerToken"] = existing["bearerToken"]
+            else:
+                clean.pop("bearerToken", None)
+
+        # Drop empty optional fields
+        for key in list(clean.keys()):
+            if clean[key] in ("", [], {}):
+                clean.pop(key)
+
+        servers[name] = clean
+        self._write_raw_config(raw)
+        return {"name": name, **clean}
+
+    def delete_server(self, name: str) -> bool:
+        """Delete a server definition from mcp.json."""
+        raw = self._read_raw_config()
+        servers = raw.get("mcpServers") or raw.get("servers") or {}
+        if name not in servers:
+            return False
+        del servers[name]
+        raw["mcpServers"] = servers
+        self._write_raw_config(raw)
+        return True
+
+    def set_server_disabled(self, name: str, disabled: bool) -> Dict[str, Any]:
+        """Enable or disable a server without removing it."""
+        raw = self._read_raw_config()
+        servers = raw.get("mcpServers") or raw.get("servers") or {}
+        if name not in servers or not isinstance(servers[name], dict):
+            raise KeyError(f"Server '{name}' not found")
+        if disabled:
+            servers[name]["disabled"] = True
+        else:
+            servers[name].pop("disabled", None)
+        raw["mcpServers"] = servers
+        self._write_raw_config(raw)
+        return {"name": name, **servers[name]}
+
     @staticmethod
     def create_default_config(path: str):
         """Create a default MCP configuration file.
@@ -225,15 +337,14 @@ class MCPConfig:
         """
         default_config = {
             "mcpServers": {
-                "calculator": {
+                "knowledge": {
                     "command": "python",
-                    "args": ["src/tools/calculator/server.py"],
-                    "description": "Calculator tools for mathematical operations",
-                },
-                "filesystem": {
-                    "command": "python",
-                    "args": ["src/tools/filesystem/server.py"],
-                    "description": "Filesystem tools for file operations",
+                    "args": ["src/tools/knowledge/server.py"],
+                    "description": "Knowledge graph and memory management",
+                    "env": {
+                        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}",
+                        "SPARKY_DB_URL": "${SPARKY_DB_URL}",
+                    },
                 },
             }
         }
@@ -245,6 +356,7 @@ class MCPConfig:
 
         with open(path, "w", encoding="utf-8") as f:
             json.dump(default_config, f, indent=2)
+            f.write("\n")
 
         return path
 

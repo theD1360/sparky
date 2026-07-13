@@ -4,10 +4,14 @@ import os
 import sys
 from datetime import datetime
 from logging import getLogger
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+
+from database.auth_models import User
+from middleware.auth_middleware import get_current_active_user, get_db, require_admin
+from sqlalchemy.ext.asyncio import AsyncSession
 
 try:
     import psutil
@@ -69,6 +73,26 @@ class ServerReloadResponse(BaseModel):
     server_name: str
 
 
+class MCPServerDefinition(BaseModel):
+    """MCP server definition for create/update."""
+
+    name: Optional[str] = None
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+    url: Optional[str] = None
+    type: Optional[str] = None
+    transport: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
+    headers: Optional[Dict[str, str]] = None
+    bearerToken: Optional[str] = None
+    description: Optional[str] = None
+    disabled: Optional[bool] = False
+
+
+class MCPServerDisableUpdate(BaseModel):
+    disabled: bool = Field(..., description="Whether the server should be disabled")
+
+
 # Environment variable descriptions
 ENV_VAR_DESCRIPTIONS = {
     "AGENT_MODEL": "LLM model to use for agent (e.g., gemini-2.0-flash)",
@@ -91,18 +115,187 @@ SENSITIVE_KEYS = {
 }
 
 
+async def _reload_all_toolchains(reason: str = "mcp-config-change") -> int:
+    """Recreate active LangChain toolchains after mcp.json changes."""
+    from servers.chat.chat_server import _connection_manager
+    from sparky.initialization import create_langchain_toolchain
+    from sparky.mcp_toolkit import clear_mcp_tool_cache
+
+    clear_mcp_tool_cache()
+    if not _connection_manager or not _connection_manager.langchain_toolchains:
+        return 0
+
+    reloaded = 0
+    for user_id in list(_connection_manager.langchain_toolchains.keys()):
+        try:
+            new_toolchain, error = await create_langchain_toolchain(
+                log_prefix=f"[{reason}:{user_id}]"
+            )
+            if new_toolchain and not error:
+                _connection_manager.langchain_toolchains[user_id] = new_toolchain
+                _connection_manager.tools_initialized[user_id] = True
+                reloaded += 1
+            else:
+                logger.error("Failed to reload toolchain for %s: %s", user_id, error)
+        except Exception as e:
+            logger.error("Error reloading toolchain for %s: %s", user_id, e)
+    return reloaded
+
+
+@router.get("/mcp/servers")
+@require_admin
+async def list_mcp_servers(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """List MCP servers from mcp.json (Claude Desktop format)."""
+    from badmcp.config import MCPConfig
+
+    config = MCPConfig()
+    servers = config.list_server_definitions(mask_secrets=True)
+    return {
+        "success": True,
+        "config_path": config.resolve_writable_path(),
+        "servers": servers,
+        "total": len(servers),
+    }
+
+
+@router.post("/mcp/servers", status_code=201)
+@require_admin
+async def create_mcp_server(
+    body: MCPServerDefinition,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Add a new MCP server to mcp.json and reload active toolchains."""
+    from badmcp.config import MCPConfig
+
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Server name is required")
+
+    config = MCPConfig()
+    existing = {
+        s["name"] for s in config.list_server_definitions(mask_secrets=False)
+    }
+    if name in existing:
+        raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
+
+    definition = body.model_dump(exclude_none=True, exclude={"name"})
+    if not definition.get("command") and not definition.get("url"):
+        raise HTTPException(
+            status_code=400, detail="Server requires either command (stdio) or url"
+        )
+
+    saved = config.upsert_server(name, definition)
+    reloaded = await _reload_all_toolchains("mcp-create")
+    return {
+        "success": True,
+        "server": {"name": name, **{k: v for k, v in saved.items() if k != "name"}},
+        "reloaded_connections": reloaded,
+    }
+
+
+@router.put("/mcp/servers/{server_name}")
+@require_admin
+async def update_mcp_server(
+    server_name: str,
+    body: MCPServerDefinition,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Update an existing MCP server definition."""
+    from badmcp.config import MCPConfig
+
+    config = MCPConfig()
+    existing = {
+        s["name"] for s in config.list_server_definitions(mask_secrets=False)
+    }
+    if server_name not in existing:
+        raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
+
+    definition = body.model_dump(exclude_none=True, exclude={"name"})
+    saved = config.upsert_server(server_name, definition)
+    reloaded = await _reload_all_toolchains("mcp-update")
+    return {
+        "success": True,
+        "server": {
+            "name": server_name,
+            **{k: v for k, v in saved.items() if k != "name"},
+        },
+        "reloaded_connections": reloaded,
+    }
+
+
+@router.patch("/mcp/servers/{server_name}/disabled")
+@require_admin
+async def set_mcp_server_disabled(
+    server_name: str,
+    body: MCPServerDisableUpdate,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Enable or disable an MCP server."""
+    from badmcp.config import MCPConfig
+
+    config = MCPConfig()
+    try:
+        saved = config.set_server_disabled(server_name, body.disabled)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
+    reloaded = await _reload_all_toolchains("mcp-disable")
+    return {
+        "success": True,
+        "server": saved,
+        "reloaded_connections": reloaded,
+    }
+
+
+@router.delete("/mcp/servers/{server_name}")
+@require_admin
+async def delete_mcp_server(
+    server_name: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Remove an MCP server from mcp.json."""
+    from badmcp.config import MCPConfig
+
+    config = MCPConfig()
+    deleted = config.delete_server(server_name)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Server '{server_name}' not found")
+    reloaded = await _reload_all_toolchains("mcp-delete")
+    return {
+        "success": True,
+        "server_name": server_name,
+        "reloaded_connections": reloaded,
+    }
+
+
+@router.post("/mcp/reload")
+@require_admin
+async def reload_mcp_toolchains(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Reload all active toolchains from the current mcp.json."""
+    reloaded = await _reload_all_toolchains("mcp-reload")
+    return {
+        "success": True,
+        "message": f"Reloaded {reloaded} active toolchain(s)",
+        "reloaded_connections": reloaded,
+    }
+
+
 @router.get("/tool_cache_status", response_model=CacheStatusResponse)
 async def get_tool_cache_status():
-    """Get status of toolchains (per-websocket).
-
-    Returns:
-        Dictionary with toolchain status
-    """
+    """Get status of toolchains (per-websocket)."""
     try:
         from servers.chat.chat_server import _connection_manager
 
         if _connection_manager and _connection_manager.langchain_toolchains:
-            # Return info about active toolchains
             toolchains_info = {}
             for user_id, toolchain in _connection_manager.langchain_toolchains.items():
                 toolchains_info[user_id] = {
@@ -118,13 +311,12 @@ async def get_tool_cache_status():
                     for tc in _connection_manager.langchain_toolchains.values()
                 ),
             }
-        else:
-            return {
-                "success": True,
-                "cache_initialized": False,
-                "servers": {},
-                "total_servers": 0,
-            }
+        return {
+            "success": True,
+            "cache_initialized": False,
+            "servers": {},
+            "total_servers": 0,
+        }
     except Exception as e:
         return {
             "success": False,
@@ -137,78 +329,34 @@ async def get_tool_cache_status():
 
 @router.post("/servers/{server_name}/reload")
 async def reload_server(server_name: str) -> ServerReloadResponse:
-    """Force reload a specific MCP server.
-
-    Note: With per-websocket toolchains, this will reload for all active connections.
-
-    Args:
-        server_name: Name of the server to reload
-
-    Returns:
-        Reload status and message
-    """
+    """Force reload MCP toolchains for all active connections."""
     try:
-        from servers.chat.chat_server import _connection_manager
-
-        if not _connection_manager or not _connection_manager.langchain_toolchains:
-            return ServerReloadResponse(
-                success=False,
-                message="No active toolchains to reload",
-                server_name=server_name,
-            )
-
-        # Reload toolchains for all active connections
-        # This requires recreating the toolchain
-        reloaded_count = 0
-        for user_id in list(_connection_manager.langchain_toolchains.keys()):
-            try:
-                # Recreate toolchain for this user
-                from sparky.initialization import create_langchain_toolchain
-                from sparky.mcp_toolkit import clear_mcp_tool_cache
-
-                clear_mcp_tool_cache()
-
-                new_toolchain, error = await create_langchain_toolchain(
-                    log_prefix=f"[reload:{user_id}]"
-                )
-                if new_toolchain and not error:
-                    _connection_manager.langchain_toolchains[user_id] = new_toolchain
-                    reloaded_count += 1
-            except Exception as e:
-                logger.error(f"Error reloading toolchain for {user_id}: {e}")
-
+        reloaded_count = await _reload_all_toolchains(f"reload:{server_name}")
         if reloaded_count > 0:
             return ServerReloadResponse(
                 success=True,
-                message=f"Server '{server_name}' reloaded for {reloaded_count} connection(s)",
+                message=f"Reloaded toolchains for {reloaded_count} connection(s)",
                 server_name=server_name,
             )
-        else:
-            return ServerReloadResponse(
-                success=False,
-                message=f"Failed to reload server '{server_name}'",
-                server_name=server_name,
-            )
+        return ServerReloadResponse(
+            success=True,
+            message="No active toolchains; mcp.json will apply on next connect",
+            server_name=server_name,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reloading server: {str(e)}")
 
 
 @router.get("/env", response_model=List[EnvVarInfo])
 async def list_env_vars():
-    """List environment variables (filtered for relevant ones).
-
-    Returns:
-        List of environment variables with descriptions
-    """
+    """List environment variables (filtered for relevant ones)."""
     try:
         logger.info("Fetching environment variables...")
         env_vars = []
 
-        # Get relevant environment variables
         for key, description in ENV_VAR_DESCRIPTIONS.items():
             value = os.getenv(key, "")
 
-            # Mask sensitive values
             if any(sensitive in key.upper() for sensitive in SENSITIVE_KEYS):
                 if value:
                     value = "***" + value[-4:] if len(value) > 4 else "****"
@@ -232,24 +380,14 @@ async def list_env_vars():
 
 @router.put("/env/{key}")
 async def update_env_var(key: str, update: EnvVarUpdate):
-    """Update an environment variable (runtime only, not persistent).
-
-    Args:
-        key: Environment variable key
-        update: New value
-
-    Returns:
-        Success status
-    """
+    """Update an environment variable (runtime only, not persistent)."""
     try:
-        # Security: Only allow updating known safe variables
         if any(sensitive in key.upper() for sensitive in SENSITIVE_KEYS):
             raise HTTPException(
                 status_code=403,
                 detail="Cannot update sensitive environment variables through API",
             )
 
-        # Update runtime environment
         os.environ[key] = update.value
 
         return {
@@ -266,11 +404,7 @@ async def update_env_var(key: str, update: EnvVarUpdate):
 
 @router.get("/system", response_model=SystemInfoResponse)
 async def get_system_info():
-    """Get system information and metrics.
-
-    Returns:
-        System information including memory, disk, and process stats
-    """
+    """Get system information and metrics."""
     try:
         logger.info("Fetching system information...")
 
@@ -281,34 +415,20 @@ async def get_system_info():
                 detail="psutil library not available - cannot get system metrics",
             )
 
-        # Get process info
         process = psutil.Process()
-        logger.debug(f"Got process: PID {process.pid}")
-
-        # Get system memory info
         mem = psutil.virtual_memory()
         memory_used_mb = mem.used / (1024 * 1024)
         memory_total_mb = mem.total / (1024 * 1024)
         memory_percent = mem.percent
-        logger.debug(
-            f"Memory: {memory_percent}% ({memory_used_mb:.0f} / {memory_total_mb:.0f} MB)"
-        )
 
-        # Get disk info
         disk = psutil.disk_usage("/")
         disk_used_gb = disk.used / (1024 * 1024 * 1024)
         disk_total_gb = disk.total / (1024 * 1024 * 1024)
         disk_percent = disk.percent
-        logger.debug(
-            f"Disk: {disk_percent}% ({disk_used_gb:.1f} / {disk_total_gb:.1f} GB)"
-        )
 
-        # Get process uptime
         create_time = datetime.fromtimestamp(process.create_time())
         uptime = (datetime.now() - create_time).total_seconds()
-        logger.debug(f"Uptime: {uptime:.0f} seconds")
 
-        # Get connection manager stats
         active_sessions = 0
         total_connections = 0
         try:
@@ -318,9 +438,6 @@ async def get_system_info():
                 session_info = _connection_manager.get_session_info()
                 active_sessions = session_info.get("total_sessions", 0)
                 total_connections = session_info.get("active_connections", 0)
-                logger.debug(
-                    f"Sessions: {active_sessions}, Connections: {total_connections}"
-                )
         except Exception as e:
             logger.warning(f"Could not get connection manager stats: {e}")
 

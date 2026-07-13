@@ -14,6 +14,19 @@ from cli.common import logger
 db = typer.Typer(name="db", help="Database migration commands")
 
 
+def _normalize_db_url(db_url: str) -> str:
+    """Use psycopg v3 driver (project dependency) instead of default psycopg2."""
+    if db_url.startswith("postgresql://") and not db_url.startswith(
+        "postgresql+psycopg://"
+    ):
+        return db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if db_url.startswith("postgresql+asyncpg://"):
+        return db_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+    if db_url.startswith("postgresql+psycopg2://"):
+        return db_url.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
+    return db_url
+
+
 def get_alembic_config() -> Config:
     """Get Alembic configuration."""
     # Get the path to the alembic.ini file
@@ -35,6 +48,7 @@ def get_alembic_config() -> Config:
         default_db_path = project_root / "knowledge_graph.db"
         db_url = f"sqlite:///{default_db_path}"
 
+    db_url = _normalize_db_url(db_url)
     logger.info(f"Using database URL: {db_url}")
     alembic_cfg.set_main_option("sqlalchemy.url", db_url)
 

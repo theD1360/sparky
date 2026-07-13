@@ -55,11 +55,25 @@ target_metadata = Base.metadata
 # ... etc.
 
 
+def _normalize_db_url(db_url: str) -> str:
+    """Use psycopg v3 driver (project dependency) instead of default psycopg2."""
+    if db_url.startswith("postgresql://") and not db_url.startswith(
+        "postgresql+psycopg://"
+    ):
+        return db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if db_url.startswith("postgresql+asyncpg://"):
+        return db_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+    if db_url.startswith("postgresql+psycopg2://"):
+        return db_url.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
+    return db_url
+
+
 def get_url():
     """Get database URL from environment or config."""
     # Try to get from environment first (highest priority)
     db_url = os.getenv("SPARKY_DB_URL")
     if db_url:
+        db_url = _normalize_db_url(db_url)
         # Mask password in log
         safe_url = db_url.split("@")[-1] if "@" in db_url else db_url[:30]
         logging.info(
@@ -70,6 +84,7 @@ def get_url():
     # Fall back to config file
     config_url = config.get_main_option("sqlalchemy.url")
     if config_url and config_url.strip():
+        config_url = _normalize_db_url(config_url)
         logging.info(f"Using database URL from alembic.ini: {config_url[:30]}...")
         return config_url
 

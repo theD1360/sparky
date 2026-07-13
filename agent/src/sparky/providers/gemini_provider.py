@@ -12,30 +12,24 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from events import BotEvents
 
-# Try to import create_agent from langchain.agents (LangChain 1.0+)
-# Fallback to langgraph.prebuilt for older versions
+from langchain.agents import create_agent
+
 try:
-    from langchain.agents import create_agent
+    from langchain.agents.middleware import ToolRetryMiddleware
+    from langchain.agents.middleware.summarization import SummarizationMiddleware
 except ImportError:
     try:
-        from langgraph.prebuilt import create_react_agent as create_agent
+        from langchain.agents.middleware import SummarizationMiddleware, ToolRetryMiddleware
     except ImportError:
-        raise ImportError(
-            "Cannot import create_agent. Please ensure langchain>=0.3.20 or langgraph is installed. "
-            "For LangChain 1.0+: pip install 'langchain>=1.0.0'. "
-            "For LangChain 0.3.x: pip install langgraph"
-        )
+        SummarizationMiddleware = None
+        ToolRetryMiddleware = None
 
 try:
-    from langchain.agents.middleware import SummarizationMiddleware, ToolRetryMiddleware
+    from langchain_classic.memory import ConversationBufferMemory
 except ImportError:
-    # SummarizationMiddleware might not be available in older versions
-    SummarizationMiddleware = None
-    ToolRetryMiddleware = None
-
-from langchain.memory import ConversationBufferMemory
+    from langchain.memory import ConversationBufferMemory
 from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_core.messages import AIMessage, HumanMessage, ImageMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import BaseTool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -188,20 +182,14 @@ class GeminiProvider(LLMProvider):
                         google_api_key=self.config.api_key,
                     )
 
-                    # Calculate token threshold (fraction of context window)
-                    context_window = self.get_model_context_window()
-                    trigger_tokens = int(context_window * summary_token_threshold)
-
                     summarization_middleware = SummarizationMiddleware(
                         model=summary_llm,
-                        trigger={"tokens": trigger_tokens},
-                        keep={"messages": 20},  # Keep last 20 messages
-                        summaryPrefix="[Summary] ",
+                        trigger=("fraction", summary_token_threshold),
+                        keep=("fraction", 0.10),
                     )
                     middleware.append(summarization_middleware)
                     logger.info(
-                        "[gemini_provider] Added SummarizationMiddleware with trigger at %d tokens (%.1f%% of context)",
-                        trigger_tokens,
+                        "[gemini_provider] Added SummarizationMiddleware with trigger at %.1f%% of context",
                         summary_token_threshold * 100,
                     )
                 elif summary_token_threshold is not None:

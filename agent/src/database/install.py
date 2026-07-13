@@ -34,6 +34,19 @@ def run_migrations() -> None:
 
         # Set database URL from environment or use default
         db_url = os.getenv("SPARKY_DB_URL", "sqlite://knowledge_graph.db")
+        # Use psycopg v3 (project dependency) instead of default psycopg2
+        if db_url.startswith("postgresql://") and not db_url.startswith(
+            "postgresql+psycopg://"
+        ):
+            db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        elif db_url.startswith("postgresql+asyncpg://"):
+            db_url = db_url.replace(
+                "postgresql+asyncpg://", "postgresql+psycopg://", 1
+            )
+        elif db_url.startswith("postgresql+psycopg2://"):
+            db_url = db_url.replace(
+                "postgresql+psycopg2://", "postgresql+psycopg://", 1
+            )
         alembic_cfg.set_main_option("sqlalchemy.url", db_url)
 
         # Change to the knowledge_base directory so migrations path is correct

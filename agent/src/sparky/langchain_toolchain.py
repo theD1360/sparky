@@ -159,6 +159,9 @@ class LangChainToolchain:
     ) -> List[BaseTool]:
         """Get all LangChain tools from MCP servers.
 
+        Loads servers individually so one failing server (e.g. MetaMCP 404)
+        does not abort tool discovery for the rest.
+
         Args:
             server_name: Optional server name to get tools from. If None, gets tools from all servers.
             gemini_safe: When True, strip JSON Schema noise for Gemini compatibility.
@@ -169,7 +172,36 @@ class LangChainToolchain:
         if server_name is None and self._cached_tools is not None:
             return self._cached_tools
 
-        tools = await self.client.get_tools(server_name=server_name)
+        if server_name is not None:
+            tools = await self.client.get_tools(server_name=server_name)
+        else:
+            tools = []
+            failed: List[str] = []
+            for name in list(self.client.connections.keys()):
+                try:
+                    server_tools = await self.client.get_tools(server_name=name)
+                    tools.extend(server_tools)
+                    logger.info(
+                        "Loaded %d tool(s) from MCP server %s",
+                        len(server_tools),
+                        name,
+                    )
+                except Exception as e:
+                    failed.append(name)
+                    logger.warning(
+                        "Skipping MCP server %s during tool load: %s: %s",
+                        name,
+                        type(e).__name__,
+                        e,
+                    )
+            if failed:
+                logger.warning(
+                    "MCP tool load completed with %d/%d server(s) skipped: %s",
+                    len(failed),
+                    len(self.client.connections),
+                    ", ".join(failed),
+                )
+
         if gemini_safe:
             tools = tools_with_gemini_safe_arg_schemas(tools) or tools
         if server_name is None:

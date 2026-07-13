@@ -7,7 +7,7 @@
       ],
       "description": "Comprehensive network tools: HTTP requests, WHOIS, DNS, subdomain enumeration, IP info, web stack detection",
       "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
       }
     },
     "code": {
@@ -17,7 +17,7 @@
       ],
       "description": "Code execution and analysis tools",
       "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}",
+        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}",
         "SPARKY_DB_URL": "${SPARKY_DB_URL}"
       }
     },
@@ -28,7 +28,7 @@
       ],
       "description": "Shell command execution tools",
       "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
       }
     },
     "update": {
@@ -38,7 +38,7 @@
       ],
       "description": "Update functionality",
       "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
       }
     },
     "utilities": {
@@ -48,7 +48,7 @@
       ],
       "description": "Comprehensive utility tools: math operations, string manipulation, base64 encoding, JSON operations, sandboxed code execution",
       "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
       }
     },
     "criminal_ip": {
@@ -58,7 +58,7 @@
       ],
       "description": "Criminal IP threat intelligence tools",
       "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
       }
     },
     "knowledge": {
@@ -66,9 +66,9 @@
       "args": [
         "src/tools/knowledge/server.py"
       ],
-      "description": "Knowledge graph and memory management (unified SQLite storage)",
+      "description": "Knowledge graph and memory management",
       "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}",
+        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}",
         "SPARKY_DB_URL": "${SPARKY_DB_URL}"
       }
     },
@@ -79,14 +79,18 @@
       ],
       "description": "Introspection tools for system and self-monitoring",
       "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/Users/diego/Projects/BadRobot/agent/src}"
+        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
       }
     },
-    "metaMCP": {
-      "url" : "http://metamcp:12008/metamcp/sparky/sse",
-      "type" : "sse",
-      "description" : "MetaMCP server for testing",
-      "bearerToken" : "${METAMCP_API_KEY}"
+    "duckduckgo": {
+      "command": "python",
+      "args": [
+        "src/tools/duckduckgo/server.py"
+      ],
+      "description": "DuckDuckGo search tool",
+      "env": {
+        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
+      }
     }
   }
 }
