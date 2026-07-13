@@ -4,6 +4,7 @@ from .admin import router as admin_router
 from .auth import router as auth_router
 from .chats import router as chats_router
 from .health import router as health_router
+from .models import router as models_router
 from .prompts import router as prompts_router
 from .resources import router as resources_router
 from .user import router as user_router
@@ -18,5 +19,6 @@ __all__ = [
     "admin_router",
     "auth_router",
     "user_management_router",
+    "models_router",
 ]
 

@@ -22,6 +22,8 @@ import {
   LinearProgress,
   Chip,
   CircularProgress,
+  TextField,
+  Stack,
 } from '@mui/material';
 import {
   Close as CloseIcon,
@@ -36,10 +38,22 @@ import {
   Download as DownloadIcon,
   Delete as DeleteIcon,
   CheckCircle as CheckCircleIcon,
+  Extension as ExtensionIcon,
+  Refresh as RefreshIcon,
+  Add as AddIcon,
+  Edit as EditIcon,
 } from '@mui/icons-material';
 import { useSettings } from '../../hooks';
 import { getAvailableThemes } from '../../styles/themes';
 import * as tts from '@diffusionstudio/vits-web';
+import { useAuth } from '../auth/AuthProvider';
+import {
+  fetchUserMcpServers,
+  createUserMcpServer,
+  updateUserMcpServer,
+  deleteUserMcpServer,
+  reloadUserMcp,
+} from '../../services/api';
 
 /**
  * Settings modal - app configuration and preferences
@@ -51,13 +65,49 @@ function SettingsModal({ isOpen, onClose, onThemeChange }) {
   const [currentTab, setCurrentTab] = useState(0);
   const { settings, updateSetting, updateSettings } = useSettings();
   const availableThemes = getAvailableThemes();
-  
+  const { user } = useAuth();
+
   // Voice management state
   const [availableVoices, setAvailableVoices] = useState({});
   const [storedVoices, setStoredVoices] = useState([]);
   const [downloadingVoice, setDownloadingVoice] = useState(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [voicesLoading, setVoicesLoading] = useState(true);
+
+  // User MCP extras
+  const [systemMcp, setSystemMcp] = useState([]);
+  const [extraMcp, setExtraMcp] = useState([]);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpForm, setMcpForm] = useState({
+    name: '',
+    url: '',
+    transport: 'streamable_http',
+    bearerToken: '',
+    description: '',
+  });
+  const [editingMcpName, setEditingMcpName] = useState(null);
+
+  const loadUserMcp = useCallback(async () => {
+    if (!user?.id) return;
+    setMcpLoading(true);
+    try {
+      const data = await fetchUserMcpServers(user.id);
+      setSystemMcp(data.system || []);
+      setExtraMcp(data.extra || []);
+    } catch (error) {
+      console.error('Failed to load MCP servers:', error);
+      alert(error.message || 'Failed to load MCP servers');
+    } finally {
+      setMcpLoading(false);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (isOpen && currentTab === 2 && user?.id) {
+      loadUserMcp();
+    }
+  }, [isOpen, currentTab, user?.id, loadUserMcp]);
 
   const handleSettingChange = (setting) => {
     const newValue = !settings[setting];
@@ -296,6 +346,7 @@ function SettingsModal({ isOpen, onClose, onThemeChange }) {
         <Tabs value={currentTab} onChange={handleTabChange}>
           <Tab label="General" />
           <Tab label="Appearance" />
+          <Tab label="Tools" />
           <Tab label="Privacy" />
         </Tabs>
       </Box>
@@ -730,8 +781,269 @@ function SettingsModal({ isOpen, onClose, onThemeChange }) {
           </Box>
         )}
 
-        {/* Privacy Tab */}
+        {/* Tools Tab — system MCP read-only + personal remote extras */}
         {currentTab === 2 && (
+          <Box>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                Tools & MCP
+              </Typography>
+              <Stack direction="row" spacing={1}>
+                <Button
+                  size="small"
+                  startIcon={<RefreshIcon />}
+                  onClick={loadUserMcp}
+                  disabled={mcpLoading || !user?.id}
+                >
+                  Refresh
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<RefreshIcon />}
+                  disabled={mcpSaving || !user?.id}
+                  onClick={async () => {
+                    if (!user?.id) return;
+                    setMcpSaving(true);
+                    try {
+                      await reloadUserMcp(user.id);
+                      await loadUserMcp();
+                    } catch (error) {
+                      alert(error.message || 'Failed to reload tools');
+                    } finally {
+                      setMcpSaving(false);
+                    }
+                  }}
+                >
+                  Reload tools
+                </Button>
+              </Stack>
+            </Box>
+
+            {!user?.id ? (
+              <Typography color="text.secondary">Sign in to manage MCP servers.</Typography>
+            ) : mcpLoading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                <CircularProgress size={32} />
+              </Box>
+            ) : (
+              <>
+                <Typography variant="subtitle2" sx={{ mb: 1, color: 'text.secondary' }}>
+                  System servers (always available)
+                </Typography>
+                <List dense sx={{ mb: 3, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 1 }}>
+                  {systemMcp.length === 0 && (
+                    <ListItem>
+                      <ListItemText primary="No system servers configured" />
+                    </ListItem>
+                  )}
+                  {systemMcp.map((server) => (
+                    <ListItem key={server.name} divider>
+                      <ListItemIcon>
+                        <ExtensionIcon color="primary" />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary={server.name}
+                        secondary={
+                          server.description ||
+                          (server.transport === 'stdio' ? 'Built-in stdio server' : server.url || 'Remote')
+                        }
+                      />
+                      <Chip size="small" label="Always on" color="success" variant="outlined" />
+                    </ListItem>
+                  ))}
+                </List>
+
+                <Typography variant="subtitle2" sx={{ mb: 1, color: 'text.secondary' }}>
+                  Your remote MCP servers
+                </Typography>
+                <List dense sx={{ mb: 2, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 1 }}>
+                  {extraMcp.length === 0 && (
+                    <ListItem>
+                      <ListItemText
+                        primary="No personal servers yet"
+                        secondary="Add a remote HTTP/SSE MCP server below"
+                      />
+                    </ListItem>
+                  )}
+                  {extraMcp.map((server) => (
+                    <ListItem
+                      key={server.name}
+                      divider
+                      secondaryAction={
+                        <Stack direction="row" spacing={0.5}>
+                          <IconButton
+                            edge="end"
+                            size="small"
+                            onClick={() => {
+                              setEditingMcpName(server.name);
+                              setMcpForm({
+                                name: server.name,
+                                url: server.url || '',
+                                transport: server.transport || server.type || 'streamable_http',
+                                bearerToken: server.bearerToken || '',
+                                description: server.description || '',
+                              });
+                            }}
+                          >
+                            <EditIcon fontSize="small" />
+                          </IconButton>
+                          <IconButton
+                            edge="end"
+                            size="small"
+                            color="error"
+                            onClick={async () => {
+                              if (!window.confirm(`Remove MCP server "${server.name}"?`)) return;
+                              setMcpSaving(true);
+                              try {
+                                await deleteUserMcpServer(user.id, server.name);
+                                if (editingMcpName === server.name) {
+                                  setEditingMcpName(null);
+                                  setMcpForm({
+                                    name: '',
+                                    url: '',
+                                    transport: 'streamable_http',
+                                    bearerToken: '',
+                                    description: '',
+                                  });
+                                }
+                                await loadUserMcp();
+                              } catch (error) {
+                                alert(error.message || 'Failed to delete server');
+                              } finally {
+                                setMcpSaving(false);
+                              }
+                            }}
+                          >
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </Stack>
+                      }
+                    >
+                      <ListItemIcon>
+                        <ExtensionIcon />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary={server.name}
+                        secondary={server.description || server.url}
+                        sx={{ pr: 8 }}
+                      />
+                    </ListItem>
+                  ))}
+                </List>
+
+                <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
+                  {editingMcpName ? `Edit ${editingMcpName}` : 'Add remote MCP server'}
+                </Typography>
+                <Stack spacing={1.5}>
+                  <TextField
+                    label="Name"
+                    size="small"
+                    fullWidth
+                    disabled={Boolean(editingMcpName)}
+                    value={mcpForm.name}
+                    onChange={(e) => setMcpForm({ ...mcpForm, name: e.target.value })}
+                  />
+                  <TextField
+                    label="URL"
+                    size="small"
+                    fullWidth
+                    required
+                    value={mcpForm.url}
+                    onChange={(e) => setMcpForm({ ...mcpForm, url: e.target.value })}
+                    placeholder="https://example.com/mcp"
+                  />
+                  <FormControl size="small" fullWidth>
+                    <Select
+                      value={mcpForm.transport}
+                      onChange={(e) => setMcpForm({ ...mcpForm, transport: e.target.value })}
+                      displayEmpty
+                    >
+                      <MenuItem value="streamable_http">streamable_http</MenuItem>
+                      <MenuItem value="sse">sse</MenuItem>
+                      <MenuItem value="http">http</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <TextField
+                    label="Bearer token (optional)"
+                    size="small"
+                    fullWidth
+                    type="password"
+                    value={mcpForm.bearerToken}
+                    onChange={(e) => setMcpForm({ ...mcpForm, bearerToken: e.target.value })}
+                  />
+                  <TextField
+                    label="Description (optional)"
+                    size="small"
+                    fullWidth
+                    value={mcpForm.description}
+                    onChange={(e) => setMcpForm({ ...mcpForm, description: e.target.value })}
+                  />
+                  <Stack direction="row" spacing={1}>
+                    <Button
+                      variant="contained"
+                      startIcon={editingMcpName ? <CheckIcon /> : <AddIcon />}
+                      disabled={mcpSaving || !mcpForm.url.trim() || (!editingMcpName && !mcpForm.name.trim())}
+                      onClick={async () => {
+                        setMcpSaving(true);
+                        try {
+                          const payload = {
+                            url: mcpForm.url.trim(),
+                            transport: mcpForm.transport,
+                            bearerToken: mcpForm.bearerToken || undefined,
+                            description: mcpForm.description || undefined,
+                          };
+                          if (editingMcpName) {
+                            await updateUserMcpServer(user.id, editingMcpName, payload);
+                          } else {
+                            await createUserMcpServer(user.id, {
+                              name: mcpForm.name.trim(),
+                              ...payload,
+                            });
+                          }
+                          setEditingMcpName(null);
+                          setMcpForm({
+                            name: '',
+                            url: '',
+                            transport: 'streamable_http',
+                            bearerToken: '',
+                            description: '',
+                          });
+                          await loadUserMcp();
+                        } catch (error) {
+                          alert(error.message || 'Failed to save MCP server');
+                        } finally {
+                          setMcpSaving(false);
+                        }
+                      }}
+                    >
+                      {editingMcpName ? 'Save' : 'Add server'}
+                    </Button>
+                    {editingMcpName && (
+                      <Button
+                        onClick={() => {
+                          setEditingMcpName(null);
+                          setMcpForm({
+                            name: '',
+                            url: '',
+                            transport: 'streamable_http',
+                            bearerToken: '',
+                            description: '',
+                          });
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                  </Stack>
+                </Stack>
+              </>
+            )}
+          </Box>
+        )}
+
+        {/* Privacy Tab */}
+        {currentTab === 3 && (
           <Box>
             <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
               Privacy & Security

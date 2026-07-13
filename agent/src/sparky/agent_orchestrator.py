@@ -235,6 +235,33 @@ class AgentOrchestrator:
         # Note: _chat_id will be set later in start_chat(), handlers check for it
         self._register_event_handlers()
 
+    async def set_model(self, model_name: str) -> str:
+        """Swap the LLM model for this chat session and reinitialize tools.
+
+        Args:
+            model_name: New model id (e.g. gemini-2.5-pro)
+
+        Returns:
+            The model name that was applied
+        """
+        self.provider.config.model_name = model_name
+        langchain_tools = None
+        if self.langchain_toolchain:
+            try:
+                langchain_tools = await self.langchain_toolchain.get_langchain_tools()
+            except Exception as e:
+                logger.warning("Failed to load tools during model swap: %s", e)
+
+        self.model, self._safe_to_original = self.provider.initialize_model(
+            langchain_tools,
+            execute_tool_callback=self.execute_tool_call,
+            summary_token_threshold=self.summary_token_threshold,
+        )
+        if langchain_tools:
+            self._tools_loaded = True
+        logger.info("Swapped chat model to %s", model_name)
+        return model_name
+
     def add_task(self, instruction: str, metadata: dict | None = None):
         """Add a task to the task queue.
 

@@ -240,3 +240,125 @@ export const recordToolUsage = async (toolName, toolArgs, result) => {
   }
 };
 
+/**
+ * Fetch available LLM models
+ * @returns {Promise<{models: Array, default: string}>}
+ */
+export const fetchModels = async () => {
+  const response = await fetch(apiUrl('/api/models'), {
+    headers: getAuthHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to load models');
+  }
+  return response.json();
+};
+
+/**
+ * Set the LLM model for a chat (live swap when session is active)
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {string} model
+ * @returns {Promise<Object>}
+ */
+export const updateChatModel = async (userId, chatId, model) => {
+  const response = await fetch(apiUrl(`/api/user/${userId}/chats/${chatId}/model`), {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify({ model }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to update chat model');
+  }
+  return response.json();
+};
+
+/**
+ * List system + personal MCP servers for the user
+ * @param {string} userId
+ * @returns {Promise<{system: Array, extra: Array}>}
+ */
+export const fetchUserMcpServers = async (userId) => {
+  const response = await fetch(apiUrl(`/api/user/${userId}/mcp/servers`), {
+    headers: getAuthHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to load MCP servers');
+  }
+  return response.json();
+};
+
+/**
+ * Create a personal remote MCP server
+ */
+export const createUserMcpServer = async (userId, payload) => {
+  const response = await fetch(apiUrl(`/api/user/${userId}/mcp/servers`), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to add MCP server');
+  }
+  return response.json();
+};
+
+/**
+ * Update a personal remote MCP server
+ */
+export const updateUserMcpServer = async (userId, serverName, payload) => {
+  const response = await fetch(apiUrl(`/api/user/${userId}/mcp/servers/${encodeURIComponent(serverName)}`), {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to update MCP server');
+  }
+  return response.json();
+};
+
+/**
+ * Delete a personal remote MCP server
+ */
+export const deleteUserMcpServer = async (userId, serverName) => {
+  const response = await fetch(apiUrl(`/api/user/${userId}/mcp/servers/${encodeURIComponent(serverName)}`), {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to delete MCP server');
+  }
+  return response.json();
+};
+
+/**
+ * Reload this user's MCP toolchain
+ */
+export const reloadUserMcp = async (userId) => {
+  const response = await fetch(apiUrl(`/api/user/${userId}/mcp/reload`), {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to reload tools');
+  }
+  return response.json();
+};
+

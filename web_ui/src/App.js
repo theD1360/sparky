@@ -23,8 +23,10 @@ import {
   CircularProgress,
   useMediaQuery,
   useTheme,
-  Menu,
+  Select,
   MenuItem,
+  FormControl,
+  Menu,
   Collapse,
 } from '@mui/material';
 import {
@@ -56,6 +58,7 @@ import Home from './pages/Home';
 import { useSettings } from './hooks';
 import { useAuth } from './components/auth/AuthProvider';
 import { stripMarkdown } from './utils/textUtils';
+import { fetchModels, updateChatModel } from './services/api';
 
 const SIDEBAR_WIDTH = 280;
 
@@ -109,6 +112,10 @@ function App({ onThemeChange }) {
   const [archivedChats, setArchivedChats] = useState([]);
   const [showArchivedChats, setShowArchivedChats] = useState(false);
   const [currentChatId, setCurrentChatId] = useState(null);
+  const [currentModel, setCurrentModel] = useState('');
+  const [availableModels, setAvailableModels] = useState([]);
+  const [defaultModel, setDefaultModel] = useState('gemini-2.5-flash');
+  const [modelUpdating, setModelUpdating] = useState(false);
   const [renamingChatId, setRenamingChatId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [actionMenuAnchor, setActionMenuAnchor] = useState(null);
@@ -860,6 +867,16 @@ function App({ onThemeChange }) {
           console.log('Chat ready:', data.data.chat_id);
           setChatReady(true); // Mark chat as ready - messages can now be sent
           setIsLoadingChat(false); // Clear loading state
+          if (data.data.model) {
+            setCurrentModel(data.data.model);
+            setUserChats((prev) =>
+              prev.map((chat) =>
+                chat.chat_id === data.data.chat_id
+                  ? { ...chat, model: data.data.model }
+                  : chat
+              )
+            );
+          }
           
           // Refresh chat list to show the new/updated chat
           const userId = getUserId();
@@ -1043,6 +1060,67 @@ function App({ onThemeChange }) {
     const userId = getUserId();
     fetchUserChats(userId);
   }, []);
+
+  // Load available LLM models for the chat header picker
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchModels();
+        if (cancelled) return;
+        setAvailableModels(data.models || []);
+        if (data.default) {
+          setDefaultModel(data.default);
+          setCurrentModel((prev) => prev || data.default);
+        }
+      } catch (error) {
+        console.error('Error fetching models:', error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  // Keep header model in sync with the selected chat metadata
+  useEffect(() => {
+    if (!currentChatId) {
+      setCurrentModel(defaultModel);
+      return;
+    }
+    const chat = userChats.find((c) => c.chat_id === currentChatId);
+    if (chat?.model) {
+      setCurrentModel(chat.model);
+    }
+  }, [currentChatId, userChats, defaultModel]);
+
+  const handleModelChange = useCallback(async (event) => {
+    const nextModel = event.target.value;
+    if (!currentChatId || !nextModel || nextModel === currentModel) {
+      return;
+    }
+    const previous = currentModel;
+    setCurrentModel(nextModel);
+    setModelUpdating(true);
+    try {
+      const userId = getUserId();
+      await updateChatModel(userId, currentChatId, nextModel);
+      setUserChats((prev) =>
+        prev.map((chat) =>
+          chat.chat_id === currentChatId ? { ...chat, model: nextModel } : chat
+        )
+      );
+      playSound?.('success');
+    } catch (error) {
+      console.error('Failed to update chat model:', error);
+      setCurrentModel(previous);
+      playSound?.('error');
+      alert(error.message || 'Failed to switch model');
+    } finally {
+      setModelUpdating(false);
+    }
+  }, [currentChatId, currentModel, playSound]);
   
   // Handle URL changes - load chat from URL if different from current
   useEffect(() => {
@@ -1486,6 +1564,37 @@ function App({ onThemeChange }) {
               {isSmallMobile ? "Sparky" : "Sparky Studio"}
             </Typography>
           </Box>
+          {currentChatId && (
+            <FormControl
+              size="small"
+              sx={{
+                minWidth: isSmallMobile ? 120 : 180,
+                mr: 1,
+                '& .MuiOutlinedInput-root': {
+                  color: 'text.primary',
+                  bgcolor: 'rgba(255,255,255,0.04)',
+                  '& fieldset': { borderColor: 'rgba(255,255,255,0.12)' },
+                },
+              }}
+            >
+              <Select
+                value={currentModel || defaultModel}
+                onChange={handleModelChange}
+                disabled={modelUpdating || !chatReady}
+                displayEmpty
+                inputProps={{ 'aria-label': 'Chat model' }}
+              >
+                {(availableModels.length
+                  ? availableModels
+                  : [{ id: defaultModel, display_name: defaultModel }]
+                ).map((model) => (
+                  <MenuItem key={model.id} value={model.id}>
+                    {model.display_name || model.id}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
           <IconButton
             onClick={() => setShowHelpModal(true)}
             title="Help (Ctrl+H)"

@@ -44,6 +44,7 @@ from servers.chat.routes import (
     auth_router,
     chats_router,
     health_router,
+    models_router,
     prompts_router,
     resources_router,
     user_management_router,
@@ -185,8 +186,10 @@ class ConnectionManager:
             # Create new LangChainToolchain for this websocket connection
             from sparky.initialization import create_langchain_toolchain
 
+            extra_servers = await self._get_user_mcp_extras(user_id)
             toolchain, error = await create_langchain_toolchain(
-                log_prefix=f"[{user_id}]"
+                log_prefix=f"[{user_id}]",
+                extra_servers=extra_servers,
             )
 
             if error:
@@ -256,6 +259,99 @@ class ConnectionManager:
             logger.error(f"[{user_id}] {error_msg}")
             logger.error(f"[{user_id}] Traceback: {traceback.format_exc()}")
             return None, error_msg
+
+    async def _get_user_mcp_extras(self, user_id: str) -> Dict[str, Any]:
+        """Load per-user remote MCP extras from user preferences."""
+        try:
+            db_url = os.getenv("SPARKY_DB_URL")
+            if not db_url:
+                return {}
+            db_manager = get_database_manager(db_url=db_url)
+            if not db_manager.engine:
+                await db_manager.connect()
+            from services.user_service import UserService
+
+            user_service = UserService(KnowledgeRepository(db_manager))
+            extras = await user_service.get_user_preference(user_id, "mcp.extra", [])
+            if not isinstance(extras, list):
+                return {}
+            out: Dict[str, Any] = {}
+            for entry in extras:
+                if not isinstance(entry, dict):
+                    continue
+                name = (entry.get("name") or "").strip()
+                if not name:
+                    continue
+                out[name] = {k: v for k, v in entry.items() if k != "name"}
+            return out
+        except Exception as e:
+            logger.warning(f"[{user_id}] Failed to load user MCP extras: {e}")
+            return {}
+
+    async def reload_tools_for_user(self, user_id: str) -> Tuple[int, Optional[str]]:
+        """Recreate this user's toolchain (system + extras) and refresh active bots.
+
+        Returns:
+            Tuple of (tool_count_estimate_or_server_count, error_message)
+        """
+        from sparky.initialization import create_langchain_toolchain
+        from sparky.mcp_toolkit import clear_mcp_tool_cache
+
+        clear_mcp_tool_cache()
+        existing_task = self._mcp_load_tasks.pop(user_id, None)
+        if existing_task and not existing_task.done():
+            existing_task.cancel()
+
+        self.tools_initialized.pop(user_id, None)
+        self.langchain_toolchains.pop(user_id, None)
+
+        extra_servers = await self._get_user_mcp_extras(user_id)
+        toolchain, error = await create_langchain_toolchain(
+            log_prefix=f"[{user_id}:reload]",
+            extra_servers=extra_servers,
+        )
+        if error or not toolchain:
+            return 0, error or "Failed to create toolchain"
+
+        self.langchain_toolchains[user_id] = toolchain
+        self.tools_initialized[user_id] = True
+
+        # Warm tools and rebind active bots for this user
+        try:
+            tools = await toolchain.get_langchain_tools()
+        except Exception as e:
+            logger.warning(f"[{user_id}] Tool warm after reload failed: {e}")
+            tools = []
+
+        bots = self.bot_sessions.get(user_id, {})
+        for chat_id, bot in list(bots.items()):
+            try:
+                bot.langchain_toolchain = toolchain
+                if hasattr(bot, "_tools_loaded"):
+                    delattr(bot, "_tools_loaded")
+                if tools:
+                    bot.model, bot._safe_to_original = bot.provider.initialize_model(
+                        tools,
+                        execute_tool_callback=bot.execute_tool_call,
+                        summary_token_threshold=bot.summary_token_threshold,
+                    )
+                    bot._tools_loaded = True
+            except Exception as e:
+                logger.warning(
+                    f"[{user_id}:{chat_id}] Failed to rebind tools after reload: {e}"
+                )
+
+        return len(tools), None
+
+    async def set_chat_model(self, user_id: str, chat_id: str, model_name: str) -> str:
+        """Persist chat model and live-swap if a bot session exists."""
+        bot = None
+        if user_id in self.bot_sessions:
+            bot = self.bot_sessions[user_id].get(chat_id)
+        if bot is not None:
+            await bot.set_model(model_name)
+            return model_name
+        return model_name
 
     async def _maybe_start_agent_loop(self, toolchain: LangChainToolchain):
         """Start agent loop if enabled and not already running.
@@ -592,10 +688,23 @@ class ConnectionManager:
                 except Exception as e:
                     logger.warning(f"Failed to send token estimate: {e}")
 
-        # Create LLM provider
-        model_name = os.getenv("AGENT_MODEL", "gemini-2.5-flash")
+        # Create LLM provider (per-chat model → AGENT_MODEL → default)
+        from services.model_catalog import resolve_chat_model
+
+        chat_model_override = None
+        if knowledge and knowledge.repository:
+            try:
+                chat_node = await knowledge.repository.get_chat(chat_id)
+                if chat_node and chat_node.properties:
+                    chat_model_override = chat_node.properties.get("model")
+            except Exception as e:
+                logger.warning(
+                    f"[{user_id}:{chat_id}] Could not load chat model preference: {e}"
+                )
+        model_name = resolve_chat_model(chat_model_override)
         config = ProviderConfig(model_name=model_name)
         provider = GeminiProvider(config)
+        logger.info(f"[{user_id}:{chat_id}] Using model: {model_name}")
 
         # Create services for dependency injection (required)
         if not knowledge or not knowledge.repository:
@@ -959,6 +1068,7 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(resources_router)
 app.include_router(prompts_router)
+app.include_router(models_router)
 app.include_router(user_router)
 app.include_router(chats_router)
 app.include_router(admin_router)
@@ -1669,6 +1779,12 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                         chat_name=payload.chat_name,
                     )
                     current_chat_id = payload.chat_id
+                    model_name = getattr(
+                        getattr(current_bot, "provider", None), "config", None
+                    )
+                    model_name = (
+                        getattr(model_name, "model_name", None) if model_name else None
+                    )
 
                     # Prefer the currently-active socket — start_chat can outlive a reconnect.
                     active = _connection_manager.active_connections.get(user_id)
@@ -1680,6 +1796,7 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                                 data=ChatReadyPayload(
                                     chat_id=payload.chat_id,
                                     is_new=True,
+                                    model=model_name,
                                 ),
                                 user_id=user_id,
                                 chat_id=payload.chat_id,
@@ -1722,6 +1839,12 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                         chat_id=payload.chat_id,
                     )
                     current_chat_id = payload.chat_id
+                    model_name = getattr(
+                        getattr(current_bot, "provider", None), "config", None
+                    )
+                    model_name = (
+                        getattr(model_name, "model_name", None) if model_name else None
+                    )
 
                     active = _connection_manager.active_connections.get(user_id)
                     send_ws = active or websocket
@@ -1732,6 +1855,7 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                                 data=ChatReadyPayload(
                                     chat_id=payload.chat_id,
                                     is_new=False,
+                                    model=model_name,
                                 ),
                                 user_id=user_id,
                                 chat_id=payload.chat_id,

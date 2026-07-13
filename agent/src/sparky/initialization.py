@@ -8,7 +8,7 @@ import asyncio
 import os
 import traceback
 from logging import getLogger
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from badmcp.config import MCPConfig
 from database.database import get_database_manager
@@ -23,12 +23,16 @@ logger = getLogger(__name__)
 async def create_langchain_toolchain(
     tools: List[str] = None,
     log_prefix: str = "startup",
+    extra_servers: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[LangChainToolchain], Optional[str]]:
     """Create a LangChain toolchain with all configured MCP servers.
 
     Args:
         tools: List of server names to include. If None, all servers will be included.
         log_prefix: Prefix for log messages (e.g., "startup", "agent")
+        extra_servers: Optional user-provided remote MCP server definitions
+            (dict name → config dict). Merged on top of system mcp.json;
+            system names always win on collision.
 
     Returns:
         Tuple of (toolchain, error_message)
@@ -48,13 +52,51 @@ async def create_langchain_toolchain(
         else:
             servers = all_servers
 
+        # Merge user extras (remote only); never override system servers
+        if extra_servers:
+            from badmcp.config import MCPServerConfig
+
+            for name, cfg in extra_servers.items():
+                if not name or not isinstance(cfg, dict):
+                    continue
+                if name in servers:
+                    logger.info(
+                        f"[{log_prefix}] Ignoring user MCP '{name}' "
+                        "(collides with system server)"
+                    )
+                    continue
+                if cfg.get("command") or cfg.get("args"):
+                    logger.warning(
+                        f"[{log_prefix}] Rejecting user MCP '{name}': stdio not allowed"
+                    )
+                    continue
+                if not cfg.get("url"):
+                    logger.warning(
+                        f"[{log_prefix}] Rejecting user MCP '{name}': url required"
+                    )
+                    continue
+                servers[name] = MCPServerConfig(
+                    name=name,
+                    command=None,
+                    args=None,
+                    type=cfg.get("type"),
+                    transport=cfg.get("transport"),
+                    url=cfg.get("url"),
+                    env=cfg.get("env"),
+                    headers=cfg.get("headers"),
+                    bearerToken=cfg.get("bearerToken"),
+                    description=cfg.get("description"),
+                    disabled=bool(cfg.get("disabled", False)),
+                )
+
         if not servers:
             error_msg = "No MCP servers configured"
             logger.error(f"[{log_prefix}] {error_msg}")
             return None, error_msg
 
         logger.info(
-            f"[{log_prefix}] Creating toolchain with {len(servers)} server(s): {', '.join(servers.keys())}"
+            f"[{log_prefix}] Creating toolchain with {len(servers)} server(s): "
+            f"{', '.join(servers.keys())}"
         )
 
         toolchain = LangChainToolchain.from_mcp_config(servers)

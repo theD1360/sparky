@@ -132,6 +132,32 @@ class ChatService:
             )
             return None
 
+    async def set_chat_model(self, chat_id: str, model_name: str) -> Optional[Node]:
+        """Set the LLM model for a chat.
+
+        Args:
+            chat_id: Chat identifier (without 'chat:' prefix)
+            model_name: Model id (e.g. gemini-2.5-flash)
+
+        Returns:
+            Updated Chat node or None if not found
+        """
+        try:
+            updated_chat = await self.repository.update_chat_model(
+                chat_id=chat_id, model_name=model_name
+            )
+            if updated_chat:
+                logger.info(f"Set chat {chat_id} model to '{model_name}'")
+            else:
+                logger.warning(f"Failed to set chat {chat_id} model: chat not found")
+            return updated_chat
+        except Exception as e:
+            logger.error(
+                f"Failed to set chat {chat_id} model to '{model_name}': {e}",
+                exc_info=True,
+            )
+            return None
+
     async def archive_chat(self, chat_id: str) -> Optional[Node]:
         """Archive a chat (soft delete - hides from main list but preserves data).
 

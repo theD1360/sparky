@@ -81,6 +81,7 @@ class SwitchChatPayload(BaseModel):
 class ChatReadyPayload(BaseModel):
     chat_id: str = Field(description="Chat identifier")
     is_new: bool = Field(description="Whether this is a newly created chat")
+    model: Optional[str] = Field(None, description="LLM model assigned to this chat")
 
 
 class TokenUsagePayload(BaseModel):

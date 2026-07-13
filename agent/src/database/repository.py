@@ -3105,13 +3105,10 @@ class KnowledgeRepository:
                     )
                     if is_archived:
                         continue
+                props = chat_node.properties or {}
                 chat_dict = {
                     "chat_id": chat_id,
-                    "chat_name": (
-                        chat_node.properties.get("chat_name")
-                        if chat_node.properties
-                        else chat_node.label
-                    ),
+                    "chat_name": props.get("chat_name") or chat_node.label,
                     "created_at": (
                         chat_node.created_at.isoformat()
                         if chat_node.created_at
@@ -3122,11 +3119,8 @@ class KnowledgeRepository:
                         if chat_node.updated_at
                         else None
                     ),
-                    "archived": (
-                        chat_node.properties.get("archived", False)
-                        if chat_node.properties
-                        else False
-                    ),
+                    "archived": props.get("archived", False),
+                    "model": props.get("model"),
                 }
                 chats.append(chat_dict)
             chats.sort(
@@ -3310,6 +3304,37 @@ class KnowledgeRepository:
             await session.refresh(db_node)
             session.expunge(db_node)
             logger.info(f"Updated chat {chat_id} name to '{new_name}'")
+            return db_node
+
+    async def update_chat_model(self, chat_id: str, model_name: str) -> Optional[Node]:
+        """Persist the LLM model for a chat.
+
+        Args:
+            chat_id: Chat identifier (without 'chat:' prefix)
+            model_name: Model id (e.g. gemini-2.5-flash)
+
+        Returns:
+            Updated Chat node or None if not found
+        """
+        chat_node_id = f"chat:{chat_id}"
+        chat_node = await self.get_node(chat_node_id)
+        if not chat_node:
+            logger.warning(f"Cannot update chat model: chat {chat_id} not found")
+            return None
+        async with self.db_manager.get_session() as session:
+            result = await session.execute(select(Node).filter(Node.id == chat_node_id))
+            db_node = result.scalar_one_or_none()
+            if not db_node:
+                return None
+            if not db_node.properties:
+                db_node.properties = {}
+            db_node.properties["model"] = model_name
+            flag_modified(db_node, "properties")
+            db_node.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            await session.refresh(db_node)
+            session.expunge(db_node)
+            logger.info(f"Updated chat {chat_id} model to '{model_name}'")
             return db_node
 
     async def delete_chat(self, chat_id: str) -> bool:
