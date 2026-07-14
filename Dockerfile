@@ -14,6 +14,11 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# Install uv (used to launch third-party MCP servers such as ddg-search-mcp)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    ln -s /root/.local/bin/uv /usr/local/bin/uv && \
+    ln -s /root/.local/bin/uvx /usr/local/bin/uvx
+
 # Install Poetry
 RUN curl -sSL https://install.python-poetry.org | python3 - && \
     ln -s /root/.local/bin/poetry /usr/local/bin/poetry
@@ -34,6 +39,11 @@ RUN mkdir -p /app/agent/logs /app/agent/trusted_scripts
 
 # Set Python path to include src directory
 ENV PYTHONPATH=/app/agent/src
+
+# Pre-warm third-party MCP server packages (avoids long first-run uvx installs)
+RUN uvx --from ddg-search-mcp-Albertous007 python -c "import ddg_search_mcp" && \
+    uvx --from mcp-server-fetch python -c "import mcp_server_fetch" && \
+    uvx --from mcp-server-time python -c "import mcp_server_time"
 
 # Expose port for server
 EXPOSE 8000

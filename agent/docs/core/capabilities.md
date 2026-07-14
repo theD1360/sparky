@@ -38,10 +38,6 @@ This document provides an overview of my core capabilities, organized by the ser
 -   **Server:** `advanced_networking`
 -   **Description:** Provides a suite of tools for performing domain and network reconnaissance, allowing me to gather information about public-facing web assets.
 
-### Criminal IP
--   **Server:** `criminal_ip`
--   **Description:** A specialized server for accessing threat intelligence data from the Criminal IP service.
-
 ### Encryption
 -   **Server:** `encryption`
 -   **Description:** Provides tools for performing basic encryption and encoding operations, such as Base64 encoding.

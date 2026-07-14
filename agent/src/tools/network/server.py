@@ -8,7 +8,6 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
 
-import html2text
 import httpx
 from mcp.server.fastmcp import FastMCP
 from models import MCPResponse
@@ -128,31 +127,7 @@ async def http_post(
             return MCPResponse.success(result=result).to_dict()
 
     except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
-@mcp.tool()
-async def fetch_as_markdown(url: str) -> dict:
-    """Fetch content from a URL and convert it to Markdown."""
-    try:
-        response = await http_get(url)
-        if response["status"] != "success":
-            return MCPResponse.error(
-                f"Failed to fetch URL: {response['message']}"
-            ).to_dict()
-
-        html_content = response["result"]["body"]
-
-        # Attempt to convert HTML to Markdown using html2text
-        try:
-            markdown_content = html2text.html2text(html_content)
-            return MCPResponse.success(markdown_content).to_dict()
-        except Exception as e:
-            return MCPResponse.error(
-                f"Failed to convert HTML to Markdown: {e}"
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(f"An unexpected error occurred: {e}").to_dict()
+            return MCPResponse.error(str(e)).to_dict()
 
 
 # ============================================================================
@@ -409,36 +384,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-@mcp.tool()
-async def fetch_as_markdown(url: str) -> dict:
-    """Fetch content from a URL and convert it to Markdown."""
-    try:
-        response = await http_get(url)
-        if response["status"] != "success":
-            return MCPResponse.error(
-                f"Failed to fetch URL: {response['message']}"
-            ).to_dict()
-
-        html_content = response["result"]["body"]
-
-        # Attempt to convert HTML to Markdown using html2text
-        try:
-            markdown_result = await execute(
-                code=f"import html2text; h = html2text.HTML2Text(); print(h.handle('{html_content}'))",
-                language="python",
-                use_sandbox=True,  # Use sandbox for security
-            )
-            markdown_content = markdown_result["result"]["stdout"]
-
-        except Exception as e:
-            return MCPResponse.error(
-                f"Failed to convert HTML to Markdown: {e}"
-            ).to_dict()
-
-        result = {"url": url, "markdown": markdown_content}
-        return MCPResponse.success(result=result).to_dict()
-
-    except Exception as e:
-        return MCPResponse.error(f"An unexpected error occurred: {e}").to_dict()

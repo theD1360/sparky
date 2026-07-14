@@ -8,6 +8,8 @@ Consolidated networking tools server providing comprehensive HTTP and network re
 - **http_get** - Perform HTTP GET requests with custom headers and query parameters
 - **http_post** - Perform HTTP POST requests with JSON or form data
 
+Page content as markdown is provided by the third-party **fetch** MCP server (`mcp-server-fetch`), not this server.
+
 ### Network Reconnaissance
 - **whois_info** - Get WHOIS information for domains
 - **dns_records** - Retrieve DNS records (A, MX, TXT, NS)
@@ -22,6 +24,8 @@ Consolidated networking tools server providing comprehensive HTTP and network re
 - **httpx** - Modern async HTTP client
 - **dnspython** (optional) - Required for DNS-related tools
 - **whois** command-line tool (optional) - Required for WHOIS lookups
+
+Markdown page fetching lives in the separate **fetch** MCP server (`uvx mcp-server-fetch`).
 
 ## History
 

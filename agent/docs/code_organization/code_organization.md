@@ -69,7 +69,6 @@ MCP tool servers organized by category:
 - `advanced_networking/` - Advanced networking tools
 - `calculator/` - Calculator tools
 - `code/` - Code editing and analysis tools
-- `criminal_ip/` - Criminal IP integration
 - `encryption/` - Encryption/decryption tools
 - `filesystem/` - File system operations
 - `git_tool/` - Git operations

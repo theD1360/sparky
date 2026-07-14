@@ -41,25 +41,19 @@
         "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
       }
     },
-    "utilities": {
-      "command": "python",
+    "fetch": {
+      "command": "uvx",
       "args": [
-        "src/tools/miscellaneous/server.py"
+        "mcp-server-fetch"
       ],
-      "description": "Comprehensive utility tools: math operations, string manipulation, base64 encoding, JSON operations, sandboxed code execution",
-      "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
-      }
+      "description": "Fetch URLs and extract page content as markdown (official mcp-server-fetch)"
     },
-    "criminal_ip": {
-      "command": "python",
+    "time": {
+      "command": "uvx",
       "args": [
-        "src/tools/criminal_ip/server.py"
+        "mcp-server-time"
       ],
-      "description": "Criminal IP threat intelligence tools",
-      "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
-      }
+      "description": "Current time and timezone conversion (official mcp-server-time)"
     },
     "knowledge": {
       "command": "python",
@@ -83,14 +77,13 @@
       }
     },
     "duckduckgo": {
-      "command": "python",
+      "command": "uvx",
       "args": [
-        "src/tools/duckduckgo/server.py"
+        "--from",
+        "ddg-search-mcp-Albertous007",
+        "ddg-search-mcp"
       ],
-      "description": "DuckDuckGo search tool",
-      "env": {
-        "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}"
-      }
+      "description": "DuckDuckGo web search via Albertous007/ddg-search-mcp (Lite HTML + curl_cffi TLS impersonation)"
     }
   }
 }
