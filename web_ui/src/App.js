@@ -72,7 +72,7 @@ function App({ onThemeChange }) {
   const { settings, showNotification, playSound } = useSettings();
   
   // Auth hook
-  const { user, token, logout, getAuthHeaders } = useAuth();
+  const { user, token, logout, getAuthHeaders, refreshAccessToken } = useAuth();
   
   // Responsive design
   const theme = useTheme();
@@ -733,11 +733,23 @@ function App({ onThemeChange }) {
       return;
     }
 
+    // Always prefer the latest access token from storage so refreshed JWTs are used
+    // even if this effect's closure was created before AuthProvider updated `token`.
+    const getLatestToken = () => localStorage.getItem('access_token') || token || null;
+    const latestToken = getLatestToken();
+    if (!latestToken) {
+      console.warn('No access token available; skipping WebSocket connection');
+      setConnectionStatus('Disconnected');
+      setReconnectionError('Please log in again to connect to chat.');
+      return;
+    }
+
     // Connect when entering chat route (direct to API host — no CRA proxy)
-    const wsUrl = getChatWsUrl(token);
+    const wsUrl = getChatWsUrl(latestToken);
     
     console.log('Connecting to WebSocket for chat route:', wsUrl);
     socket.current = new ReconnectingWebSocket(wsUrl, null, {reconnectInterval: 3000});
+    let authRefreshInFlight = false;
 
     socket.current.onopen = () => {
       console.log('WebSocket connected');
@@ -745,11 +757,12 @@ function App({ onThemeChange }) {
       setReconnectionAttempts(0);
       setReconnectionError(null);
 
-      // Send connect with token
+      // Send connect with the freshest token (may have been refreshed since socket creation)
+      const connectToken = getLatestToken();
       const connectMessage = {
         type: 'connect',
         data: {
-          token: token, // JWT token for authentication
+          token: connectToken, // JWT token for authentication
         },
       };
       console.log('Sending connect message with token');
@@ -1003,6 +1016,40 @@ function App({ onThemeChange }) {
           
         case 'error':
           setIsTyping(false); // Stop typing on error
+          {
+            const errMsg = data?.data?.message || '';
+            const isAuthError = /invalid or expired authentication token|authentication token is required/i.test(
+              errMsg
+            );
+            if (isAuthError && !authRefreshInFlight) {
+              authRefreshInFlight = true;
+              console.warn('WebSocket auth failed; refreshing access token...');
+              setConnectionStatus('Reconnecting...');
+              setReconnectionError('Session expired — refreshing credentials…');
+              (async () => {
+                try {
+                  const refreshed = await refreshAccessToken();
+                  if (refreshed) {
+                    // Closing triggers ReconnectingWebSocket reconnect; effect also
+                    // re-runs when `token` state updates after a successful refresh.
+                    if (socket.current) {
+                      socket.current.close();
+                    }
+                  } else {
+                    setReconnectionError('Session expired. Please log in again.');
+                    logout();
+                  }
+                } catch (refreshErr) {
+                  console.error('Token refresh failed:', refreshErr);
+                  setReconnectionError('Session expired. Please log in again.');
+                  logout();
+                } finally {
+                  authRefreshInFlight = false;
+                }
+              })();
+              break;
+            }
+          }
           setChatMessages(prev => [...prev, { role: 'error', text: data.data.message }]);
           playSound('error');
           break;
@@ -1053,7 +1100,7 @@ function App({ onThemeChange }) {
         socket.current.close();
       }
     };
-  }, [location.pathname]); // Connect when entering chat route
+  }, [location.pathname, token, refreshAccessToken, logout]); // Reconnect when route or auth token changes
 
   // Fetch chats on mount
   useEffect(() => {

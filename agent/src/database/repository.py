@@ -2271,7 +2271,7 @@ class KnowledgeRepository:
             return context
 
     async def save_memory(
-        self, key: str, content: str, overwrite: bool = False
+        self, key: str, content: str, overwrite: bool = False, allow_core_revision: bool = False
     ) -> Optional[Node]:
         """Save text content as a Memory node.
 
@@ -2279,16 +2279,30 @@ class KnowledgeRepository:
             key: Memory key (e.g., "core:identity", "chat:session:123:transcript")
             content: Text content to store
             overwrite: If False and memory exists, raises ValueError. If True, updates existing.
+            allow_core_revision: If True, permit overwriting core:* keys (used by revise_core_memory).
 
         Returns:
             The created or updated Node instance
 
         Raises:
-            ValueError: If memory exists and overwrite=False
+            ValueError: If memory exists and overwrite=False, or if attempting to
+                overwrite a protected core:* memory without allow_core_revision
         """
+        # Normalize key (accept accidental memory: prefix)
+        if key.startswith("memory:"):
+            key = key[len("memory:") :]
+
         node_id = f"memory:{key}"
         existing = await self.get_node(node_id)
-        if existing and (not overwrite):
+
+        if existing and key.startswith("core:") and not allow_core_revision:
+            raise ValueError(
+                f"Cannot overwrite protected core memory '{key}' via save_memory. "
+                "Use append_memory to add notes, or revise_core_memory to version "
+                "and replace core identity content."
+            )
+
+        if existing and (not overwrite) and not allow_core_revision:
             raise ValueError(f"Memory '{key}' already exists (set overwrite=True)")
         node = await self.add_node(
             node_id=node_id,

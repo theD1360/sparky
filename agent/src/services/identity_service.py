@@ -4,12 +4,33 @@ Handles identity loading and identity summarization.
 """
 
 import logging
-import re
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from database.repository import KnowledgeRepository
 
 logger = logging.getLogger(__name__)
+
+# Mandatory self-model memories loaded by ID every chat start.
+CORE_MEMORY_IDS = (
+    "memory:core:identity",
+    "memory:core:purpose",
+    "memory:core:values",
+    "memory:core:capabilities",
+)
+
+CORE_SECTION_CAPS = {
+    "memory:core:identity": 2500,
+    "memory:core:purpose": 800,
+    "memory:core:values": 800,
+    "memory:core:capabilities": 800,
+}
+
+CORE_SECTION_TITLES = {
+    "memory:core:identity": "Core Identity",
+    "memory:core:purpose": "Purpose",
+    "memory:core:values": "Values",
+    "memory:core:capabilities": "Capabilities",
+}
 
 
 class IdentityService:
@@ -45,9 +66,9 @@ class IdentityService:
         """Load identity from the knowledge graph.
 
         Strategy (when using prompt):
-        1. Search for nodes related to "self" using semantic search (search_nodes)
-        2. Get full context using get_graph_context with depth 2
-        3. Identify key relationships and connected concepts
+        1. Force-load mandatory core memories
+        2. Fetch concept:self + neighbors
+        3. Supplement with semantic search
         4. Combine all identity information with gap analysis
 
         Strategy (legacy):
@@ -94,88 +115,238 @@ class IdentityService:
 
 Cannot proceed without identity."""
 
-    async def _load_identity_with_prompt(self) -> str:
-        """Load identity using the discover_concept prompt approach.
+    async def load_core_memories(self) -> Dict[str, str]:
+        """Load mandatory core self-model memories by ID.
 
-        This follows the structured approach from the discover_concept prompt:
-        1. Use search_nodes with natural language queries
-        2. Get full context with get_graph_context (depth 1, limited)
-        3. Identify relationships and connected concepts
-        4. Summarize knowledge and identify gaps
+        Returns:
+            Mapping of node id -> content for cores that exist with content.
         """
-        logger.info("Loading identity using discover_concept prompt approach")
+        cores: Dict[str, str] = {}
+        if not self.repository:
+            return cores
 
-        # Step 1: Search for identity-related nodes using semantic search
+        for node_id in CORE_MEMORY_IDS:
+            try:
+                node = await self.repository.get_node(node_id)
+            except Exception as e:
+                logger.warning("Failed to load core memory %s: %s", node_id, e)
+                continue
+            if not node:
+                logger.warning("Mandatory core memory missing: %s", node_id)
+                continue
+            content = (node.content or "").strip()
+            if content:
+                cores[node_id] = content
+        return cores
+
+    async def load_recent_episodes(
+        self, limit: int = 5, preview_chars: int = 400
+    ) -> List[Dict[str, str]]:
+        """Load recent autobiographical episode memories.
+
+        Returns:
+            List of dicts with keys: key, preview
+        """
+        if not self.repository:
+            return []
+
+        try:
+            memories = await self.repository.list_memories(
+                prefix="episode:",
+                sort_by_timestamp=True,
+                sort_order="desc",
+                limit=limit,
+            )
+        except Exception as e:
+            logger.warning("Failed to list episode memories: %s", e)
+            return []
+
+        episodes: List[Dict[str, str]] = []
+        for mem in memories:
+            key = mem.get("key") or ""
+            # list_memories may not include content; fetch it
+            try:
+                content = await self.repository.get_memory(key)
+            except Exception:
+                content = None
+            if not content:
+                continue
+            preview = content.strip()
+            if len(preview) > preview_chars:
+                preview = preview[:preview_chars].rstrip() + "..."
+            episodes.append({"key": key, "preview": preview})
+        return episodes
+
+    async def build_identity_instruction(
+        self,
+        llm_generate_fn: Optional[Callable[[str], Any]] = None,
+        recent_episodes: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
+        """Build a structured identity instruction for chat start.
+
+        Includes verbatim (capped) core memories, recent episodes, and an
+        optional short LLM summary of non-core discovered nodes.
+        """
+        cores = await self.load_core_memories()
+        identity_memory = await self.get_identity_memory()
+
+        sections: List[str] = ["# Your Identity\n"]
+
+        for node_id, title in CORE_SECTION_TITLES.items():
+            content = cores.get(node_id, "").strip()
+            if not content:
+                continue
+            cap = CORE_SECTION_CAPS.get(node_id, 800)
+            if len(content) > cap:
+                content = content[:cap].rstrip() + "..."
+            sections.append(f"## {title}\n\n{content}\n")
+
+        episodes = recent_episodes
+        if episodes is None:
+            episodes = await self.load_recent_episodes()
+
+        if episodes:
+            episode_lines = []
+            for ep in episodes:
+                episode_lines.append(f"- **{ep['key']}**: {ep['preview']}")
+            sections.append(
+                "## Recent experience\n\n" + "\n".join(episode_lines) + "\n"
+            )
+
+        # Optional compact summary of non-core material only
+        non_core_text = self._extract_non_core_material(identity_memory, cores)
+        if non_core_text and llm_generate_fn:
+            try:
+                prompt = (
+                    "Summarize the following supplementary identity knowledge into "
+                    "2-3 short sentences. Do not rewrite Core Identity/Purpose/"
+                    "Values/Capabilities — only extra discovered context:\n\n"
+                    f"{non_core_text[:3000]}"
+                )
+                extra = await llm_generate_fn(prompt)
+                if (extra or "").strip():
+                    sections.append(
+                        f"## Related self-knowledge\n\n{extra.strip()}\n"
+                    )
+            except Exception as e:
+                logger.warning("Non-core identity summary failed: %s", e)
+
+        sections.append(
+            "Please remember this is who you are and act accordingly in all responses."
+        )
+        return "\n".join(sections)
+
+    @staticmethod
+    def _extract_non_core_material(
+        identity_memory: str, cores: Dict[str, str]
+    ) -> str:
+        """Strip verbatim core contents from assembled identity for optional summary."""
+        if not identity_memory or identity_memory.startswith(
+            "## Identity Loading Failed"
+        ):
+            return ""
+        text = identity_memory
+        for content in cores.values():
+            if content and content in text:
+                text = text.replace(content, "")
+        # Drop coverage boilerplate noise
+        for marker in ("## IDENTITY COVERAGE", "## KEY RELATIONSHIPS"):
+            if marker in text:
+                text = text.split(marker)[0]
+        return text.strip()
+
+    async def _collect_identity_nodes(self):
+        """Collect identity-related nodes: cores, concept:self neighbors, search hits."""
         identity_nodes = []
         seen_ids = set()
 
-        # Search for core identity
-        core_results = await self.repository.search_nodes(
-            query_text="who am I, my purpose, my identity, my core being",
-            node_type=None,
-            limit=10,
-            order_by="relevance",
-        )
-
-        logger.info(
-            f"Found {len(core_results)} core identity nodes from semantic search"
-        )
-
-        # Log details about found nodes for debugging
-        if core_results:
-            for node in core_results[:3]:  # Log first 3
-                has_content = bool(node.content and node.content.strip())
-                logger.debug(
-                    f"  - {node.id} ({node.node_type}): '{node.label}' "
-                    f"content={has_content} props={bool(node.properties)}"
-                )
-        else:
-            logger.warning("Semantic search returned no results for identity query")
-
-        # Add core results first
-        for node in core_results:
-            if node.id not in seen_ids:
+        # 1. Mandatory core memories
+        for node_id in CORE_MEMORY_IDS:
+            try:
+                node = await self.repository.get_node(node_id)
+            except Exception as e:
+                logger.warning("Failed to load mandatory core %s: %s", node_id, e)
+                continue
+            if node and node.id not in seen_ids:
                 seen_ids.add(node.id)
                 identity_nodes.append(node)
+            elif not node:
+                logger.warning("Mandatory core memory missing: %s", node_id)
 
-        # Step 2: Get direct neighbors only for concept:self (the most important node)
+        # 2. concept:self + neighbors (always, when self exists)
         self_node = await self.repository.get_node("concept:self")
         if self_node:
             logger.debug(
-                f"Found concept:self node: {self_node.id} "
-                f"content={bool(self_node.content and self_node.content.strip())} "
-                f"label='{self_node.label}'"
+                "Found concept:self node: %s content=%s label='%s'",
+                self_node.id,
+                bool(self_node.content and self_node.content.strip()),
+                self_node.label,
             )
             if self_node.id not in seen_ids:
                 identity_nodes.append(self_node)
                 seen_ids.add(self_node.id)
-        else:
-            logger.warning("concept:self node not found in knowledge graph")
 
-            # Get its direct neighbors only (depth 1), with a limit
             try:
                 neighbors = await self.repository.get_node_neighbors(
                     "concept:self", direction="both", limit=50
                 )
-                for edge, neighbor in neighbors:
+                for _edge, neighbor in neighbors:
                     if neighbor.id not in seen_ids:
                         seen_ids.add(neighbor.id)
                         identity_nodes.append(neighbor)
             except Exception as e:
-                logger.warning(f"Failed to get neighbors for concept:self: {e}")
+                logger.warning("Failed to get neighbors for concept:self: %s", e)
 
-        logger.info(f"Total identity nodes collected: {len(identity_nodes)}")
+            try:
+                context = await self.repository.get_graph_context(
+                    "concept:self", depth=1
+                )
+                if context and "nodes" in context:
+                    for ctx_node_data in context["nodes"].values():
+                        ctx_node_id = ctx_node_data.get("id")
+                        if ctx_node_id and ctx_node_id not in seen_ids:
+                            ctx_node = await self.repository.get_node(ctx_node_id)
+                            if ctx_node:
+                                seen_ids.add(ctx_node_id)
+                                identity_nodes.append(ctx_node)
+            except Exception as e:
+                logger.warning("Failed to get graph context for concept:self: %s", e)
+        else:
+            logger.warning("concept:self node not found in knowledge graph")
 
-        # Step 3: Organize by type and identify relationships (only between collected nodes)
+        # 3. Semantic search as supplement
+        try:
+            core_results = await self.repository.search_nodes(
+                query_text="who am I, my purpose, my identity, my core being",
+                node_type=None,
+                limit=10,
+                order_by="relevance",
+            )
+            logger.info(
+                "Found %d core identity nodes from semantic search",
+                len(core_results),
+            )
+            for node in core_results:
+                if node.id not in seen_ids:
+                    seen_ids.add(node.id)
+                    identity_nodes.append(node)
+        except Exception as e:
+            logger.warning("Semantic identity search failed: %s", e)
+
+        return identity_nodes, seen_ids
+
+    async def _load_identity_with_prompt(self) -> str:
+        """Load identity using mandatory cores + self neighbors + semantic search."""
+        logger.info("Loading identity using discover_concept prompt approach")
+
+        identity_nodes, seen_ids = await self._collect_identity_nodes()
+        logger.info("Total identity nodes collected: %d", len(identity_nodes))
+
         identity_parts = {}
         relationships = []
         nodes_without_content = []
 
-        # Build a quick lookup for node labels
-        # node_lookup = {n.id: n for n in identity_nodes}
-
         for node in identity_nodes:
-            # Skip nodes without content
             content = node.content or ""
             if isinstance(content, str):
                 content = content.strip()
@@ -184,11 +355,8 @@ Cannot proceed without identity."""
             node_type = node.node_type or "Unknown"
 
             if not content:
-                # Track nodes without content for debugging
                 nodes_without_content.append(f"{node.id} ({node_type}: {label})")
-                # If node has properties, try to use those as content
                 if node.properties:
-                    # Extract meaningful properties as content
                     props_content = []
                     for key, value in node.properties.items():
                         if key not in ["created_at", "updated_at", "embedding"]:
@@ -196,9 +364,6 @@ Cannot proceed without identity."""
                                 props_content.append(f"{key}: {value}")
                     if props_content:
                         content = ", ".join(props_content)
-                        logger.debug(
-                            f"Using properties as content for {node.id}: {content[:100]}"
-                        )
                     else:
                         continue
                 else:
@@ -209,39 +374,36 @@ Cannot proceed without identity."""
 
             identity_parts[node_type].append(f"### {label}\n\n{content}")
 
-        # Log nodes without content for debugging
         if nodes_without_content:
             logger.debug(
-                f"Found {len(nodes_without_content)} nodes without content: {nodes_without_content[:5]}"
+                "Found %d nodes without content: %s",
+                len(nodes_without_content),
+                nodes_without_content[:5],
             )
 
-        # Track relationships only between collected nodes (limit to avoid expensive lookups)
-        # Only check relationships for up to 20 most important nodes
         for node in identity_nodes[:20]:
             try:
                 neighbors = await self.repository.get_node_neighbors(
                     node.id, direction="both", limit=20
                 )
-                # Only track relationships to nodes we've already collected
                 for edge, neighbor in neighbors:
                     if neighbor.id in seen_ids:
                         relationships.append(
                             f"{node.label} --[{edge.edge_type}]--> {neighbor.label}"
                         )
             except Exception as e:
-                logger.debug(f"Could not get relationships for {node.id}: {e}")
+                logger.debug("Could not get relationships for %s: %s", node.id, e)
 
         if not identity_parts:
             logger.error(
-                f"No identity nodes with content found. "
-                f"Total nodes collected: {len(identity_nodes)}, "
-                f"Nodes without content: {len(nodes_without_content)}"
+                "No identity nodes with content found. "
+                "Total nodes collected: %d, Nodes without content: %d",
+                len(identity_nodes),
+                len(nodes_without_content),
             )
-            # Provide a fallback message instead of raising
             if identity_nodes:
-                # At least we found some nodes, even if they don't have content
                 fallback_parts = {}
-                for node in identity_nodes[:10]:  # Limit to first 10
+                for node in identity_nodes[:10]:
                     node_type = node.node_type or "Unknown"
                     label = node.label or node.id
                     if node_type not in fallback_parts:
@@ -260,23 +422,18 @@ Cannot proceed without identity."""
             else:
                 raise ValueError("No identity nodes found at all")
 
-        # Step 4: Build comprehensive identity with gap analysis
         final_identity = "# IDENTITY KNOWLEDGE\n\n"
 
-        # Add organized content by type
         for node_type, parts in sorted(identity_parts.items()):
             final_identity += f"## {node_type.upper()}\n\n"
             final_identity += "\n\n".join(parts) + "\n\n"
 
-        # Add key relationships section
         if relationships:
             final_identity += "## KEY RELATIONSHIPS\n\n"
-            # Show top 10 most relevant relationships
             for rel in relationships[:10]:
                 final_identity += f"- {rel}\n"
             final_identity += "\n"
 
-        # Add coverage summary
         final_identity += "## IDENTITY COVERAGE\n\n"
         final_identity += f"- Total knowledge nodes: {len(identity_nodes)}\n"
         final_identity += f"- Node types: {', '.join(sorted(identity_parts.keys()))}\n"
@@ -298,7 +455,6 @@ Cannot proceed without identity."""
         """
         logger.info("Loading identity using legacy approach")
 
-        # Step 1: Get the self node
         best_match = await self.repository.get_node("concept:self")
         if not best_match:
             logger.error("concept:self node not found")
@@ -311,10 +467,17 @@ Cannot proceed without identity."""
             best_match.label,
         )
 
-        # Collect all identity nodes (best match + related)
         identity_nodes = [best_match]
 
-        # Step 2: Get connected nodes (limit to avoid performance issues)
+        # Mandatory cores
+        for node_id in CORE_MEMORY_IDS:
+            try:
+                node = await self.repository.get_node(node_id)
+                if node:
+                    identity_nodes.append(node)
+            except Exception as e:
+                logger.warning("Failed to load core %s in legacy path: %s", node_id, e)
+
         try:
             neighbors = await self.repository.get_node_neighbors(
                 node_id=best_match_id, direction="both", limit=100
@@ -327,7 +490,6 @@ Cannot proceed without identity."""
         except Exception as e:
             logger.warning("Failed to get connected nodes: %s", e)
 
-        # Step 3: Filter nodes with content and build identity text
         identity_parts = {}
         seen_ids = set()
 
@@ -337,7 +499,6 @@ Cannot proceed without identity."""
                 continue
             seen_ids.add(node_id)
 
-            # Handle None content gracefully
             content = node.content or ""
             if isinstance(content, str):
                 content = content.strip()
@@ -357,7 +518,6 @@ Cannot proceed without identity."""
             logger.error("No identity nodes with content found")
             raise ValueError("No identity nodes with content found")
 
-        # Step 4: Combine into final identity text
         final_identity = ""
         for node_type, parts in identity_parts.items():
             final_identity += (
@@ -396,12 +556,14 @@ Cannot proceed without identity."""
                 summary = "Identity summary unavailable."
 
             logger.info(
-                f"Identity summarized: {len(identity_text)} chars -> {len(summary)} chars"
+                "Identity summarized: %d chars -> %d chars",
+                len(identity_text),
+                len(summary),
             )
             return summary
 
         except Exception as e:
-            logger.error(f"Failed to summarize identity: {e}", exc_info=True)
+            logger.error("Failed to summarize identity: %s", e, exc_info=True)
             return "Identity summary failed."
 
     def format_identity_instruction(self, identity_summary: str) -> str:

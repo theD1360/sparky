@@ -1654,6 +1654,19 @@ async def search_nodes(
 
 
 # Memory Management Tools
+async def _auto_associate_memory(memory_key: str, description: str = "") -> None:
+    """Associate a memory with ontology nodes via KnowledgeService."""
+    if not _kb_repository:
+        return
+    try:
+        from services.knowledge_service import KnowledgeService
+
+        ks = KnowledgeService(repository=_kb_repository)
+        await ks.auto_associate_memory(memory_key, description)
+    except Exception as e:
+        logger.warning("Auto-associate failed for '%s': %s", memory_key, e)
+
+
 @mcp.tool()
 async def save_memory(name: str, content: str, overwrite: bool = False) -> dict:
     """Save persistent text content under a named key in the knowledge graph.
@@ -1664,6 +1677,8 @@ async def save_memory(name: str, content: str, overwrite: bool = False) -> dict:
     Use this to remember user preferences, important facts, task results, or any persistent state.
 
     By default, attempting to save to an existing key will fail unless overwrite=True.
+    Protected core:* memories cannot be overwritten with this tool — use append_memory
+    or revise_core_memory instead.
 
     Args:
         name: Unique key for this memory (e.g., "user_preferences", "project_status")
@@ -1683,13 +1698,25 @@ async def save_memory(name: str, content: str, overwrite: bool = False) -> dict:
     if not memory_key:
         return MCPResponse.error("name must not be empty").to_dict()
 
+    # Accept accidental memory: prefix from the model
+    if memory_key.startswith("memory:"):
+        memory_key = memory_key[len("memory:") :]
+
     if not _kb_repository:
         return MCPResponse.error("Database not initialized").to_dict()
 
     try:
         existing = await _kb_repository.get_node(f"memory:{memory_key}")
+        if existing and memory_key.startswith("core:"):
+            return MCPResponse.error(
+                f"Cannot overwrite protected core memory '{memory_key}'. "
+                "Use append_memory to add notes, or revise_core_memory(name, content, reason) "
+                "to version and replace core identity content."
+            ).to_dict()
+
         await _kb_repository.save_memory(memory_key, content, overwrite=overwrite)
         action = "updated" if existing else "saved"
+        await _auto_associate_memory(memory_key)
         return MCPResponse.success(
             result={"key": memory_key, "action": action},
             message=f"Successfully {action} memory '{memory_key}'",
@@ -1699,6 +1726,83 @@ async def save_memory(name: str, content: str, overwrite: bool = False) -> dict:
     except Exception as e:
         logger.error("Error saving memory: %s", e, exc_info=True)
         return MCPResponse.error(f"Failed to save memory: {str(e)}").to_dict()
+
+
+@mcp.tool()
+async def revise_core_memory(name: str, content: str, reason: str) -> dict:
+    """Version and replace a protected core:* memory.
+
+    Archives the previous content under `{name}:revision:{utc}` then writes the new
+    content to the core key. Use this instead of save_memory when intentionally
+    evolving Core Identity / Purpose / Values / Capabilities.
+
+    Args:
+        name: Core memory key (must start with "core:", e.g. "core:identity")
+        content: New text content for the core memory
+        reason: Short explanation of why the identity is being revised
+
+    Returns:
+        Dictionary with key, revision_key, and action
+    """
+    memory_key = str(name).strip()
+    content = str(content)
+    reason = str(reason).strip()
+
+    if memory_key.startswith("memory:"):
+        memory_key = memory_key[len("memory:") :]
+
+    if not memory_key.startswith("core:"):
+        return MCPResponse.error(
+            "revise_core_memory only applies to keys starting with 'core:'"
+        ).to_dict()
+
+    if not content.strip():
+        return MCPResponse.error("content must not be empty").to_dict()
+
+    if not reason:
+        return MCPResponse.error("reason must not be empty").to_dict()
+
+    if not _kb_repository:
+        return MCPResponse.error("Database not initialized").to_dict()
+
+    try:
+        existing = await _kb_repository.get_node(f"memory:{memory_key}")
+        revision_key = None
+        if existing and (existing.content or "").strip():
+            stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            revision_key = f"{memory_key}:revision:{stamp}"
+            archive_body = (
+                f"[Archived from {memory_key}]\n"
+                f"Reason for revision: {reason}\n\n"
+                f"{existing.content}"
+            )
+            await _kb_repository.save_memory(
+                revision_key, archive_body, overwrite=True
+            )
+            await _auto_associate_memory(revision_key, f"Revision of {memory_key}")
+
+        await _kb_repository.save_memory(
+            memory_key,
+            content,
+            overwrite=True,
+            allow_core_revision=True,
+        )
+        await _auto_associate_memory(memory_key, f"Core memory: {memory_key}")
+
+        return MCPResponse.success(
+            result={
+                "key": memory_key,
+                "revision_key": revision_key,
+                "action": "revised" if existing else "created",
+                "reason": reason,
+            },
+            message=f"Successfully revised core memory '{memory_key}'",
+        ).to_dict()
+    except ValueError as e:
+        return MCPResponse.error(str(e)).to_dict()
+    except Exception as e:
+        logger.error("Error revising core memory: %s", e, exc_info=True)
+        return MCPResponse.error(f"Failed to revise core memory: {str(e)}").to_dict()
 
 
 @mcp.tool()
@@ -1726,6 +1830,9 @@ async def append_memory(name: str, content: str) -> dict:
     if not memory_key:
         return MCPResponse.error("name must not be empty").to_dict()
 
+    if memory_key.startswith("memory:"):
+        memory_key = memory_key[len("memory:") :]
+
     if not _kb_repository:
         return MCPResponse.error("Database not initialized").to_dict()
 
@@ -1734,6 +1841,7 @@ async def append_memory(name: str, content: str) -> dict:
         node = await _kb_repository.append_memory(memory_key, content)
         action = "appended" if existing and existing.content else "created"
         content_size = len(node.content) if node.content else 0
+        await _auto_associate_memory(memory_key)
         return MCPResponse.success(
             result={"key": memory_key, "action": action, "content_size": content_size},
             message=f"Successfully {action} memory '{memory_key}'",

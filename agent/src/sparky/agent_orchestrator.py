@@ -834,40 +834,35 @@ class AgentOrchestrator:
         history = history or []
 
         # Load identity using services
-        identity_memory = None
-        identity_summary = None
+        identity_instruction = None
 
-        # Use IdentityService for loading identity
         try:
-            identity_memory = await self.identity_service.get_identity_memory()
-            logger.info("Identity loaded successfully: %d chars", len(identity_memory))
-        except Exception as e:
-            logger.error("Failed to load identity: %s", e, exc_info=True)
-            identity_memory = "## Identity Loading Failed\n\nCannot load identity."
-
-        # Summarize the identity to reduce token usage using IdentityService
-        if identity_memory and not identity_memory.startswith(
-            "## Identity Loading Failed"
-        ):
-
-            try:
-                identity_summary = await self.identity_service.summarize_identity(
-                    identity_memory, self.generate
-                )
-                logger.info("Identity summarized: %d chars", len(identity_summary))
-            except Exception as e:
-                logger.error("Failed to summarize identity: %s", e, exc_info=True)
-                # Fallback to direct summarization
-                identity_summary_prompt = f"Summarize the following identity document into a concise paragraph, retaining the core concepts, purpose, and values:\n\n{identity_memory}"
-                identity_summary = await self.generate(identity_summary_prompt)
-
-        # Format identity instruction
-        if identity_summary and not identity_summary.startswith("Identity unavailable"):
-
-            identity_instruction = self.identity_service.format_identity_instruction(
-                identity_summary
+            identity_instruction = await self.identity_service.build_identity_instruction(
+                llm_generate_fn=self.generate,
             )
+            logger.info(
+                "Identity instruction built: %d chars", len(identity_instruction)
+            )
+        except Exception as e:
+            logger.error("Failed to build identity instruction: %s", e, exc_info=True)
+            # Fallback to legacy load + format
+            try:
+                identity_memory = await self.identity_service.get_identity_memory()
+                if identity_memory and not identity_memory.startswith(
+                    "## Identity Loading Failed"
+                ):
+                    identity_instruction = (
+                        self.identity_service.format_identity_instruction(
+                            identity_memory[:2000]
+                        )
+                    )
+            except Exception as fallback_err:
+                logger.error(
+                    "Identity fallback also failed: %s", fallback_err, exc_info=True
+                )
+                identity_instruction = None
 
+        if identity_instruction:
             logger.info(
                 "Adding identity instruction to chat: %d chars",
                 len(identity_instruction),
@@ -876,7 +871,6 @@ class AgentOrchestrator:
             logger.warning(
                 "No identity summary available, skipping identity instruction"
             )
-            identity_instruction = None
 
         if not self.initial_context_added:
             if identity_instruction:
@@ -1077,6 +1071,15 @@ class AgentOrchestrator:
         executed_tool_calls = []
 
         try:
+            # Enrich user turn with relevant KG previews when available
+            if self.knowledge:
+                try:
+                    processed_message = await self.knowledge.pre_search_context(
+                        processed_message
+                    )
+                except Exception as pre_err:
+                    logger.warning("Pre-search context failed: %s", pre_err)
+
             # Pass events and executed_tool_calls to provider for callback setup
             response = await self.provider.send_message(
                 processed_message,

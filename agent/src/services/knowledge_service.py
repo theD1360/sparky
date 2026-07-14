@@ -62,6 +62,7 @@ class KnowledgeService:
         # Memory operations
         "save_memory",
         "append_memory",
+        "revise_core_memory",
         "get_memory",
         "list_memories",
         "search_memory",
@@ -222,11 +223,57 @@ Cannot proceed without identity."""
         """
         logger.info("Loading identity using discover_concept prompt approach")
 
-        # Step 1: Search for identity-related nodes using semantic search
+        # Step 1: Force-load mandatory core memories
         identity_nodes = []
         seen_ids = set()
 
-        # Search for core identity
+        from services.identity_service import CORE_MEMORY_IDS
+
+        for node_id in CORE_MEMORY_IDS:
+            try:
+                node = await self.repository.get_node(node_id)
+                if node and node.id not in seen_ids:
+                    seen_ids.add(node.id)
+                    identity_nodes.append(node)
+                elif not node:
+                    logger.warning("Mandatory core memory missing: %s", node_id)
+            except Exception as e:
+                logger.warning("Failed to load mandatory core %s: %s", node_id, e)
+
+        # Step 2: concept:self + neighbors/context (always when self exists)
+        self_node = await self.repository.get_node("concept:self")
+        if self_node:
+            if self_node.id not in seen_ids:
+                identity_nodes.append(self_node)
+                seen_ids.add(self_node.id)
+            try:
+                neighbors = await self.repository.get_node_neighbors(
+                    "concept:self", direction="both", limit=50
+                )
+                for _edge, neighbor in neighbors:
+                    if neighbor.id not in seen_ids:
+                        seen_ids.add(neighbor.id)
+                        identity_nodes.append(neighbor)
+            except Exception as e:
+                logger.warning("Failed to get neighbors for concept:self: %s", e)
+            try:
+                context = await self.repository.get_graph_context(
+                    "concept:self", depth=2
+                )
+                if context and "nodes" in context:
+                    for ctx_node_data in context["nodes"].values():
+                        ctx_node_id = ctx_node_data.get("id")
+                        if ctx_node_id and ctx_node_id not in seen_ids:
+                            ctx_node = await self.repository.get_node(ctx_node_id)
+                            if ctx_node:
+                                seen_ids.add(ctx_node_id)
+                                identity_nodes.append(ctx_node)
+            except Exception as e:
+                logger.warning("Failed to get context for concept:self: %s", e)
+        else:
+            logger.warning("concept:self node not found in knowledge graph")
+
+        # Step 3: Semantic search as supplement
         core_results = await self.repository.search_nodes(
             query_text="who am I, my purpose, my identity, my core being",
             node_type=None,
@@ -238,51 +285,24 @@ Cannot proceed without identity."""
             f"Found {len(core_results)} core identity nodes from semantic search"
         )
 
-        # Step 2: Get full context for each found node (depth 2)
         for node in core_results:
             if node.id in seen_ids:
                 continue
             seen_ids.add(node.id)
             identity_nodes.append(node)
 
-            # Get deeper context around this node
             try:
                 context = await self.repository.get_graph_context(node.id, depth=2)
                 if context and "nodes" in context:
-                    # context["nodes"] is a dict keyed by node_id, iterate over values
                     for ctx_node_data in context["nodes"].values():
                         ctx_node_id = ctx_node_data.get("id")
                         if ctx_node_id and ctx_node_id not in seen_ids:
-                            # Get the actual node object
                             ctx_node = await self.repository.get_node(ctx_node_id)
                             if ctx_node:
                                 seen_ids.add(ctx_node_id)
                                 identity_nodes.append(ctx_node)
             except Exception as e:
                 logger.warning(f"Failed to get context for {node.id}: {e}")
-
-        # Also ensure we get concept:self if it exists
-        self_node = await self.repository.get_node("concept:self")
-        if self_node and self_node.id not in seen_ids:
-            identity_nodes.append(self_node)
-            seen_ids.add(self_node.id)
-
-            # Get its context too
-            try:
-                context = await self.repository.get_graph_context(
-                    "concept:self", depth=2
-                )
-                if context and "nodes" in context:
-                    # context["nodes"] is a dict keyed by node_id, iterate over values
-                    for ctx_node_data in context["nodes"].values():
-                        ctx_node_id = ctx_node_data.get("id")
-                        if ctx_node_id and ctx_node_id not in seen_ids:
-                            ctx_node = await self.repository.get_node(ctx_node_id)
-                            if ctx_node:
-                                seen_ids.add(ctx_node_id)
-                                identity_nodes.append(ctx_node)
-            except Exception as e:
-                logger.warning(f"Failed to get context for concept:self: {e}")
 
         logger.info(f"Total identity nodes collected: {len(identity_nodes)}")
 
@@ -704,9 +724,45 @@ Cannot proceed without identity."""
                 edge_type="HAS_SUMMARY",
             )
 
+            # Persist autobiographical episode linked to self
+            episode_key = f"episode:{self.session_id}"
+            episode_content = (
+                f"[Chat: {self.session_id} | Turns: {turn_count}]\n{summary}"
+            )
+            await self.repository.save_memory(
+                key=episode_key,
+                content=episode_content,
+                overwrite=True,
+            )
+            await self._ensure_memory_in_graph(episode_key, "Autobiographical Episode")
+            # Stamp episode metadata on the memory node
+            try:
+                await self.repository.add_node(
+                    node_id=f"memory:{episode_key}",
+                    node_type="Memory",
+                    label=f"Episode {self.session_id}",
+                    content=episode_content,
+                    properties={
+                        "key": episode_key,
+                        "chat_id": self.session_id,
+                        "turn_count": turn_count,
+                        "timestamp": _dt.datetime.utcnow().isoformat(),
+                        "content_size": len(episode_content),
+                    },
+                )
+            except Exception as prop_err:
+                logger.debug("Knowledge: episode property stamp skipped: %s", prop_err)
+            await self.auto_associate_memory(episode_key, "Autobiographical Episode")
+            await self.repository.add_edge(
+                source_id=session_node_id,
+                target_id=f"memory:{episode_key}",
+                edge_type="HAS_EPISODE",
+            )
+
             logger.info(
-                "Knowledge: ✓ Persisted and linked session summary (%s)",
+                "Knowledge: ✓ Persisted and linked session summary (%s) and episode (%s)",
                 self._mem_summary_key,
+                episode_key,
             )
 
             # Emit memory saved event
@@ -1026,6 +1082,18 @@ Cannot proceed without identity."""
                     source_id=memory_node_id,
                     target_id="concept:self",
                     edge_type="RELATES_TO",
+                )
+                logger.debug("KG: ✓ Associated %s with concept:self", memory_key)
+
+            elif memory_key.startswith("episode:"):
+                # Autobiographical episodes are experienced by self
+                logger.info(
+                    "KG: Linking '%s' → concept:self (EXPERIENCED_BY)", memory_key
+                )
+                await self.repository.add_edge(
+                    source_id=memory_node_id,
+                    target_id="concept:self",
+                    edge_type="EXPERIENCED_BY",
                 )
                 logger.debug("KG: ✓ Associated %s with concept:self", memory_key)
 
