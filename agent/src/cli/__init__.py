@@ -10,6 +10,7 @@ from cli.client import client
 from cli.db import db
 from cli.generate import app as generate_app
 from cli.models import app as models_app
+from cli.user import user
 from cli.utils import app as utils_app
 
 # Load environment variables and setup logging
@@ -28,6 +29,7 @@ app.add_typer(chat, name="chat")
 app.add_typer(client, name="client")
 app.add_typer(agent, name="agent")
 app.add_typer(db, name="db")
+app.add_typer(user, name="user")
 
 # Add single commands as subcommands
 app.command("generate", help="Generate a one-off response from a prompt")(
