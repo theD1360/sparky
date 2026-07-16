@@ -346,11 +346,30 @@ class GeminiProvider(LLMProvider):
             )
 
             # Extract response from result
-            # create_agent returns state with messages, last message is the response
+            # create_agent returns state with messages; prefer the last AI text,
+            # not merely the last message (which can be a ToolMessage).
             response_messages = result.get("messages", [])
+            response_text = ""
             if response_messages:
-                last_message = response_messages[-1]
-                response_text = self.extract_text(last_message)
+                for candidate in reversed(response_messages):
+                    # Prefer AIMessage-like objects with extractable text
+                    name = type(candidate).__name__
+                    if name in ("HumanMessage", "ToolMessage", "SystemMessage"):
+                        continue
+                    text = self.extract_text(candidate)
+                    if text and text.strip():
+                        response_text = text
+                        break
+                if not response_text:
+                    # Fall back to last message even if empty (preserves prior behavior)
+                    response_text = self.extract_text(response_messages[-1])
+                    if not (response_text or "").strip():
+                        logger.warning(
+                            "[gemini_provider] Agent returned no text content "
+                            "(last message type=%s, total messages=%d)",
+                            type(response_messages[-1]).__name__,
+                            len(response_messages),
+                        )
 
                 # Update memory with all messages from state
                 # This ensures summaries and all messages are persisted
@@ -383,6 +402,12 @@ class GeminiProvider(LLMProvider):
                 return AgentResponse(response_text)
             else:
                 # Fallback if no messages in result
+                class AgentResponse:
+                    def __init__(self, output: str):
+                        self.content = output
+                        self.tool_calls = []
+
+                logger.warning("[gemini_provider] Agent result had no messages")
                 return AgentResponse("")
         else:
             # No tools - use model directly with memory

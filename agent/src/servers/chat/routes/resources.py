@@ -1,11 +1,15 @@
 """Resource management API endpoints."""
 
+import asyncio
 from typing import List
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api", tags=["resources"])
+
+# Soft ceiling so Help UI never hangs the event loop waiting on MCP stdio.
+_CATALOG_API_TIMEOUT_S = 8.0
 
 
 class ResourceInfo(BaseModel):
@@ -32,7 +36,12 @@ async def list_resources():
     if _connection_manager and _connection_manager.langchain_toolchains:
         # Get first available toolchain
         toolchain = next(iter(_connection_manager.langchain_toolchains.values()))
-        resources = await toolchain.list_resources()
+        try:
+            resources = await asyncio.wait_for(
+                toolchain.list_resources(), timeout=_CATALOG_API_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            return []
         # Resources are (server_name, resource_uri) tuples
         # We don't have descriptions easily available, so return URIs only
         return [

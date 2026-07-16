@@ -111,7 +111,26 @@ class ConnectionManager:
         self._mcp_load_tasks: Dict[str, asyncio.Task] = {}
         # user_id -> tools initialized flag
         self.tools_initialized: Dict[str, bool] = {}
+        # (user_id, chat_id) -> lock so start_chat and switch_chat cannot race
+        self._chat_init_locks: Dict[Tuple[str, str], asyncio.Lock] = {}
         self.session_timeout = timedelta(minutes=session_timeout_minutes)
+
+    def _chat_init_lock(self, user_id: str, chat_id: str) -> asyncio.Lock:
+        """Per-chat lock for create/start/switch so memory is ready before chat_ready."""
+        key = (user_id, chat_id)
+        lock = self._chat_init_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._chat_init_locks[key] = lock
+        return lock
+
+    @staticmethod
+    def _bot_chat_ready(bot: AgentOrchestrator) -> bool:
+        """True when provider memory is set (safe to accept user messages)."""
+        if getattr(bot, "memory", None):
+            return True
+        provider = getattr(bot, "provider", None)
+        return bool(provider and getattr(provider, "memory", None))
 
     async def initialize_tools_for_user(
         self, user_id: str, websocket: WebSocket
@@ -462,10 +481,32 @@ class ConnectionManager:
         Returns:
             AgentOrchestrator instance for the chat
         """
+        async with self._chat_init_lock(user_id, chat_id):
+            return await self._create_bot_for_chat_unlocked(
+                user_id, chat_id, chat_name=chat_name
+            )
+
+    async def _create_bot_for_chat_unlocked(
+        self,
+        user_id: str,
+        chat_id: str,
+        chat_name: Optional[str] = None,
+    ) -> AgentOrchestrator:
+        """Create/retrieve bot; caller must hold `_chat_init_lock` for this chat."""
         # Check if bot already exists for this chat
         if user_id in self.bot_sessions and chat_id in self.bot_sessions[user_id]:
             bot = self.bot_sessions[user_id][chat_id]
-            logger.info(f"[{user_id}:{chat_id}] Reusing existing bot instance")
+            if not self._bot_chat_ready(bot):
+                logger.info(
+                    f"[{user_id}:{chat_id}] Existing bot not ready, finishing start_chat"
+                )
+                await bot.start_chat(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    chat_name=chat_name or f"Chat {chat_id[:8]}",
+                )
+            else:
+                logger.info(f"[{user_id}:{chat_id}] Reusing existing bot instance")
             return bot
 
         # Create new bot instance for this chat
@@ -797,29 +838,31 @@ class ConnectionManager:
         """
         logger.info(f"[{user_id}] Switching to chat {chat_id}")
 
-        # Update current chat tracking
-        self.current_chat[user_id] = chat_id
-        self.last_activity[user_id] = datetime.utcnow()
+        # Serialize with create/start so we never emit chat_ready before memory exists.
+        async with self._chat_init_lock(user_id, chat_id):
+            # Update current chat tracking
+            self.current_chat[user_id] = chat_id
+            self.last_activity[user_id] = datetime.utcnow()
 
-        # Get or create bot for this chat
-        if user_id in self.bot_sessions and chat_id in self.bot_sessions[user_id]:
-            bot = self.bot_sessions[user_id][chat_id]
-            # Check if chat is initialized - if not, initialize it
-            if not getattr(bot, "_chat_id", None):
-                logger.info(
-                    f"[{user_id}:{chat_id}] Bot exists but chat not initialized, initializing..."
-                )
-                await bot.start_chat(
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    chat_name=None,  # Will use existing chat name
-                )
-            logger.info(f"[{user_id}:{chat_id}] Reusing existing bot for chat")
-            return bot
-        else:
-            # Create new bot for this chat
+            # Get or create bot for this chat
+            if user_id in self.bot_sessions and chat_id in self.bot_sessions[user_id]:
+                bot = self.bot_sessions[user_id][chat_id]
+                # `_chat_id` is set at the start of start_chat; memory is the real ready signal.
+                if not self._bot_chat_ready(bot):
+                    logger.info(
+                        f"[{user_id}:{chat_id}] Bot exists but memory not set, initializing..."
+                    )
+                    await bot.start_chat(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        chat_name=None,  # Will use existing chat name
+                    )
+                logger.info(f"[{user_id}:{chat_id}] Reusing existing bot for chat")
+                return bot
+
+            # Create new bot for this chat (already holding the lock)
             logger.info(f"[{user_id}:{chat_id}] Creating new bot for chat")
-            return await self.create_bot_for_chat(user_id, chat_id)
+            return await self._create_bot_for_chat_unlocked(user_id, chat_id)
 
     def connect(self, user_id: str, websocket: WebSocket):
         """Register active websocket connection for a user.
@@ -1721,10 +1764,27 @@ Respond with ONLY the title, no quotes or extra text. Keep it under 50 character
                                 )
 
                 response = await current_bot.send_message(user_message, file_id=file_id)
+                if not (response or "").strip():
+                    logger.warning(
+                        f"[{user_id}:{current_chat_id}] Model returned empty text; "
+                        "sending fallback notice to client"
+                    )
+                    response = (
+                        "I didn't produce a text reply for that turn. "
+                        "This can happen with large tool sets — try asking again, "
+                        "or ask for a specific tool category."
+                    )
                 logger.info(
                     f"[{user_id}:{current_chat_id}] Sending response: {response[:50]}..."
                 )
-                await websocket.send_text(
+                # Prefer the currently-active socket — processing can outlive a reconnect.
+                active = (
+                    _connection_manager.active_connections.get(user_id)
+                    if _connection_manager
+                    else None
+                )
+                send_ws = active or websocket
+                await send_ws.send_text(
                     WSMessage(
                         type=MessageType.message,
                         data=ChatMessagePayload(text=response),

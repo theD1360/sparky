@@ -82,7 +82,12 @@ class LangChainToolchain:
         """
         self.client = mcp_client
         self._cached_tools: Optional[List[BaseTool]] = None
+        self._cached_prompts: Optional[List[tuple]] = None
+        self._cached_resources: Optional[List[tuple]] = None
+        self._catalog_unsupported: set[tuple[str, str]] = set()
         self._load_lock = asyncio.Lock()
+        self._catalog_lock = asyncio.Lock()
+        self._catalog_warm_task: Optional[asyncio.Task] = None
 
     @classmethod
     def from_mcp_config(
@@ -321,6 +326,8 @@ class LangChainToolchain:
             tools = tools_with_gemini_safe_arg_schemas(tools) or tools
         if server_name is None:
             self._cached_tools = tools
+            # Warm prompts/resources after tools so Help UI does not race stdio.
+            self._schedule_catalog_warm()
         return tools
 
     async def call_tool(self, tool_name: str, args: dict) -> Any:
@@ -368,43 +375,139 @@ class LangChainToolchain:
         """Get resources from MCP servers."""
         return await self.client.get_resources(server_name=server_name, uris=uris)
 
+    def _schedule_catalog_warm(self) -> None:
+        """Fill prompt/resource caches in the background; never block HTTP handlers."""
+        if self._cached_prompts is not None and self._cached_resources is not None:
+            return
+        # Do not compete with tool discovery stdio startups.
+        if self._cached_tools is None:
+            return
+        task = self._catalog_warm_task
+        if task is not None and not task.done():
+            return
+
+        async def _warm() -> None:
+            async with self._catalog_lock:
+                if self._cached_prompts is None:
+                    self._cached_prompts = await self._list_mcp_catalog("prompts")
+                if self._cached_resources is None:
+                    self._cached_resources = await self._list_mcp_catalog("resources")
+
+        self._catalog_warm_task = asyncio.create_task(
+            _warm(), name="mcp-catalog-warm"
+        )
+
     async def list_prompts(self) -> List[tuple]:
-        """List all available prompts from all MCP servers."""
-        prompts = []
-        for server_name in self.client.connections.keys():
-            try:
-                async with self.client.session(server_name) as session:
-                    result = await session.list_prompts()
-                    if hasattr(result, "prompts"):
-                        for prompt in result.prompts:
-                            prompts.append((server_name, prompt.name))
-            except Exception as e:
-                logger.warning(
-                    "Failed to list prompts from %s: %s",
-                    server_name,
-                    e,
-                    exc_info=True,
-                )
-        return prompts
+        """List available prompts (cached; warms in background on first miss).
+
+        Tools-only servers often do not implement prompts/list; those are skipped
+        quietly. Returns [] immediately until the background warm completes so
+        Help UI / reconnect never blocks the event loop on stdio MCP sessions.
+        """
+        if self._cached_prompts is not None:
+            return self._cached_prompts
+        self._schedule_catalog_warm()
+        return []
 
     async def list_resources(self) -> List[tuple]:
-        """List all available resources from all MCP servers."""
-        resources = []
-        for server_name in self.client.connections.keys():
-            try:
-                async with self.client.session(server_name) as session:
-                    result = await session.list_resources()
-                    if hasattr(result, "resources"):
-                        for resource in result.resources:
-                            resources.append((server_name, resource.uri))
-            except Exception as e:
-                logger.warning(
-                    "Failed to list resources from %s: %s",
-                    server_name,
-                    e,
-                    exc_info=True,
-                )
-        return resources
+        """List available resources (cached; warms in background on first miss).
+
+        Tools-only servers often do not implement resources/list; those are skipped
+        quietly. Returns [] immediately until the background warm completes (see
+        list_prompts).
+        """
+        if self._cached_resources is not None:
+            return self._cached_resources
+        self._schedule_catalog_warm()
+        return []
+
+    @staticmethod
+    def _exception_indicates_method_not_found(exc: BaseException) -> bool:
+        """True when an MCP server lacks prompts/list or resources/list."""
+        msg = str(exc).lower()
+        if "method not found" in msg:
+            return True
+        # stdio adapters often wrap McpError in ExceptionGroup / TaskGroup.
+        sub = getattr(exc, "exceptions", None)
+        if sub:
+            return any(
+                LangChainToolchain._exception_indicates_method_not_found(child)
+                for child in sub
+            )
+        cause = getattr(exc, "__cause__", None)
+        if cause is not None and cause is not exc:
+            return LangChainToolchain._exception_indicates_method_not_found(cause)
+        return False
+
+    async def _list_mcp_catalog(self, kind: str) -> List[tuple]:
+        """Collect prompt names or resource URIs from MCP connections.
+
+        Uses bounded concurrency so listing never launches every stdio server at
+        once (that previously starved the event loop and made the API hang).
+        """
+        timeout_s = float(os.getenv("SPARKY_MCP_CATALOG_TIMEOUT_SECONDS", "5"))
+        concurrency = max(
+            1, int(os.getenv("SPARKY_MCP_CATALOG_CONCURRENCY", "2"))
+        )
+        server_names = [
+            name
+            for name in self.client.connections.keys()
+            if (name, kind) not in self._catalog_unsupported
+        ]
+        if not server_names:
+            return []
+
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _one(server_name: str) -> List[tuple]:
+            async with sem:
+                try:
+                    async with self.client.session(server_name) as session:
+                        if kind == "prompts":
+                            result = await asyncio.wait_for(
+                                session.list_prompts(), timeout=timeout_s
+                            )
+                            items = getattr(result, "prompts", None) or []
+                            return [(server_name, prompt.name) for prompt in items]
+                        result = await asyncio.wait_for(
+                            session.list_resources(), timeout=timeout_s
+                        )
+                        items = getattr(result, "resources", None) or []
+                        return [
+                            (server_name, resource.uri) for resource in items
+                        ]
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        "Timed out listing %s from MCP server %s after %.0fs",
+                        kind,
+                        server_name,
+                        timeout_s,
+                    )
+                    return []
+                except Exception as e:
+                    if self._exception_indicates_method_not_found(e):
+                        self._catalog_unsupported.add((server_name, kind))
+                        logger.debug(
+                            "MCP server %s has no %s support",
+                            server_name,
+                            kind,
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to list %s from %s: %s",
+                            kind,
+                            server_name,
+                            e,
+                        )
+                    return []
+
+        results = await asyncio.gather(
+            *(_one(name) for name in server_names), return_exceptions=False
+        )
+        catalog: List[tuple] = []
+        for batch in results:
+            catalog.extend(batch)
+        return catalog
 
     async def read_resource(self, uri: str) -> str:
         """Read a resource by URI."""
@@ -431,7 +534,18 @@ class LangChainToolchain:
 
     async def cleanup(self):
         """Clean up the MCP client and close all sessions."""
+        task = self._catalog_warm_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._catalog_warm_task = None
         self._cached_tools = None
+        self._cached_prompts = None
+        self._cached_resources = None
+        self._catalog_unsupported.clear()
 
 
 __all__ = [

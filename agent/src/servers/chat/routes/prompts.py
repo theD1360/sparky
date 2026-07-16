@@ -1,11 +1,15 @@
 """Prompt management API endpoints."""
 
+import asyncio
 from typing import List
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api", tags=["prompts"])
+
+# Soft ceiling so Help UI never hangs the event loop waiting on MCP stdio.
+_CATALOG_API_TIMEOUT_S = 8.0
 
 
 class PromptInfo(BaseModel):
@@ -32,7 +36,12 @@ async def list_prompts():
     if _connection_manager and _connection_manager.langchain_toolchains:
         # Get first available toolchain
         toolchain = next(iter(_connection_manager.langchain_toolchains.values()))
-        prompts = await toolchain.list_prompts()
+        try:
+            prompts = await asyncio.wait_for(
+                toolchain.list_prompts(), timeout=_CATALOG_API_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            return []
         # Prompts are (server_name, prompt_name) tuples
         # We don't have descriptions easily available, so return names only
         return [

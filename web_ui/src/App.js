@@ -645,12 +645,16 @@ function App({ onThemeChange }) {
   const socket = useRef(null);
   const toolsReadyRef = useRef(false);
   const currentChatIdRef = useRef(null);
+  const pendingMessageRef = useRef(null);
   const [connectionStatus, setConnectionStatus] = useState('Connecting...');
   const [reconnectionAttempts, setReconnectionAttempts] = useState(0);
   const [reconnectionError, setReconnectionError] = useState(null);
   const chatScrollRef = useRef(null);
   const inputRef = useRef(null);
   const autocompleteDebounceRef = useRef(null);
+
+  // True while on any /chat route — used so chat-id URL changes do not reconnect WS.
+  const isOnChatRoute = location.pathname.startsWith('/chat');
 
   // Keep refs in sync for WebSocket handlers (avoid stale closures).
   useEffect(() => {
@@ -659,6 +663,9 @@ function App({ onThemeChange }) {
   useEffect(() => {
     currentChatIdRef.current = currentChatId;
   }, [currentChatId]);
+  useEffect(() => {
+    pendingMessageRef.current = pendingMessage;
+  }, [pendingMessage]);
 
   // Scroll chat to bottom - optimized with debouncing to avoid blocking UI
   const scrollToBottom = useCallback(() => {
@@ -726,8 +733,9 @@ function App({ onThemeChange }) {
 
   // WebSocket setup - connect only when on chat route
   useEffect(() => {
-    // Only connect if we're on the chat route
-    const isOnChatRoute = location.pathname.startsWith('/chat');
+    // Only connect if we're on the chat route. Depend on isOnChatRoute (boolean),
+    // not the full pathname — otherwise every new/switched chat_id reconnects WS,
+    // races start_chat with switch_chat, and surfaces "memory not set".
     if (!isOnChatRoute) {
       console.log('Not on chat route, skipping WebSocket connection');
       return;
@@ -808,9 +816,11 @@ function App({ onThemeChange }) {
       const messageChatId = data.chat_id;
       const isGlobalMessage = ['session_info', 'ready', 'chat_ready', 'tool_loading_progress'].includes(data.type);
       
-      // If message has chat_id and we have a current chat, validate they match
-      if (messageChatId && currentChatId && messageChatId !== currentChatId && !isGlobalMessage) {
-        console.warn(`Ignoring message for chat ${messageChatId}, current chat is ${currentChatId}`);
+      // Use ref — onmessage closes over the chat id from socket connect time, so after
+      // New Chat the stale id would drop replies and leave "Sparky is thinking..." stuck.
+      const activeChatId = currentChatIdRef.current;
+      if (messageChatId && activeChatId && messageChatId !== activeChatId && !isGlobalMessage) {
+        console.warn(`Ignoring message for chat ${messageChatId}, current chat is ${activeChatId}`);
         return;
       }
       
@@ -869,7 +879,7 @@ function App({ onThemeChange }) {
           // Reconnect re-bind is handled by the onopen interval (avoids dual switch_chat).
           
           // If there's a pending message, create a chat and send it
-          if (pendingMessage && !currentChatIdRef.current) {
+          if (pendingMessageRef.current && !currentChatIdRef.current) {
             console.log('Tools ready, creating chat for pending message');
             handleNewChat();
           }
@@ -895,13 +905,16 @@ function App({ onThemeChange }) {
           const userId = getUserId();
           setTimeout(() => fetchUserChats(userId), 1000);
           
-          // If there's a pending message, send it now
-          if (pendingMessage) {
-            console.log('Sending pending message:', pendingMessage);
-            setChatMessages(prev => [...prev, { role: 'user', text: pendingMessage }]);
-            socket.current.send(JSON.stringify({ type: 'message', data: { text: pendingMessage } }));
-            setIsTyping(true);
+          // Use ref so duplicate chat_ready (start_chat + switch_chat race) cannot
+          // resend the same pending message after setPendingMessage(null).
+          const pending = pendingMessageRef.current;
+          if (pending) {
+            pendingMessageRef.current = null;
             setPendingMessage(null);
+            console.log('Sending pending message:', pending);
+            setChatMessages(prev => [...prev, { role: 'user', text: pending }]);
+            socket.current.send(JSON.stringify({ type: 'message', data: { text: pending } }));
+            setIsTyping(true);
           }
           
           // Process any queued messages
@@ -919,26 +932,35 @@ function App({ onThemeChange }) {
           
         case 'message':
           setIsTyping(false); // Stop typing on actual message
-          setChatMessages(prev => [...prev, { role: 'bot', text: data.data.text }]);
+          {
+            const replyText = (data.data && data.data.text) || '';
+            // Empty model replies still clear thinking; show a visible placeholder.
+            setChatMessages(prev => [...prev, {
+              role: 'bot',
+              text: replyText.trim()
+                ? replyText
+                : '(No text in model response — try again or ask a more specific question.)',
+            }]);
           
-          // Set last bot message for speech synthesis (strip markdown for better TTS)
-          // Use startTransition to prevent blocking the UI for long messages
-          startTransition(() => {
-            const textForSpeech = stripMarkdown(data.data.text);
-            console.log('Preparing text for speech:', textForSpeech.substring(0, 100));
-            setLastBotMessage(textForSpeech);
-          });
-          
-          // Always play sound when message arrives
-          playSound('message');
-          
-          // Show notification if window is not focused
-          if (!document.hasFocus()) {
-            showNotification('Sparky responded', {
-              body: data.data.text.substring(0, 100) + (data.data.text.length > 100 ? '...' : ''),
-              tag: 'sparky-message',
-              requireInteraction: false,
+            // Set last bot message for speech synthesis (strip markdown for better TTS)
+            // Use startTransition to prevent blocking the UI for long messages
+            startTransition(() => {
+              const textForSpeech = stripMarkdown(replyText);
+              console.log('Preparing text for speech:', textForSpeech.substring(0, 100));
+              setLastBotMessage(textForSpeech);
             });
+          
+            // Always play sound when message arrives
+            playSound('message');
+          
+            // Show notification if window is not focused
+            if (!document.hasFocus() && replyText) {
+              showNotification('Sparky responded', {
+                body: replyText.substring(0, 100) + (replyText.length > 100 ? '...' : ''),
+                tag: 'sparky-message',
+                requireInteraction: false,
+              });
+            }
           }
           break;
           
@@ -1100,7 +1122,7 @@ function App({ onThemeChange }) {
         socket.current.close();
       }
     };
-  }, [location.pathname, token, refreshAccessToken, logout]); // Reconnect when route or auth token changes
+  }, [isOnChatRoute, token, refreshAccessToken, logout]); // Reconnect on chat-route enter/leave or auth change
 
   // Fetch chats on mount
   useEffect(() => {
@@ -1169,13 +1191,15 @@ function App({ onThemeChange }) {
     }
   }, [currentChatId, currentModel, playSound]);
   
-  // Handle URL changes - load chat from URL if different from current
+  // Handle URL changes - load chat from URL if different from current.
+  // Include currentChatId so handleNewChat's optimistic set+navigate does not
+  // also fire switch_chat for the same id mid-start_chat.
   useEffect(() => {
     if (urlChatId && urlChatId !== currentChatId && toolsReady) {
       console.log('URL chat ID changed, loading chat:', urlChatId);
       handleSwitchChat(urlChatId);
     }
-  }, [urlChatId, toolsReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [urlChatId, currentChatId, toolsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refresh chats after sending a message (to get auto-named chats)
   // Only trigger on first few messages to avoid constant refetching
