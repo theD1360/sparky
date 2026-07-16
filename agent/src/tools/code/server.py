@@ -1,8 +1,8 @@
-"""Consolidated code tools MCP server.
+"""Sparky code tools MCP server.
 
-This server consolidates filesystem, git, code execution, and code editing tools
-into a single powerful interface. Designed for integration with knowledge graph
-to provide context-aware development assistance.
+Focused on code execution, guarded file editing, linting, and graph-powered
+search. Plain filesystem browsing and git operations are provided by separate
+third-party MCP servers (filesystem, git).
 
 Tool Categories:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -12,67 +12,40 @@ Tool Categories:
    - Sandboxed mode: Restricted builtins, no imports, AST validation
    - Unsandboxed mode: Full Python capabilities (use with caution)
 
-2. FILE OPERATIONS
+2. GUARDED FILE EDITING
    - read_file: Read files (with automatic graph indexing)
    - write_file: Write/overwrite files
    - append_file: Append to files
-   - head, tail, get_lines: Read file sections
-   - file_search: Search text across files using glob patterns (e.g., **/*.py)
-   - file_info: Get file metadata
+   - edit_file: Intelligent search-replace editing with syntax validation
    - File protection system prevents accidental overwrites
 
-3. CODE EDITING
-   - edit_file: Intelligent search-replace editing with syntax validation
-     (Replaces deprecated: get_lines_with_context, set_lines_with_indent,
-      replace_code_block, insert_lines, find_and_replace_in_file)
-
-4. DIRECTORY OPERATIONS
-   - list_directory: List directory contents
-   - file_tree: Generate tree representation
-   - create_directory: Create directories
-   - current_directory: Get working directory
-
-5. FILE MANAGEMENT
-   - copy, move, delete: File/directory manipulation operations
-
-6. GIT TOOLS
-   - git_status, git_diff, git_log, git_show: Repository inspection
-   - git_branch, git_checkout: Branch management
-   - git_add, git_commit: Change staging and commits
-
-7. DEVELOPMENT TOOLS
+3. DEVELOPMENT TOOLS
    - lint: Execute linters (currently ruff for Python)
 
-8. GRAPH-POWERED TOOLS ⚡
+4. GRAPH-POWERED TOOLS
    - get_file_context: Get intelligent context about a file (imports, symbols, related files)
    - search_codebase: Semantic search across codebase by meaning
    - symbol_search: Find functions/classes in codebase (with wildcards)
    - find_references: Track where modules/symbols are used
 
-9. ENHANCED SEARCH TOOLS ⚡ NEW!
-   - file_search: Now supports regex patterns for advanced matching
-
-10. BATCH OPERATIONS ⚡ NEW!
+5. BATCH OPERATIONS
    - batch_read_files: Read multiple files in one operation
+
+EXTERNAL MCP SERVERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use the filesystem MCP server for browsing and file management:
+   - list_directory, directory_tree, search_files, read_text_file, etc.
+Use the git MCP server for repository operations:
+   - git_status, git_diff, git_log, git_commit, etc.
 
 GRAPH INTEGRATION STATUS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ PHASE 1 COMPLETE: Basic Graph Integration
-   - Automatic file indexing on read
-   - File metadata storage (language, size, hash)
-   - Python structure parsing (functions, classes)
-   - Import relationship tracking
-   - Related file discovery
-   - Semantic code search
-
-FUTURE ENHANCEMENTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Symbol call graph analysis
-- Code pattern recognition and learning
-- Refactoring suggestions based on graph analysis
-- Test coverage tracking
-- Breaking change detection
-- Tree-sitter for multi-language support
+- Automatic file indexing on read
+- File metadata storage (language, size, hash)
+- Python structure parsing (functions, classes)
+- Import relationship tracking
+- Related file discovery
+- Semantic code search
 """
 
 from __future__ import annotations
@@ -83,7 +56,6 @@ import hashlib
 import io
 import json
 import os
-import shutil
 import time
 from contextlib import redirect_stdout
 from logging import getLogger
@@ -715,204 +687,6 @@ def _run_python_code_unsandboxed(code: str) -> dict:
     return {"result": result, "stdout": stdout}
 
 
-async def _run_shell_command(command: list[str]) -> dict:
-    """Execute a shell command and return the result."""
-    process = await asyncio.create_subprocess_exec(
-        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await process.communicate()
-    return {
-        "exit_code": process.returncode,
-        "stdout": stdout.decode(),
-        "stderr": stderr.decode(),
-    }
-
-
-@mcp.tool()
-async def git_status() -> dict:
-    """Show the working tree status."""
-    try:
-        result = await _run_shell_command(["git", "status"])
-        if result["exit_code"] == 0:
-            return MCPResponse.success(result=result).to_dict()
-        else:
-            return MCPResponse.error(
-                message=f"Git command failed with exit code {result['exit_code']}",
-                result=result,
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
-@mcp.tool()
-async def git_diff(file: str = None) -> dict:
-    """Show changes in the working directory. Can be limited to a specific file."""
-    try:
-        command = ["git", "diff"]
-        if file:
-            command.append(file)
-        result = await _run_shell_command(command)
-        if result["exit_code"] == 0:
-            return MCPResponse.success(result=result).to_dict()
-        else:
-            return MCPResponse.error(
-                message=f"Git command failed with exit code {result['exit_code']}",
-                result=result,
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
-@mcp.tool()
-async def git_log(limit: int = 10) -> dict:
-    """Show the commit history."""
-    try:
-        command = ["git", "log", f"-n{limit}"]
-        result = await _run_shell_command(command)
-        if result["exit_code"] == 0:
-            return MCPResponse.success(result=result).to_dict()
-        else:
-            return MCPResponse.error(
-                message=f"Git command failed with exit code {result['exit_code']}",
-                result=result,
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
-@mcp.tool()
-async def git_show(commit: str = "HEAD") -> dict:
-    """Show details of a specific commit including changes.
-
-    Displays commit metadata (author, date, message) and the diff of changes.
-    Useful for reviewing what was changed in a commit.
-
-    Args:
-        commit: Commit reference (hash, HEAD, HEAD~1, branch name, etc.)
-                Default: "HEAD" (most recent commit)
-
-    Returns:
-        MCPResponse with commit details and diff
-
-    Examples:
-        git_show()  # Show most recent commit
-        git_show("HEAD~1")  # Show previous commit
-        git_show("abc123")  # Show specific commit by hash
-    """
-    try:
-        command = ["git", "show", commit]
-        result = await _run_shell_command(command)
-        if result["exit_code"] == 0:
-            return MCPResponse.success(result=result).to_dict()
-        else:
-            return MCPResponse.error(
-                message=f"Git command failed with exit code {result['exit_code']}",
-                result=result,
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
-@mcp.tool()
-async def git_branch() -> dict:
-    """
-    List all local branches.
-    Returns:
-        MCPResponse with the result of the git branch command.
-    """
-    try:
-        result = await _run_shell_command(["git", "branch"])
-        if result["exit_code"] == 0:
-            return MCPResponse.success(result=result).to_dict()
-        else:
-            return MCPResponse.error(
-                message=f"Git command failed with exit code {result['exit_code']}",
-                result=result,
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
-@mcp.tool()
-async def git_add(files: list[str]) -> dict:
-    """
-    Stage a file for commit.
-
-    Note: This cannot be used concurrently with git commit. Please use this tool before using git_commit.
-
-    Args:
-        files: List of files to stage for commit.
-    Returns:
-        MCPResponse with the result of the git add command.
-    """
-    try:
-        command = ["git", "add"] + files
-        result = await _run_shell_command(command)
-        if result["exit_code"] == 0:
-            return MCPResponse.success(result=result).to_dict()
-        else:
-            return MCPResponse.error(
-                message=f"Git command failed with exit code {result['exit_code']}",
-                result=result,
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
-@mcp.tool()
-async def git_commit(message: str) -> dict:
-    """
-    Commit staged changes.
-
-    Note: This cannot be used concurrently with git add. Please use git_add first before using this tool.
-
-    Args:
-        message: The message to commit with.
-    Returns:
-        MCPResponse with the result of the git commit command.
-    """
-    try:
-        command = ["git", "commit", "-m", message]
-        result = await _run_shell_command(command)
-        if result["exit_code"] == 0:
-            return MCPResponse.success(result=result).to_dict()
-        else:
-            return MCPResponse.error(
-                message=f"Git command failed with exit code {result['exit_code']}",
-                result=result,
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
-@mcp.tool()
-async def git_checkout(branch_name: str, create_new: bool = False) -> dict:
-    """
-    Switch branches or create a new one.
-
-    Args:
-        branch_name: The name of the branch to switch to.
-        create_new: If True, create a new branch.
-    Returns:
-        MCPResponse with the result of the git checkout command.
-    """
-    try:
-        command = ["git", "checkout"]
-        if create_new:
-            command.append("-b")
-        command.append(branch_name)
-        result = await _run_shell_command(command)
-        if result["exit_code"] == 0:
-            return MCPResponse.success(result=result).to_dict()
-        else:
-            return MCPResponse.error(
-                message=f"Git command failed with exit code {result['exit_code']}",
-                result=result,
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(str(e)).to_dict()
-
-
 @mcp.tool()
 def execute(code: str, language: str = "python", use_sandbox: bool = True) -> dict:
     """Execute Python code with optional sandbox restrictions.
@@ -1001,32 +775,6 @@ async def read_file(path: str, index_to_graph: bool = True) -> dict:
 
 
 @mcp.tool()
-def list_directory(path: str = ".") -> dict:
-    """List all files and directories in the specified path.
-
-    Returns a sorted list of all entries (files and directories) in the given path.
-    Does not recurse into subdirectories. Use file_tree for a recursive view.
-
-    Args:
-        path: Directory path to list (defaults to current directory)
-
-    Returns:
-        Newline-separated sorted list of entry names
-    """
-    try:
-        entries = os.listdir(path)
-        result = "\n".join(sorted(entries))
-        return MCPResponse.success(result=result, content_type="text").to_dict()
-    except FileNotFoundError:
-        return MCPResponse.error("Error: Directory not found").to_dict()
-    except PermissionError:
-        return MCPResponse.error("Error: Permission denied").to_dict()
-    except Exception as e:
-        logger.exception(f"Error listing directory: {path}")
-        return MCPResponse.error(f"Error listing directory: {str(e)}").to_dict()
-
-
-@mcp.tool()
 async def write_file(path: str, content: str) -> dict:
     """Write content to a file (simple file editing without validation).
 
@@ -1050,60 +798,6 @@ async def write_file(path: str, content: str) -> dict:
         return MCPResponse.success(result={"path": path}, message=message).to_dict()
     except Exception as e:
         return MCPResponse.error(f"Error writing file: {str(e)}").to_dict()
-
-
-@mcp.tool()
-def file_info(path: str) -> dict:
-    """Get detailed metadata about a file or directory.
-
-    Retrieves file system information including size, modification time, and type.
-    Useful for checking if a path exists and what type of filesystem object it is.
-
-    Args:
-        path: Path to the file or directory
-
-    Returns:
-        Dictionary containing:
-        - path: The provided path
-        - size_bytes: Size in bytes
-        - modified_time: Last modification timestamp (Unix epoch)
-        - is_directory: True if path is a directory
-        - is_file: True if path is a regular file
-    """
-    try:
-        stat = os.stat(path)
-        info = {
-            "path": path,
-            "size_bytes": stat.st_size,
-            "modified_time": stat.st_mtime,
-            "is_directory": os.path.isdir(path),
-            "is_file": os.path.isfile(path),
-        }
-        return MCPResponse.success(result=info).to_dict()
-    except Exception as e:
-        return MCPResponse.error(f"Error getting file info: {str(e)}").to_dict()
-
-
-@mcp.tool()
-def create_directory(path: str) -> dict:
-    """Create a new directory at the specified path.
-
-    Creates the directory and any necessary parent directories (like 'mkdir -p').
-    If the directory already exists, the operation succeeds without error.
-
-    Args:
-        path: Path where the directory should be created
-
-    Returns:
-        Dictionary with the created directory path
-    """
-    try:
-        os.makedirs(path, exist_ok=True)
-        return MCPResponse.success(
-            result={"path": path}, message=f"Successfully created directory: {path}"
-        ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(f"Error creating directory: {str(e)}").to_dict()
 
 
 @mcp.tool()
@@ -1259,333 +953,28 @@ async def append_file(path: str, content: str) -> dict:
         return MCPResponse.error(f"Error appending to file: {str(e)}").to_dict()
 
 
-@mcp.tool()
-def head(path: str, lines: int = 10) -> dict:
-    """Return the first N lines of a file.
-
-    Useful for quickly previewing the beginning of a file without reading the entire contents.
-    Similar to the Unix 'head' command.
-
-    Args:
-        path: Path to the file to read
-        lines: Number of lines to return (default: 10)
-
-    Returns:
-        String containing the first N lines of the file
-    """
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            head_lines = [next(f) for _ in range(int(lines))]
-        result = "".join(head_lines)
-        content_type = _detect_content_type(path, result)
-        return MCPResponse.success(result=result, content_type=content_type).to_dict()
-    except Exception as e:
-        return MCPResponse.error(f"Error reading file: {str(e)}").to_dict()
-
-
-@mcp.tool()
-def tail(path: str, lines: int = 10) -> dict:
-    """Return the last N lines of a file.
-
-    Useful for checking the end of a file, such as recent log entries.
-    Similar to the Unix 'tail' command.
-
-    Args:
-        path: Path to the file to read
-        lines: Number of lines to return (default: 10)
-
-    Returns:
-        String containing the last N lines of the file
-    """
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            tail_lines = f.readlines()[-int(lines) :]
-        result = "".join(tail_lines)
-        content_type = _detect_content_type(path, result)
-        return MCPResponse.success(result=result, content_type=content_type).to_dict()
-    except Exception as e:
-        return MCPResponse.error(f"Error reading file: {str(e)}").to_dict()
-
-
-@mcp.tool()
-def file_search(
-    pattern: str,
-    query: str,
-    case_sensitive: bool = True,
-    use_regex: bool = False,
-    max_results: int = 100,
-) -> dict:
-    """Search for text across multiple files using glob patterns.
-
-    **Enhanced tool** that searches for text across one or many files. Supports
-    glob patterns to search multiple files at once, and regex for advanced matching.
-
-    Args:
-        pattern: File path or glob pattern to search
-                 Examples:
-                 - "file.py" - single file
-                 - "*.py" - all Python files in current dir
-                 - "src/**/*.py" - all Python files recursively in src/
-                 - "**/*.{py,js}" - all Python and JS files everywhere
-        query: Text string or regex pattern to search for
-        case_sensitive: Whether search is case-sensitive (default: True)
-        use_regex: Whether to treat query as a regex pattern (default: False)
-        max_results: Maximum number of results to return (default: 100)
-
-    Returns:
-        List of matches with file paths, line numbers, and matching lines
-
-    Examples:
-        # Search single file
-        file_search("src/main.py", "def main")
-
-        # Search all Python files
-        file_search("**/*.py", "TODO")
-
-        # Regex search for function definitions
-        file_search(r"**/*.py", r"def \\w+\\(.*\\):", use_regex=True)
-
-        # Find all class definitions
-        file_search(r"**/*.py", r"class \\w+.*:", use_regex=True)
-    """
-    try:
-        import glob
-        import re
-
-        if "**" in pattern or "*" in pattern or "?" in pattern or ("{" in pattern):
-            files = glob.glob(pattern, recursive=True)
-            files = [f for f in files if os.path.isfile(f)]
-        else:
-            if not os.path.exists(pattern):
-                return MCPResponse.error(f"File not found: {pattern}").to_dict()
-            if not os.path.isfile(pattern):
-                return MCPResponse.error(f"Not a file: {pattern}").to_dict()
-            files = [pattern]
-        if not files:
-            return MCPResponse.error(
-                f"No files found matching pattern: {pattern}"
-            ).to_dict()
-        if use_regex:
-            try:
-                flags = 0 if case_sensitive else re.IGNORECASE
-                regex_pattern = re.compile(query, flags)
-            except re.error as e:
-                return MCPResponse.error(f"Invalid regex pattern: {str(e)}").to_dict()
-        else:
-            search_query = query if case_sensitive else query.lower()
-        results = []
-        total_matches = 0
-        for file_path in files:
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                for line_num, line in enumerate(lines, start=1):
-                    if use_regex:
-                        match = regex_pattern.search(line)
-                        if match:
-                            results.append(
-                                {
-                                    "file": file_path,
-                                    "line": line_num,
-                                    "content": line.rstrip(),
-                                    "match": match.group(0),
-                                }
-                            )
-                            total_matches += 1
-                    else:
-                        line_to_check = line if case_sensitive else line.lower()
-                        if search_query in line_to_check:
-                            results.append(
-                                {
-                                    "file": file_path,
-                                    "line": line_num,
-                                    "content": line.rstrip(),
-                                }
-                            )
-                            total_matches += 1
-                    if total_matches >= max_results:
-                        break
-                if total_matches >= max_results:
-                    break
-            except (UnicodeDecodeError, PermissionError):
-                continue
-        files_searched = len(files)
-        files_with_matches = len(set((r["file"] for r in results)))
-        search_type = "regex" if use_regex else "text"
-        message = f"Found {total_matches} {search_type} match(es) in {files_with_matches} file(s)"
-        message += f" (searched {files_searched} file(s))"
-        if total_matches >= max_results:
-            message += f"\n⚠️ Results limited to {max_results}. Use max_results parameter for more."
-        return MCPResponse.success(
-            result={
-                "matches": results,
-                "total_matches": total_matches,
-                "files_searched": files_searched,
-                "files_with_matches": files_with_matches,
-                "query": query,
-                "pattern": pattern,
-                "case_sensitive": case_sensitive,
-                "use_regex": use_regex,
-            },
-            message=message,
-        ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(f"Error during file search: {str(e)}").to_dict()
-
-
-@mcp.tool()
-def copy(source: str, destination: str) -> dict:
-    """Copy a file from source to destination.
-
-    Creates a copy of the file, preserving the original. If destination is a directory,
-    the file will be copied into that directory with the same name. If destination is
-    a file path, the copy will have that name.
-
-    Args:
-        source: Path to the source file to copy
-        destination: Path where the copy should be created (file or directory)
-
-    Returns:
-        Dictionary with source and destination paths
-    """
-    try:
-        shutil.copy(source, destination)
-        return MCPResponse.success(
-            result={"source": source, "destination": destination},
-            message=f"Successfully copied {source} to {destination}",
-        ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(f"Error copying file: {str(e)}").to_dict()
-
-
-@mcp.tool()
-def move(source: str, destination: str) -> dict:
-    """Move or rename a file or directory.
-
-    Moves the file/directory from source to destination. Can be used to rename a file
-    by providing a new name in the same directory, or to move it to a different location.
-    The source file/directory will no longer exist after this operation.
-
-    Args:
-        source: Path to the source file or directory
-        destination: New path or location for the file/directory
-
-    Returns:
-        Dictionary with source and destination paths
-    """
-    try:
-        shutil.move(source, destination)
-        return MCPResponse.success(
-            result={"source": source, "destination": destination},
-            message=f"Successfully moved {source} to {destination}",
-        ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(f"Error moving file: {str(e)}").to_dict()
-
-
-@mcp.tool()
-def delete(path: str) -> dict:
-    """Delete a file or directory permanently.
-
-    WARNING: This operation is irreversible. The file or directory will be permanently
-    deleted from the filesystem. For directories, all contents will be recursively deleted.
-    Use with caution.
-
-    Args:
-        path: Path to the file or directory to delete
-
-    Returns:
-        Dictionary with path and type (file or directory) of deleted item
-    """
-    try:
-        if os.path.isfile(path):
-            os.remove(path)
-            return MCPResponse.success(
-                result={"path": path, "type": "file"},
-                message=f"Successfully deleted file: {path}",
-            ).to_dict()
-        elif os.path.isdir(path):
-            shutil.rmtree(path)
-            return MCPResponse.success(
-                result={"path": path, "type": "directory"},
-                message=f"Successfully deleted directory: {path}",
-            ).to_dict()
-        else:
-            return MCPResponse.error(
-                f"Error: {path} is not a file or directory"
-            ).to_dict()
-    except Exception as e:
-        return MCPResponse.error(
-            f"Error deleting file or directory: {str(e)}"
-        ).to_dict()
-
-
-@mcp.tool()
-def get_lines(path: str, start_line: int, end_line: int) -> dict:
-    """Return a specific range of lines from a file.
-
-    Extracts a contiguous range of lines from a file. Useful for reading specific
-    sections without loading the entire file. Line numbers are 1-indexed.
-
-    Args:
-        path: Path to the file to read
-        start_line: First line to return (1-indexed, inclusive)
-        end_line: Last line to return (1-indexed, inclusive)
-
-    Returns:
-        String containing the requested line range
-    """
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()[start_line - 1 : end_line]
-        result = "".join(lines)
-        content_type = _detect_content_type(path, result)
-        return MCPResponse.success(result=result, content_type=content_type).to_dict()
-    except Exception as e:
-        return MCPResponse.error(f"Error getting lines from file: {str(e)}").to_dict()
-
-
-@mcp.tool()
-def file_tree(path: str, max_depth: int = 3, include_files: bool = True) -> dict:
-    """Generate a tree-like representation of a directory structure.
-
-    Creates a visual hierarchical view of directories and optionally files, similar to
-    the Unix 'tree' command. Useful for understanding project structure at a glance.
-
-    Args:
-        path: Root directory path to generate tree from
-        max_depth: Maximum depth to recurse into subdirectories (default: 3)
-        include_files: Whether to include files in the output (default: True)
-
-    Returns:
-        String containing a formatted tree representation of the directory structure
-    """
-    path_obj = Path(path).absolute()
-    if not path_obj.exists():
-        return MCPResponse.error(f"Path not found: {path}").to_dict()
-    tree = _get_file_tree(str(path_obj), max_depth, include_files)
-    # Use 'plaintext' content type to preserve formatting and newlines in code block
-    return MCPResponse.success(result=tree, content_type="plaintext").to_dict()
-
-
-@mcp.tool()
-def current_directory() -> dict:
-    """Get the current working directory of the server process.
-
-    Returns the absolute path of the directory from which the filesystem server
-    is currently operating. This is the base directory for all relative path operations.
-
-    Returns:
-        String containing the absolute path of the current working directory
-    """
-    path = os.getcwd()
-    return MCPResponse.success(result=path).to_dict()
-
-
 @mcp.prompt()
 def explore_codebase(directory: str = ".") -> str:
     """Template for systematically exploring and understanding a codebase."""
-    return f"""I need to understand the codebase structure at '{directory}'. Follow this approach:\n\n1. Use file_tree(path="{directory}", max_depth=3) to get an overview of the structure\n2. Look for key files:\n   - README, docs/, or documentation\n   - Configuration files (package.json, pyproject.toml, etc.)\n   - Main entry points (main.py, index.js, etc.)\n   - Test directories\n3. Use read_file() to examine important files\n4. Identify:\n   - Project type and purpose\n   - Main modules/components\n   - Dependencies and configuration\n   - Architecture patterns\n\nStart broad with the tree view, then drill down into specific files."""
+    return f"""I need to understand the codebase structure at '{directory}'. Follow this approach:
+
+1. Use the filesystem MCP server to browse:
+   - directory_tree(path="{directory}") for a recursive overview
+   - list_directory(path="{directory}") for a flat listing
+   - search_files() to locate key files by pattern
+2. Look for key files:
+   - README, docs/, or documentation
+   - Configuration files (package.json, pyproject.toml, etc.)
+   - Main entry points (main.py, index.js, etc.)
+   - Test directories
+3. Use read_file() from this code server to examine important files (guarded edits + graph indexing)
+4. Identify:
+   - Project type and purpose
+   - Main modules/components
+   - Dependencies and configuration
+   - Architecture patterns
+
+Start broad with directory browsing, then drill down with read_file()."""
 
 
 @mcp.prompt()
@@ -1597,31 +986,68 @@ def make_code_changes(file_path: str, change_description: str) -> str:
 @mcp.prompt()
 def refactor_code(target: str, refactoring_goal: str) -> str:
     """Template for refactoring code safely across files."""
-    return f"I need to refactor '{target}': {refactoring_goal}\n\nSafe refactoring process:\n1. Explore scope:\n   - Use file_tree() to identify affected files\n   - Use file_search() to find all occurrences of symbols to change\n2. Plan changes:\n   - List all files that need modification\n   - Identify dependencies between changes\n3. Execute changes:\n   - read_file() each file first\n   - Use edit_file() for each modification\n   - Make changes in dependency order (bottom-up)\n4. Verify:\n   - Syntax checking happens automatically\n   - Consider running tests if available\n\nWork systematically through each file, one at a time."
+    return f"I need to refactor '{target}': {refactoring_goal}\n\nSafe refactoring process:\n1. Explore scope:\n   - Use filesystem MCP directory_tree() or list_directory() to identify affected files\n   - Use symbol_search() or search_codebase() to find all occurrences of symbols to change\n2. Plan changes:\n   - List all files that need modification\n   - Identify dependencies between changes\n3. Execute changes:\n   - read_file() each file first\n   - Use edit_file() for each modification\n   - Make changes in dependency order (bottom-up)\n4. Verify:\n   - Syntax checking happens automatically\n   - Consider running tests if available\n\nWork systematically through each file, one at a time."
 
 
 @mcp.prompt()
 def create_new_file(file_path: str, purpose: str) -> str:
     """Template for creating new files with proper structure."""
-    return f"""I need to create '{file_path}': {purpose}\n\nFile creation checklist:\n1. Check context:\n   - Use file_tree() to see project structure\n   - Check for similar existing files to match style\n   - Identify the appropriate location\n2. Determine file type and requirements:\n   - Language/framework conventions\n   - Project coding standards\n   - Necessary imports/headers\n3. Create the file:\n   - Use write_file(path="{file_path}", content=...)\n   - Include proper headers, imports, docstrings\n   - Follow project structure patterns\n4. Verify:\n   - Syntax will be checked automatically\n   - Ensure it fits the project organization\n\nNew files do not need to be read first - the protection system allows creation."""
+    return f"""I need to create '{file_path}': {purpose}
+
+File creation checklist:
+1. Check context:
+   - Use filesystem MCP directory_tree() or list_directory() to see project structure
+   - Check for similar existing files to match style
+   - Identify the appropriate location
+2. Determine file type and requirements:
+   - Language/framework conventions
+   - Project coding standards
+   - Necessary imports/headers
+3. Create the file:
+   - Use write_file(path="{file_path}", content=...)
+   - Include proper headers, imports, docstrings
+   - Follow project structure patterns
+4. Verify:
+   - Syntax will be checked automatically
+   - Ensure it fits the project organization
+
+New files do not need to be read first - the protection system allows creation."""
 
 
 @mcp.prompt()
 def find_and_fix(issue_description: str, search_path: str = ".") -> str:
     """Template for finding and fixing issues in code."""
-    return f'I need to find and fix: {issue_description}\n\nSystematic debugging approach:\n1. Locate the problem:\n   - Use file_tree(path="{search_path}") to find relevant files\n   - Use file_search() to search for error messages or related code\n   - Use head() or tail() to check log files if applicable\n2. Understand the context:\n   - read_file() the problematic file(s)\n   - Use get_lines() to examine specific sections\n   - Check related files and dependencies\n3. Implement the fix:\n   - Use edit_file() for precise corrections\n   - Include sufficient context in search blocks\n   - Test syntax is validated automatically\n4. Verify the fix:\n   - Review the changes made\n   - Check for side effects in related code\n\nWork methodically - understand before changing.'
+    return f'I need to find and fix: {issue_description}\n\nSystematic debugging approach:\n1. Locate the problem:\n   - Use filesystem MCP directory_tree() or search_files() to find relevant files\n   - Use search_codebase() or symbol_search() to locate related code\n   - Use read_file() to inspect log files or error sources\n2. Understand the context:\n   - read_file() the problematic file(s)\n   - Use get_file_context() for imports, symbols, and related files\n   - Check related files and dependencies\n3. Implement the fix:\n   - Use edit_file() for precise corrections\n   - Include sufficient context in search blocks\n   - Test syntax is validated automatically\n4. Verify the fix:\n   - Review the changes made\n   - Check for side effects in related code\n\nWork methodically - understand before changing.'
 
 
 @mcp.prompt()
 def organize_project(base_path: str = ".") -> str:
     """Template for organizing or restructuring a project."""
-    return f"""I need to organize the project structure at '{base_path}'.\n\nProject organization workflow:\n1. Assess current state:\n   - Use file_tree(path="{base_path}", max_depth=4) for full overview\n   - Identify misplaced files, duplicates, or poor organization\n   - List what should be grouped together\n2. Plan the reorganization:\n   - Define target directory structure\n   - Identify files to move, rename, or consolidate\n   - Consider impact on imports/references\n3. Execute changes safely:\n   - Use create_directory() for new folders\n   - Use move() to relocate files\n   - Use copy() if you need backups first\n   - Use edit_file() to update imports/paths\n4. Clean up:\n   - Use delete() to remove old empty directories\n   - Verify all references still work\n\nMake one structural change at a time, updating references as you go."""
+    return f"""I need to organize the project structure at '{base_path}'.
+
+Project organization workflow:
+1. Assess current state:
+   - Use filesystem MCP directory_tree(path="{base_path}") for full overview
+   - Identify misplaced files, duplicates, or poor organization
+   - List what should be grouped together
+2. Plan the reorganization:
+   - Define target directory structure
+   - Identify files to move, rename, or consolidate
+   - Consider impact on imports/references
+3. Execute changes safely:
+   - Use filesystem MCP tools for create_directory(), move_file(), copy_file()
+   - Use edit_file() from this code server to update imports/paths
+4. Clean up:
+   - Use filesystem MCP delete tools to remove old empty directories
+   - Verify all references still work
+
+Make one structural change at a time, updating references as you go."""
 
 
 @mcp.prompt()
 def code_review(file_or_directory: str) -> str:
     """Template for reviewing code quality and identifying issues."""
-    return f"Perform a code review of '{file_or_directory}'.\n\nCode review process:\n1. Understand scope:\n   - Use file_tree() if directory, or read_file() if single file\n   - Identify all files to review\n2. Review each file for:\n   - Code quality and readability\n   - Potential bugs or edge cases\n   - Security vulnerabilities\n   - Performance issues\n   - Inconsistent patterns\n   - Missing documentation\n3. Use file_search() to check for:\n   - TODO/FIXME comments\n   - Common anti-patterns\n   - Inconsistent naming\n4. Document findings:\n   - List issues by severity\n   - Suggest specific improvements\n   - Use edit_file() to fix simple issues\n\nProvide constructive, actionable feedback."
+    return f"Perform a code review of '{file_or_directory}'.\n\nCode review process:\n1. Understand scope:\n   - Use filesystem MCP directory_tree() or list_directory() if directory\n   - Use read_file() from this code server if single file\n   - Identify all files to review\n2. Review each file for:\n   - Code quality and readability\n   - Potential bugs or edge cases\n   - Security vulnerabilities\n   - Performance issues\n   - Inconsistent patterns\n   - Missing documentation\n3. Use search_codebase() or symbol_search() to check for:\n   - TODO/FIXME comments\n   - Common anti-patterns\n   - Inconsistent naming\n4. Document findings:\n   - List issues by severity\n   - Suggest specific improvements\n   - Use edit_file() to fix simple issues\n\nProvide constructive, actionable feedback."
 
 
 @mcp.resource("filesystem://cwd")

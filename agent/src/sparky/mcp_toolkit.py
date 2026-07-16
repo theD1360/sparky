@@ -38,9 +38,10 @@ def format_tool_names_for_log(
     return ", ".join(names) if names else "(none)"
 
 
-def mcp_tool_name_prefix() -> Optional[str]:
-    raw = (os.getenv("SPARKY_MCP_TOOL_NAME_PREFIX") or "").strip()
-    return raw or None
+def mcp_tool_name_prefix() -> bool:
+    """Whether LangChain MCP tools should be prefixed with their server name."""
+    raw = (os.getenv("SPARKY_MCP_TOOL_NAME_PREFIX") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def mcp_tool_allowlist() -> Optional[set[str]]:

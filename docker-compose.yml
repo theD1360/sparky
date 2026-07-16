@@ -43,6 +43,8 @@ services:
       - .env
     environment:
       - PYTHONPATH=/app/agent/src
+      - SPARKY_WORKSPACE=${SPARKY_WORKSPACE:-/app}
+      - SPARKY_MCP_TOOL_NAME_PREFIX=${SPARKY_MCP_TOOL_NAME_PREFIX:-true}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - AGENT_MODEL=${AGENT_MODEL:-gemini-2.5-flash}
       - SPARKY_SUMMARY_TOKEN_THRESHOLD=${SPARKY_SUMMARY_TOKEN_THRESHOLD:-0.85}

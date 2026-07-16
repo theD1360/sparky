@@ -15,11 +15,29 @@
       "args": [
         "src/tools/code/server.py"
       ],
-      "description": "Code execution and analysis tools",
+      "description": "Guarded code editing, execution, lint, and graph-powered code intelligence",
       "env": {
         "PYTHONPATH": "${PYTHONPATH:-/app/agent/src}",
         "SPARKY_DB_URL": "${SPARKY_DB_URL}"
       }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "${SPARKY_WORKSPACE:-/app}"
+      ],
+      "description": "Official filesystem MCP (browse/read/write/search within allowed workspace paths)"
+    },
+    "git": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-git",
+        "--repository",
+        "${SPARKY_WORKSPACE:-/app}"
+      ],
+      "description": "Official git MCP (status, diff, log, commit, branch, checkout)"
     },
     "shell": {
       "command": "python",

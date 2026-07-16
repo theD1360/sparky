@@ -40,10 +40,12 @@ RUN mkdir -p /app/agent/logs /app/agent/trusted_scripts
 # Set Python path to include src directory
 ENV PYTHONPATH=/app/agent/src
 
-# Pre-warm third-party MCP server packages (avoids long first-run uvx installs)
+# Pre-warm third-party MCP server packages (avoids long first-run uvx/npx installs)
 RUN uvx --from ddg-search-mcp-Albertous007 python -c "import ddg_search_mcp" && \
     uvx --from mcp-server-fetch python -c "import mcp_server_fetch" && \
-    uvx --from mcp-server-time python -c "import mcp_server_time"
+    uvx --from mcp-server-time python -c "import mcp_server_time" && \
+    uvx --from mcp-server-git python -c "import mcp_server_git" && \
+    npm install -g @modelcontextprotocol/server-filesystem@2026.7.10
 
 # Expose port for server
 EXPOSE 8000

@@ -140,9 +140,11 @@ class LangChainToolchain:
 
         MultiServerMCPClient = _import_mcp_client()
         client_kwargs: Dict[str, Any] = {}
-        prefix = (os.getenv("SPARKY_MCP_TOOL_NAME_PREFIX") or "").strip()
-        if prefix:
-            client_kwargs["tool_name_prefix"] = prefix
+        # When true, LangChain tool names are prefixed with the MCP server name
+        # (e.g. filesystem_read_file vs code_read_file) to avoid collisions.
+        prefix_raw = (os.getenv("SPARKY_MCP_TOOL_NAME_PREFIX") or "").strip().lower()
+        if prefix_raw in ("1", "true", "yes", "on"):
+            client_kwargs["tool_name_prefix"] = True
         if tool_interceptors:
             client_kwargs["tool_interceptors"] = tool_interceptors
 
@@ -159,9 +161,9 @@ class LangChainToolchain:
         """Create a toolchain directly from langchain-mcp-adapters connection dicts."""
         MultiServerMCPClient = _import_mcp_client()
         client_kwargs: Dict[str, Any] = {}
-        prefix = (os.getenv("SPARKY_MCP_TOOL_NAME_PREFIX") or "").strip()
-        if prefix:
-            client_kwargs["tool_name_prefix"] = prefix
+        prefix_raw = (os.getenv("SPARKY_MCP_TOOL_NAME_PREFIX") or "").strip().lower()
+        if prefix_raw in ("1", "true", "yes", "on"):
+            client_kwargs["tool_name_prefix"] = True
         if tool_interceptors:
             client_kwargs["tool_interceptors"] = tool_interceptors
         client = MultiServerMCPClient(connections=connections, **client_kwargs)
