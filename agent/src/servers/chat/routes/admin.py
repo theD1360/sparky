@@ -96,8 +96,14 @@ class MCPServerDisableUpdate(BaseModel):
 # Environment variable descriptions
 ENV_VAR_DESCRIPTIONS = {
     "AGENT_MODEL": "LLM model to use for agent (e.g., gemini-2.0-flash)",
-    "SPARKY_ENABLE_AGENT_LOOP": "Enable background agent loop for scheduled tasks",
-    "SPARKY_AGENT_POLL_INTERVAL": "Agent loop polling interval in seconds",
+    "SPARKY_ENABLE_AGENT_LOOP": "Deprecated — use the agent worker service instead",
+    "SPARKY_AGENT_POLL_INTERVAL": "Worker scheduled-task tick interval in seconds",
+    "REDIS_URL": "Redis URL for command bus and task event pub/sub",
+    "REDIS_QUEUE_NAME": "Redis list key for the command bus queue",
+    "REDIS_EVENTS_CHANNEL": "Redis pub/sub channel for live task WebSocket updates",
+    "REDIS_COMMAND_BUS_RESPONSE_TTL_SECONDS": "TTL for wait=True command response keys",
+    "WORKER_PROCESSES": "Number of agent worker processes",
+    "SPARKY_RECONCILE_INTERVAL_SECONDS": "How often the worker re-dispatches stuck pending tasks",
     "SPARKY_TOOL_CACHE_TTL": "Tool cache TTL in minutes",
     "GEMINI_API_KEY": "Google Gemini API key (hidden for security)",
     "DATABASE_URL": "Database connection URL (hidden for security)",

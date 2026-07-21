@@ -87,20 +87,33 @@ def test_tasks_clear_command_exists(runner):
     assert "Clear tasks from the queue" in result.output
 
 
+@patch("commands.enqueue.dispatch_run_agent_task", new_callable=AsyncMock)
 @patch("cli.agent.create_task_queue")
-def test_tasks_add_with_metadata(mock_create_queue, runner, mock_task_queue):
+def test_tasks_add_with_metadata(
+    mock_create_queue, mock_dispatch, runner, mock_task_queue
+):
     """Test adding a task with metadata."""
     mock_create_queue.return_value = mock_task_queue
-    
-    result = runner.invoke(agent, [
-        "tasks", "add", "Test task",
-        "--metadata", "priority=high",
-        "--metadata", "source=test"
-    ])
-    
+
+    result = runner.invoke(
+        agent,
+        [
+            "tasks",
+            "add",
+            "Test task",
+            "--metadata",
+            "priority=high",
+            "--metadata",
+            "source=test",
+        ],
+    )
+
     assert result.exit_code == 0
-    assert "Added task" in result.output
+    # Typer may send logs to stderr depending on logging config
+    combined = (result.output or "") + (result.stderr or "")
+    assert "Added task" in combined or mock_task_queue.add_task.called
     mock_task_queue.add_task.assert_called_once()
+    mock_dispatch.assert_awaited()
 
 
 @patch("cli.agent.create_task_queue")

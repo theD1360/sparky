@@ -50,20 +50,26 @@ This guide explains how to run Sparky using Docker Compose for development.
 
 - **Container**: `sparky-server`
 - **Port**: 8000
-- **Features**: Live reload enabled via uvicorn `--reload` flag
-- **Command**: `uvicorn servers.chat:app --host 0.0.0.0 --port 8000 --reload`
+- **Features**: WebSocket chat API + Redis subscriber for live task updates
+- **Command**: `uvicorn servers.chat:app --host 0.0.0.0 --port 8000`
 
-### Agent Service
+### Worker Service
 
-- **Container**: `sparky-agent`
-- **Features**: Background task processor
-- **Command**: `poetry run sparky agent start --interval 10`
+- **Service**: `worker` (scalable; no fixed container name)
+- **Features**: Consumes `RunAgentTask` commands from Redis; runs scheduled tasks
+- **Command**: `python -m commands.worker -n ${WORKER_PROCESSES:-1}`
+
+### Redis Service
+
+- **Container**: `sparky-redis`
+- **Port**: 6379 (host `${REDIS_EXTERNAL_PORT:-6379}`)
+- **Role**: Command bus queue + task event pub/sub
 
 ## Development Workflow
 
 ### Live Reload
 
-Changes to Python files in the `./src` directory will automatically trigger a reload of the server. The agent service will also pick up changes on restart.
+Changes to Python files under the mounted project tree are picked up after container restart (or uvicorn reload if enabled).
 
 ### Viewing Logs
 
@@ -74,8 +80,8 @@ docker-compose logs -f
 # View server logs only
 docker-compose logs -f server
 
-# View agent logs only
-docker-compose logs -f agent
+# View worker logs only
+docker-compose logs -f worker
 ```
 
 ### Restarting Services

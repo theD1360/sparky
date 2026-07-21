@@ -53,23 +53,32 @@ class TaskService:
         metadata: Optional[Dict[str, Any]] = None,
         depends_on: Optional[List[str]] = None,
         allow_duplicates: bool = False,
+        chat_id: Optional[str] = None,
+        dispatch: bool = True,
     ) -> Dict[str, Any]:
-        """Create a new task.
+        """Create a new task and dispatch it to the agent worker.
 
         Args:
             instruction: Natural language instruction for the task
             metadata: Optional metadata about the task
             depends_on: Optional list of task IDs this task depends on
             allow_duplicates: If False, prevents duplicate tasks
+            chat_id: Optional chat to execute the task in
+            dispatch: If True, enqueue RunAgentTaskCommand on the command bus
 
         Returns:
             The newly created task dictionary
         """
-        return await self.task_queue.add_task(
+        from commands.enqueue import enqueue_agent_task
+
+        return await enqueue_agent_task(
             instruction=instruction,
             metadata=metadata,
             depends_on=depends_on,
             allow_duplicates=allow_duplicates,
+            chat_id=chat_id,
+            task_queue=self.task_queue,
+            dispatch=dispatch,
         )
 
     async def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:

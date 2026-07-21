@@ -84,8 +84,14 @@ The Docker Compose setup starts several services:
 
 4. **Run Sparky**
    ```bash
-   # Start the chat server (with agent loop enabled)
-   SPARKY_ENABLE_AGENT_LOOP=true poetry run sparky chat start
+   # Start Redis + Postgres (or full stack)
+   docker-compose up redis postgres -d
+
+   # Start the chat server
+   poetry run sparky chat start
+
+   # In another terminal: start the agent worker
+   REDIS_URL=redis://localhost:6379/0 poetry run sparky agent worker
    ```
 
 ### Web UI Development

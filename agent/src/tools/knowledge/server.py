@@ -2464,11 +2464,12 @@ async def add_task(instruction: str, metadata: dict = None) -> dict:
         ).to_dict()
 
     try:
-        # Create TaskQueue instance from the repository
-        task_queue = TaskQueue(_kb_repository)
-        task = await task_queue.add_task(
+        from commands.enqueue import enqueue_agent_task
+
+        task = await enqueue_agent_task(
             instruction=instruction,
             metadata=metadata,
+            task_queue=TaskQueue(_kb_repository),
         )
         return MCPResponse.success(
             result=task, message=f"Successfully created task '{task['id']}'"

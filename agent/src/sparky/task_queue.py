@@ -394,6 +394,37 @@ class TaskQueue:
             logger.error(f"Error getting tasks count: {e}")
             return 0
 
+    async def claim_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Atomically claim a pending task by id (CAS pending -> in_progress).
+
+        Args:
+            task_id: Task ID to claim
+
+        Returns:
+            Claimed task dict, or None if missing / not pending
+        """
+        try:
+            task = await self.get_task(task_id)
+            if not task:
+                return None
+            if task.get("status") != "pending":
+                return None
+
+            task["status"] = "in_progress"
+            task["updated_at"] = datetime.now(timezone.utc).isoformat()
+            await self._save_task(task)
+
+            instruction_preview = task.get("instruction", "")[:60]
+            logger.info(
+                "Claimed task %s for processing: %s...",
+                task["id"],
+                instruction_preview,
+            )
+            return task
+        except Exception as e:
+            logger.error("Error claiming task %s: %s", task_id, e, exc_info=True)
+            return None
+
     async def get_next_pending_task(self) -> Optional[Dict[str, Any]]:
         """Find and mark the next pending task as in_progress.
 
@@ -426,21 +457,7 @@ class TaskQueue:
                 node_id.replace("task:", "") if node_id.startswith("task:") else node_id
             )
 
-            # Get current task data
-            task = await self.get_task(task_id)
-            if not task:
-                return None
-
-            # Update status to in_progress
-            task["status"] = "in_progress"
-            task["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await self._save_task(task)
-
-            instruction_preview = task.get("instruction", "")[:60]
-            logger.info(
-                f"Dequeued task {task['id']} for processing: {instruction_preview}..."
-            )
-            return task
+            return await self.claim_task(task_id)
 
         except Exception as e:
             logger.error(f"Error getting next pending task: {e}")

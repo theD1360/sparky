@@ -64,6 +64,10 @@ services:
       - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       - JWT_REFRESH_TOKEN_EXPIRE_DAYS=${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
       - BCRYPT_ROUNDS=${BCRYPT_ROUNDS:-12}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - REDIS_QUEUE_NAME=${REDIS_QUEUE_NAME:-sparky:commands}
+      - REDIS_EVENTS_CHANNEL=${REDIS_EVENTS_CHANNEL:-sparky:events}
+      - REDIS_COMMAND_BUS_RESPONSE_TTL_SECONDS=${REDIS_COMMAND_BUS_RESPONSE_TTL_SECONDS:-3600}
     volumes:
       # Mount source code for live reload
       - ./:/app:delegated
@@ -79,7 +83,68 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     stop_grace_period: 30s
+
+  worker:
+    build:
+      context: ./agent
+      dockerfile: ../Dockerfile
+    command: python -m commands.worker -n ${WORKER_PROCESSES:-1}
+    working_dir: /app/agent
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/agent/src
+      - SPARKY_WORKSPACE=${SPARKY_WORKSPACE:-/app}
+      - SPARKY_MCP_TOOL_NAME_PREFIX=${SPARKY_MCP_TOOL_NAME_PREFIX:-true}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - AGENT_MODEL=${AGENT_MODEL:-gemini-2.5-flash}
+      - SPARKY_SUMMARY_TOKEN_THRESHOLD=${SPARKY_SUMMARY_TOKEN_THRESHOLD:-0.85}
+      - SPARKY_REFLECT_EVERY=${SPARKY_REFLECT_EVERY:-10}
+      - SPARKY_TOKEN_BUDGET_PERCENT=${SPARKY_TOKEN_BUDGET_PERCENT:-0.8}
+      - SPARKY_AGENT_POLL_INTERVAL=${SPARKY_AGENT_POLL_INTERVAL:-10}
+      - SPARKY_RECONCILE_INTERVAL_SECONDS=${SPARKY_RECONCILE_INTERVAL_SECONDS:-60}
+      - LOG_DIR=/app/agent/logs
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-metamcp_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-m3t4mcp}
+      - SPARKY_DB=${SPARKY_DB:-sparky_db}
+      - SPARKY_DB_URL=postgresql://${POSTGRES_USER:-metamcp_user}:${POSTGRES_PASSWORD:-m3t4mcp}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${SPARKY_DB:-sparky_db}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - REDIS_QUEUE_NAME=${REDIS_QUEUE_NAME:-sparky:commands}
+      - REDIS_EVENTS_CHANNEL=${REDIS_EVENTS_CHANNEL:-sparky:events}
+      - REDIS_COMMAND_BUS_RESPONSE_TTL_SECONDS=${REDIS_COMMAND_BUS_RESPONSE_TTL_SECONDS:-3600}
+      - WORKER_PROCESSES=${WORKER_PROCESSES:-1}
+    volumes:
+      - ./:/app:delegated
+    restart: unless-stopped
+    networks:
+      - sparky-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 60s
+
+  redis:
+    image: redis:7-alpine
+    container_name: sparky-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_EXTERNAL_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sparky-network
+    stop_grace_period: 10s
 
   # Shared Postgres for Sparky (sparky_db). Volume name must stay postgres_data.
   postgres:

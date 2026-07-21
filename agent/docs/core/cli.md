@@ -4,11 +4,11 @@ The Sparky Command-Line Interface (CLI) is used to manage the chat server and la
 
 ## Chat Commands
 
-The chat commands are used to start, stop, and restart the Sparky chat server. The chat server includes both the WebSocket interface and optionally the agent loop for background task processing.
+The chat commands start, stop, and restart the Sparky chat server (WebSocket API). Background agent tasks run in a separate worker — see Agent Commands.
 
 ### `sparky chat start`
 
-This command starts the chat server (with optional agent loop).
+This command starts the chat server.
 
 **Usage:**
 
@@ -23,19 +23,11 @@ sparky chat start [OPTIONS]
 *   `--daemon`: Run the server in the background.
 *   `--pidfile TEXT`: The path to the PID file. Defaults to `sparky-chat.pid`.
 
-**Environment Variables:**
-
-*   `SPARKY_ENABLE_AGENT_LOOP`: Set to `true` to enable background task processing (default: `false`)
-*   `SPARKY_AGENT_POLL_INTERVAL`: Seconds between task polls when agent loop is enabled (default: `10`)
-
 **Examples:**
 
 ```bash
-# Start chat server only
+# Start chat server
 sparky chat start
-
-# Start with agent loop enabled
-SPARKY_ENABLE_AGENT_LOOP=true sparky chat start
 
 # Start on custom host/port
 sparky chat start --host 0.0.0.0 --port 8080
@@ -99,30 +91,45 @@ sparky client start [OPTIONS]
 
 ## Agent Commands
 
-The agent commands are used to manage the proactive agent background tasks.
+The agent commands manage the background task queue and worker.
 
-### Agent Lifecycle
+### Worker
 
-The agent loop runs integrated within the chat server. To enable it:
+Background tasks are executed by a Redis command-bus worker (not inside the chat process):
 
 ```bash
-export SPARKY_ENABLE_AGENT_LOOP=true
-sparky chat
+# Requires REDIS_URL and SPARKY_DB_URL
+sparky agent worker
+# or
+python -m commands.worker -n 1
 ```
 
 **Environment Variables:**
 
-*   `SPARKY_ENABLE_AGENT_LOOP`: Set to `true` to enable the agent loop (default: `false`)
-*   `SPARKY_AGENT_POLL_INTERVAL`: Seconds between task queue polls (default: `10`)
+*   `REDIS_URL`: Redis broker (default `redis://localhost:6379/0`)
+*   `REDIS_QUEUE_NAME`: Command queue list key (default `sparky:commands`)
+*   `REDIS_EVENTS_CHANNEL`: Pub/sub for live task WebSocket updates
+*   `SPARKY_AGENT_POLL_INTERVAL`: Scheduled-task tick interval in seconds (default `10`)
+*   `SPARKY_RECONCILE_INTERVAL_SECONDS`: Re-dispatch stuck pending tasks (default `60`)
 
 #### `sparky agent status`
 
-Show task queue statistics and agent configuration.
+Show task queue statistics.
 
 **Usage:**
 
 ```
 sparky agent status
+```
+
+#### `sparky agent worker`
+
+Run the command-bus worker.
+
+**Usage:**
+
+```
+sparky agent worker [--workers N] [--redis-url URL] [--no-scheduled-tasks]
 ```
 
 #### `sparky agent schedule`

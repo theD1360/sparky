@@ -80,8 +80,7 @@ setup_logging()
 _app_knowledge: KnowledgeService | None = None
 _startup_error: str | None = None
 _connection_manager: "ConnectionManager | None" = None
-_agent_loop_instance = None
-_agent_loop_task = None
+_task_events_subscriber_task = None
 
 logger = getLogger(__name__)
 
@@ -373,51 +372,14 @@ class ConnectionManager:
         return model_name
 
     async def _maybe_start_agent_loop(self, toolchain: LangChainToolchain):
-        """Start agent loop if enabled and not already running.
+        """Deprecated: background tasks run in the command-bus worker process.
 
-        Args:
-            toolchain: Initialized LangChainToolchain to use
-
-        Note: AgentLoop may need to be updated to work with LangChainToolchain.
-        This is currently disabled until AgentLoop is migrated.
+        Kept as a no-op for call-site compatibility.
         """
-        global _agent_loop_instance, _agent_loop_task
-
-        # Check if already running
-        if _agent_loop_instance is not None:
-            logger.info("Agent loop already running, skipping startup")
-            return
-
-        # Check if enabled
-        enable_agent_loop = (
-            os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
+        logger.debug(
+            "In-process agent loop is retired; start `sparky agent worker` instead"
         )
-        if not enable_agent_loop:
-            logger.debug("Agent loop not enabled (SPARKY_ENABLE_AGENT_LOOP=false)")
-            return
-
-        # TODO: Update AgentLoop to work with LangChainToolchain
-        logger.warning(
-            "Agent loop is disabled until AgentLoop is updated for LangChainToolchain"
-        )
-        # try:
-        #     logger.info("Starting agent loop after toolchain initialization...")
-        #     from servers.task import AgentLoop
-        #
-        #     poll_interval = int(os.getenv("SPARKY_AGENT_POLL_INTERVAL", "10"))
-        #     _agent_loop_instance = AgentLoop(
-        #         toolchain=toolchain,
-        #         poll_interval=poll_interval,
-        #         enable_scheduled_tasks=True,
-        #         connection_manager=self,
-        #     )
-        #     _agent_loop_task = _agent_loop_instance.start_background()
-        #     logger.info(
-        #         f"Agent loop started in background (poll interval: {poll_interval}s)"
-        #     )
-        # except Exception as e:
-        #     logger.error(f"Failed to start agent loop: {e}")
-        #     logger.error(f"Traceback: {traceback.format_exc()}")
+        return
 
     async def load_identity(
         self,
@@ -1000,9 +962,10 @@ def _setup_signal_handlers():
 async def cleanup_server(app: FastAPI):
     """Cleanup the server process when the app is shut down."""
     cleanup_task = None
+    events_task = None
     try:
         global _app_toolchain, _app_knowledge, _startup_error, _connection_manager
-        global _agent_loop_instance, _agent_loop_task
+        global _task_events_subscriber_task
 
         # Create PID file and setup signal handlers
         _create_pid_file()
@@ -1012,22 +975,17 @@ async def cleanup_server(app: FastAPI):
         _connection_manager = ConnectionManager(session_timeout_minutes=60)
         logger.info("Connection manager initialized")
 
-        # Check if agent loop is enabled
-        enable_agent_loop = (
-            os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
-        )
+        # Subscribe to worker task events for WebSocket fan-out
+        from servers.chat.task_events_subscriber import run_task_events_subscriber
 
-        if enable_agent_loop:
-            # If agent loop is enabled, note that it needs to be updated for LangChainToolchain
-            logger.warning(
-                "Agent loop is enabled but needs to be updated for LangChainToolchain. "
-                "Agent loop will be started per-websocket connection instead of at startup."
-            )
-        else:
-            logger.info(
-                "Agent loop is disabled - toolchain will be loaded on first client connection"
-            )
-            logger.info("Set SPARKY_ENABLE_AGENT_LOOP=true to enable agent loop")
+        events_task = asyncio.create_task(
+            run_task_events_subscriber(_connection_manager)
+        )
+        _task_events_subscriber_task = events_task
+        logger.info("Task events Redis subscriber started")
+        logger.info(
+            "Background agent tasks run via `sparky agent worker` / compose service `worker`"
+        )
 
         # Start periodic cleanup task
         cleanup_task = asyncio.create_task(_periodic_cleanup())
@@ -1037,16 +995,13 @@ async def cleanup_server(app: FastAPI):
         yield
 
         # Cleanup on shutdown
-        if _agent_loop_instance:
-            logger.info("Stopping agent loop...")
-            await _agent_loop_instance.stop()
-
-        if _agent_loop_task:
-            _agent_loop_task.cancel()
+        if events_task:
+            events_task.cancel()
             try:
-                await _agent_loop_task
+                await events_task
             except asyncio.CancelledError:
                 pass
+            _task_events_subscriber_task = None
 
         if cleanup_task:
             cleanup_task.cancel()

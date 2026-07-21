@@ -24,8 +24,9 @@ schedule = typer.Typer(name="schedule", help="Manage scheduled tasks")
 @agent.command("status")
 def agent_status():
     """Show task queue statistics."""
-    logger.info("ℹ️  Agent loop runs within the chat server")
-    logger.info("   Start with: SPARKY_ENABLE_AGENT_LOOP=true sparky chat")
+    logger.info("ℹ️  Background tasks run in the agent worker process")
+    logger.info("   Start with: sparky agent worker")
+    logger.info("   Or: docker compose up worker")
     logger.info("")
 
     # Show task statistics
@@ -44,6 +45,37 @@ def agent_status():
         logger.info(f"  Total:       {stats['total']}")
     except Exception as e:
         logger.error(f"Error retrieving task statistics: {e}")
+
+
+@agent.command("worker")
+def agent_worker(
+    workers: int = typer.Option(
+        1,
+        "--workers",
+        "-n",
+        help="Number of worker processes",
+    ),
+    queue_name: Optional[str] = typer.Option(
+        None, "--queue-name", help="Redis queue name override"
+    ),
+    redis_url: Optional[str] = typer.Option(
+        None, "--redis-url", help="Redis URL override"
+    ),
+    no_scheduled_tasks: bool = typer.Option(
+        False,
+        "--no-scheduled-tasks",
+        help="Disable scheduled task ticker in this worker",
+    ),
+):
+    """Run the agent command-bus worker (consumes RunAgentTask commands)."""
+    from commands.worker import run_worker_pool
+
+    run_worker_pool(
+        workers=workers,
+        queue_name=queue_name,
+        redis_url=redis_url,
+        enable_scheduled_tasks=not no_scheduled_tasks,
+    )
 
 
 @tasks.command("list")
@@ -140,11 +172,14 @@ def add_task(
             metadata[key.strip()] = value.strip()
 
     async def _add_task():
+        from commands.enqueue import enqueue_agent_task
+
         task_queue = await create_task_queue()
-        return await task_queue.add_task(
+        return await enqueue_agent_task(
             instruction=instruction,
             metadata=metadata if metadata else None,
             chat_id=chat_id,
+            task_queue=task_queue,
         )
 
     try:
@@ -578,6 +613,8 @@ def run_scheduled_tasks(
                 tasks_to_add.append(task_dict[name])
 
         # Create task queue
+        from commands.enqueue import enqueue_agent_task
+
         task_queue = await create_task_queue()
 
         # Add each task to the queue
@@ -587,14 +624,15 @@ def run_scheduled_tasks(
                 # Resolve the prompt (handles file() syntax)
                 prompt = task.resolve_prompt(base_path=Path.cwd())
 
-                # Add to task queue with metadata
-                await task_queue.add_task(
+                # Add to task queue with metadata and dispatch to worker
+                await enqueue_agent_task(
                     instruction=prompt,
                     metadata={
                         "source": f"manual_{task.name}",
                         "scheduled_task_name": task.name,
                         **task.metadata,
                     },
+                    task_queue=task_queue,
                 )
                 logger.info(f"✓ Added task '{task.name}' to queue")
                 added_count += 1

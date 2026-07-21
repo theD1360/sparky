@@ -1,44 +1,39 @@
-# Task Server Documentation
+# Task Server / Agent Worker
 
 ## Overview
 
-The Sparky tasking system is an integrated component responsible for managing and executing background tasks. The agent loop runs within the chat server process and can be enabled via environment variable. The system is comprised of two key modules: the `AgentLoop` and the `TaskQueue`.
+Background agent tasks are executed by a **dedicated worker process** via a Redis-backed command bus (`deegzlibs-command-bus`). Knowledge-graph `Task` nodes remain the durable ledger; Redis only transports `RunAgentTask` wakeups.
 
-## Running the Agent Loop
-
-The agent loop is integrated into the chat server and can be enabled with:
+## Running
 
 ```bash
-export SPARKY_ENABLE_AGENT_LOOP=true
-export SPARKY_AGENT_POLL_INTERVAL=10  # Optional, defaults to 10 seconds
-sparky chat
+# Docker Compose (recommended)
+docker compose up worker
+
+# Or locally (requires Redis + SPARKY_DB_URL)
+export REDIS_URL=redis://localhost:6379/0
+sparky agent worker
+# equivalent: python -m commands.worker
 ```
 
-When enabled, the agent loop runs as a background task within the chat server, processing tasks and scheduled jobs continuously.
-
-**Locations:**
-- AgentLoop: `src/servers/task/task_server.py`
-- TaskQueue: `src/sparky/task_queue.py`
+Chat server still hosts the WebSocket API and relays worker events from `REDIS_EVENTS_CHANNEL` to connected clients.
 
 ## Architecture
 
-### AgentLoop (`src/servers/task/task_server.py`)
+1. Producers (CLI, MCP `add_task`, scheduler) call `enqueue_agent_task` → persist pending Task → `dispatch_async(RunAgentTaskCommand)`.
+2. Worker BRPOPs the Redis queue, claims the Task (`pending` → `in_progress`), runs `AgentTaskExecutor`.
+3. Progress events publish to Redis pub/sub; chat server forwards to WebSockets.
+4. Worker also ticks `scheduled_tasks.yaml` and periodically reconciles stuck pending Tasks.
 
-The `AgentLoop` acts as the primary worker for the tasking system. It operates as a continuous, asynchronous loop that performs the following functions:
+## Key modules
 
-- **Polling:** It periodically polls the `TaskQueue` for new tasks in the `pending` state.
-- **Execution:** When a new task is retrieved, the `AgentLoop` uses a persistent, internal instance of the `Bot` to execute the task's instructions. This means the background agent has access to the same set of tools as the interactive bot.
-- **Scheduled Tasks:** It manages tasks that are scheduled to run at specific intervals or times, as defined in `scheduled_tasks.yaml`.
-- **State Management:** It updates the task's status from `pending` to `in_progress` upon starting and to `completed` or `failed` upon completion.
+| Module | Role |
+|--------|------|
+| `commands/` | Bus DTOs, dispatch, worker loop, handlers |
+| `services/agent_task_executor.py` | Bot execution for a claimed task |
+| `sparky/task_queue.py` | KG Task CRUD + `claim_task` |
+| `servers/chat/task_events_subscriber.py` | Redis → WebSocket fan-out |
 
-### TaskQueue (`src/sparky/task_queue.py`)
+## Deprecated
 
-The `TaskQueue` is responsible for the storage and management of all tasks.
-
-- **Knowledge Graph Integration:** Tasks are not stored in a traditional in-memory queue. Instead, each task is a node in the knowledge graph with the `node_type` of `Task`. This provides persistence, scalability, and the ability to form complex relationships.
-- **Persistent Storage:** Storing tasks in the graph ensures that they are not lost if the application restarts.
-- **Task Relationships:** The system leverages the graph structure to define dependencies and other relationships between tasks. For example, a `DEPENDS_ON` edge can be created between two tasks to ensure one completes before the other begins. Other supported relationships include `PARENT_OF`, `CHILD_OF`, and `BLOCKS`.
-
-## Tool Interface
-
-The task management tools (`add_task`, `get_task`, `list_tasks`, `update_task`, `delete_task`, `get_task_stats`) are exposed to the bot via the `miscellaneous` tool server, as defined in `mcp.json`. These tools provide the interface for the bot to interact with the underlying `TaskQueue`.
+`AgentLoop` / `SPARKY_ENABLE_AGENT_LOOP` (in-process poll inside chat) is retired. Use the worker service instead.

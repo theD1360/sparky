@@ -30,8 +30,9 @@ Server implementations for different interaction modes:
 - `__init__.py` - Exports `ChatServer` (app), `ConnectionManager`
 
 #### Task Server (`src/servers/task/`)
-- `task_server.py` - AgentLoop for background task processing
-- `__init__.py` - Exports `TaskServer` (AgentLoop), `run_agent_loop`
+- `task_server.py` - Deprecated AgentLoop shim (prefer command-bus worker)
+- `__init__.py` - Exports `TaskServer` (AgentLoop)
+- Worker: `commands/worker.py` — Redis command-bus consumer for `RunAgentTask`
 
 ### Client (`src/client/`)
 

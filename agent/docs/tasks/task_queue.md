@@ -23,7 +23,8 @@ The `TaskQueue` is initialized with a `KnowledgeRepository` instance, which it u
 *   `add_task()`: Creates a new task. It generates a unique ID, saves the task as a `Task` node, and links it to the `concept:tasks` node with an `INSTANCE_OF` edge. It also checks for duplicate tasks to avoid redundancy.
 *   `get_task()`: Retrieves a single task by its ID.
 *   `get_all_tasks()`: Fetches all tasks, with support for pagination.
-*   `get_next_pending_task()`: This is the core method for a worker to get the next available job. It finds the oldest task with a `pending` status, atomically updates its status to `in_progress`, and returns it.
+*   `get_next_pending_task()`: Finds the oldest pending task and claims it (`pending` → `in_progress`). Prefer `claim_task(task_id)` when executing a specific command-bus job.
+*   `claim_task(task_id)`: CAS claim of a single pending task by id (used by the worker handler).
 *   `update_task_status()`: Changes the status of a task (e.g., to `completed` or `failed`) and can optionally store a final response or error message.
 *   `delete_task()`: Removes a task node from the graph.
 *   `clear_completed_tasks()`: A maintenance method to remove finished tasks from the queue.

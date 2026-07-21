@@ -48,19 +48,15 @@ def start_server(
         SPARKY_CHAT_PID_FILE, "--pidfile", help="Path to the PID file."
     ),
 ):
-    """Launch the Sparky Chat Server (includes agent loop if SPARKY_ENABLE_AGENT_LOOP=true)."""
+    """Launch the Sparky Chat Server (WebSocket API)."""
     if not daemon:
         try:
             # Non-daemon mode - server will handle its own PID file
             logger.info(f"Starting Sparky Chat Server on ws://{host}:{port}/ws/chat")
-            
-            # Show agent loop status
-            agent_enabled = os.getenv("SPARKY_ENABLE_AGENT_LOOP", "false").lower() == "true"
-            if agent_enabled:
-                logger.info("✅ Agent loop enabled - background tasks will be processed")
-            else:
-                logger.info("ℹ️  Agent loop disabled - set SPARKY_ENABLE_AGENT_LOOP=true to enable")
-            
+            logger.info(
+                "ℹ️  Background agent tasks: start `sparky agent worker` "
+                "(or docker compose service `worker`)"
+            )
             logger.info("Press Ctrl+C to stop.")
             run_server(host, port, daemon=False)
 

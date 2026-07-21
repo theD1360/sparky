@@ -46,7 +46,9 @@ The Admin Dashboard is a hidden administrative interface for managing MCP server
 
 **Variables Include:**
 - `AGENT_MODEL` - LLM model name
-- `SPARKY_ENABLE_AGENT_LOOP` - Enable background tasks
+- `SPARKY_ENABLE_AGENT_LOOP` - Deprecated; use the `worker` Compose service / `sparky agent worker`
+- `REDIS_URL` - Redis for command bus and task event pub/sub
+- `REDIS_QUEUE_NAME` - Command bus queue list key
 - `SPARKY_TOOL_CACHE_TTL` - Cache duration
 - And more...
 
