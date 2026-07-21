@@ -7,8 +7,10 @@ a Gemini-based provider using the gemini-embedding-001 model.
 import logging
 import math
 import os
+import random
+import time
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Callable, List, Optional, TypeVar
 
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -17,6 +19,59 @@ logger = logging.getLogger(__name__)
 
 # Default embedding dimension for Gemini
 DEFAULT_EMBEDDING_DIM = 768
+
+T = TypeVar("T")
+
+# Transient Gemini / network failures worth retrying
+_TRANSIENT_EMBED_MARKERS = (
+    "503",
+    "429",
+    "unavailable",
+    "dns resolution",
+    "failed to connect",
+    "timeout",
+    "temporarily",
+    "connection reset",
+    "deadline exceeded",
+    "resource exhausted",
+)
+
+
+def _is_transient_embed_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _TRANSIENT_EMBED_MARKERS)
+
+
+def _call_with_embed_retry(
+    fn: Callable[[], T],
+    *,
+    what: str,
+    max_attempts: int = 4,
+    base_delay: float = 1.0,
+    max_delay: float = 20.0,
+) -> T:
+    """Retry transient Gemini embedding failures with exponential backoff."""
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if attempt >= max_attempts or not _is_transient_embed_error(e):
+                raise
+            delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+            delay += random.uniform(0, min(0.5, delay * 0.25))
+            logger.warning(
+                "Transient embedding error on %s (attempt %s/%s): %s; retrying in %.1fs",
+                what,
+                attempt,
+                max_attempts,
+                e,
+                delay,
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 class EmbeddingProvider(ABC):
@@ -111,13 +166,15 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             return [0.0] * self.dimension
 
         try:
-            # Use google.generativeai API
-            result = genai.embed_content(
-                model=self.model_name,
-                content=text,
-                task_type="SEMANTIC_SIMILARITY",
-                output_dimensionality=self.dimension,
-            )
+            def _embed_once():
+                return genai.embed_content(
+                    model=self.model_name,
+                    content=text,
+                    task_type="SEMANTIC_SIMILARITY",
+                    output_dimensionality=self.dimension,
+                )
+
+            result = _call_with_embed_retry(_embed_once, what="embed_text")
 
             if not result.get("embedding"):
                 logger.warning("No embedding returned from Gemini API")
@@ -163,13 +220,15 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             return [[0.0] * self.dimension] * len(texts)
 
         try:
-            # Use google.generativeai API to embed the batch
-            result = genai.embed_content(
-                model=self.model_name,
-                content=non_empty_texts,
-                task_type="SEMANTIC_SIMILARITY",
-                output_dimensionality=self.dimension,
-        )
+            def _embed_batch_once():
+                return genai.embed_content(
+                    model=self.model_name,
+                    content=non_empty_texts,
+                    task_type="SEMANTIC_SIMILARITY",
+                    output_dimensionality=self.dimension,
+                )
+
+            result = _call_with_embed_retry(_embed_batch_once, what="embed_batch")
 
             embeddings_list = result.get("embedding")
 

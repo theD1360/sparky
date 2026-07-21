@@ -1,11 +1,14 @@
 """Database connection and session management for the knowledge base."""
 
+import asyncio
 import logging
+import random
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 from sqlalchemy import event, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -21,6 +24,41 @@ logger = logging.getLogger(__name__)
 
 # Global database manager instance
 _db_manager: Optional["DatabaseManager"] = None
+
+_TRANSIENT_DB_MARKERS = (
+    "recovery mode",
+    "the database system is starting up",
+    "connection refused",
+    "connection reset",
+    "server closed the connection",
+    "could not connect",
+    "connection timed out",
+    "too many connections",
+)
+
+
+def _is_transient_db_error(exc: BaseException) -> bool:
+    """Return True for Postgres/network blips worth retrying."""
+    parts = [str(exc)]
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        parts.append(str(orig))
+    msg = " ".join(parts).lower()
+    if any(marker in msg for marker in _TRANSIENT_DB_MARKERS):
+        return True
+    # SQLAlchemy wraps some disconnects as DBAPIError with connection_invalidated
+    if isinstance(exc, DBAPIError) and getattr(exc, "connection_invalidated", False):
+        return True
+    return False
+
+
+async def _dispose_engine_quietly(engine: Optional[AsyncEngine]) -> None:
+    if engine is None:
+        return
+    try:
+        await engine.dispose()
+    except Exception as e:
+        logger.debug("Error disposing engine during retry: %s", e)
 
 
 class DatabaseManager:
@@ -172,6 +210,11 @@ class DatabaseManager:
     async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
         """Get a new database session with proper transaction management.
 
+        Before yielding, verifies the connection with ``SELECT 1`` and retries
+        on transient Postgres errors (e.g. recovery mode) after disposing the
+        pool. Errors raised by the caller's work are not retried here — the
+        caller's body cannot be re-run after ``yield``.
+
         This context manager ensures that:
         - Transactions are committed on successful completion
         - Transactions are rolled back on exceptions
@@ -186,13 +229,48 @@ class DatabaseManager:
         if self.SessionLocal is None:
             raise RuntimeError("Database not connected. Call connect() first.")
 
-        async with self.SessionLocal() as session:
+        max_attempts = 5
+        last_exc: Optional[BaseException] = None
+        session: Optional[AsyncSession] = None
+
+        for attempt in range(1, max_attempts + 1):
+            session = self.SessionLocal()
             try:
-                yield session
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
+                # Force checkout + fail fast while Postgres is in recovery.
+                await session.execute(text("SELECT 1"))
+                break
+            except Exception as e:
+                await session.close()
+                session = None
+                last_exc = e
+                if attempt >= max_attempts or not _is_transient_db_error(e):
+                    raise
+                delay = min(8.0, 0.5 * (2 ** (attempt - 1)))
+                delay += random.uniform(0, 0.25)
+                logger.warning(
+                    "Transient DB error acquiring session (attempt %s/%s): %s; "
+                    "disposing pool and retrying in %.1fs",
+                    attempt,
+                    max_attempts,
+                    e,
+                    delay,
+                )
+                await _dispose_engine_quietly(self.engine)
+                await asyncio.sleep(delay)
+        else:
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError("Failed to acquire database session")
+
+        assert session is not None
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
 
     async def close(self) -> None:
         """Close database connections and cleanup resources."""
